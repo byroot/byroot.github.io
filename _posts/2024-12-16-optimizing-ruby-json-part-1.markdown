@@ -521,7 +521,7 @@ else
 end{% endhighlight %}
 
 You can see [Mame's patch](https://github.com/ruby/json/pull/562/commits/a81ec4770af4a2f20a9dc06d0295cf5b93a7af91), it's a bit more cryptic because in C, but you should be able to
-see the same pattern as described here, and that alone made a massing 30% gain on the `twitter.json` benchmark:
+see the same pattern as described here, and that alone made a massive 30% gain on the `twitter.json` benchmark:
 
 ```
 == Encoding twitter.json (466906 bytes)
