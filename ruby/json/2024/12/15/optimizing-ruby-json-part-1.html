@@ -534,7 +534,7 @@ and if we are, directly copy the entire string in the buffer all at once, so som
 <span class="k">end</span></code></pre></figure>
 
 <p>You can see <a href="https://github.com/ruby/json/pull/562/commits/a81ec4770af4a2f20a9dc06d0295cf5b93a7af91">Mame’s patch</a>, it’s a bit more cryptic because in C, but you should be able to
-see the same pattern as described here, and that alone made a massing 30% gain on the <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark:</p>
+see the same pattern as described here, and that alone made a massive 30% gain on the <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark:</p>
 
 <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
 ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
