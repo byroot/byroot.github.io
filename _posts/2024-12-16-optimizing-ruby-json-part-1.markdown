@@ -506,13 +506,6 @@ With this, and based on the assumption that most strings don't contain any chara
 and if we are, directly copy the entire string in the buffer all at once, so something like:
 
 {% highlight ruby %}
-JSON_ESCAPE_TABLE = Array.new(256, false)
-0x20.times do |i|
-  JSON_ESCAPE_TABLE[i] = true
-end
-JSON_ESCAPE_TABLE['"'] = true
-JSON_ESCAPE_TABLE['\\'] = true
-
 buffer = +""
 if string.each_char.none? { |c| JSON_ESCAPE_TABLE[c] }
   buffer << string
