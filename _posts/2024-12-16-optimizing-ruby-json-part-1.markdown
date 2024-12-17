@@ -14,7 +14,7 @@ As such, I'd like to go over these changes to show how they are quite generic an
 
 But before I dive into these, let me explain why I came about working on this in the first place.
 
-#  There Should Be No Need For Alternatives
+##  There Should Be No Need For Alternatives
 
 My motivation was never really performance per se. `ruby/json` was indeed slower than popular alternatives such as `oj`, but not by that much.
 
@@ -32,7 +32,7 @@ This may surprise you, given generally when `oj` is mentioned online, all you ca
 
 Why? Because `oj` has caused me innumerable headaches over the years, so many I couldn't list them all here, but I can mention a few.
 
-## With Monkey Patching Comes Great Responsibility
+### With Monkey Patching Comes Great Responsibility
 
 One way `oj` is frequently used is by monkey patching the `json` gem via `Oj.mimic_JSON` or `ActiveSupport::JSON` via `Oj.optimize_rails`.
 
@@ -77,7 +77,7 @@ puts ActiveSupport::JSON.encode(t) # => "2024-12-16T16:00:51.790+01:00"
 This one is a bit of a corner case caused by load order, but I had to waste a lot of time fighting with it in the past.
 [And until very recently, it changed the behavior way more than that](https://github.com/ohler55/oj/pull/936).
 
-## Quite Unstable
+### Quite Unstable
 
 Another big reason I don't recommend `oj` is that from my experience of running it at scale, it has been one of the most prominent sources of
 Ruby crashes for us, only second to `grpc`.
@@ -96,7 +96,7 @@ This is the sort of code that makes for great results on micro-benchmarks, but t
 That's why a couple of years back I decided to remove Oj from Shopify's monolith, and that's when I discovered all the subtle differences
 between `Oj.mimic_JSON` and the real `json`.
 
-# Ground Work
+## Ground Work
 
 So my motivation was to hopefully make `ruby/json` perform about as well as `oj` on both real-world and micro-benchmark so that users
 would no longer feel the need to monkey patch `json` for speed reasons. If they still feel like they need one of the more advanced `oj` APIs
@@ -109,7 +109,7 @@ Thankfully, [John Hawthorn's rapidjson-ruby gem](https://github.com/jhawthorn/ra
 With that, all I needed was a decent C profiler. There are several options, but my favorite is [samply](https://github.com/mstange/samply),
 which has the nice property of outputting Firefox Profiler compatible reports that are easy to share.
 
-# Avoid Redundant Checks
+## Avoid Redundant Checks
 
 I then started profiling the `JSON.dump` benchmark with the `twitter.json` payload:
 
@@ -187,7 +187,7 @@ Since we still go over these bytes later on, they still do the actually costly p
 
 Still, a 3% improvement was nice to see.
 
-# Check the Cheaper, More Likely Condition First
+## Check the Cheaper, More Likely Condition First
 
 In parallel to the previous patch, another function I looked at was `fbuffer_inc_capa`, reported as `5.7%` of total runtime.
 
@@ -259,7 +259,7 @@ Comparison:
 And if you think about it, it's not that specific to C, you can apply the same general idea to Ruby code as well, by checking the cheapest and most
 likely conditions first.
 
-# Reducing Setup Cost
+## Reducing Setup Cost
 
 I also wasn't alone in optimizing `ruby/json`, [Yusuke Endoh aka Mame](https://github.com/mame), a fellow Ruby committer also had [an old open PR with
 numerous optimizations](https://github.com/ruby/json/pull/562). Many of these reduced the "setup" cost of generating JSON.
@@ -309,7 +309,7 @@ Comparison:
                after:  3199311.0 i/s - 1.51x  faster
 ```
 
-# Avoid Chasing Pointers
+## Avoid Chasing Pointers
 
 Another notable optimization in Mame's pull request was to eliminate one call to `rb_enc_get`.
 
@@ -439,7 +439,7 @@ Comparison:
                after:     1253.3 i/s - 1.08x  faster
 ```
 
-# Lookup Tables
+## Lookup Tables
 
 Yet another patch in Mame's PR was to use [one of my favorite performance tricks, what's called a "lookup table"](https://lemire.me/blog/2024/10/14/table-lookups-are-efficient/).
 
@@ -536,7 +536,7 @@ Comparison:
                after:     1630.2 i/s - 1.30x  faster
 ```
 
-# To Be Continued
+## To Be Continued
 
 I have way more optimizations than these ones to talk about, but I feel like it's already a pretty packed blog post.
 
