@@ -142,7 +142,7 @@ For instance, if Ruby has to execute `nil.bar`, it will compile that into an `op
 0003 leave
 {% endhighlight %}
 
-Which down the line will end up in []`vm_search_method_fastpath`](https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/vm_insnhelper.c#L2256-L2279), that has access to `cc` AKA a "callcache".
+Which down the line will end up in [`vm_search_method_fastpath`](https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/vm_insnhelper.c#L2256-L2279), that has access to `cc` AKA a "callcache".
 The actual method is a bit hard to read with lots of asserts etc, but here's a stripped-down version that should be easy to understand:
 
 {% highlight c %}
