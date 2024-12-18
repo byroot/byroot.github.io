@@ -181,8 +181,8 @@ Comparison:
 ```
 
 Given that `isLegalUTF8` was reported as being `9%` of the overall runtime, you'd expect that skipping it would speed up the code by `9%`,
-but it's not that simple. A large part of the time that used to be spent in `isLegalUTF8` instead went to `convert_UTF8_to_JSON`, while I'm not 100% sure.
-The likely reason is that the larger part of these 9% was spent loading the strings content from RAM into the CPU cache, and not processing it.
+but it's not that simple. A large part of the time that used to be spent in `isLegalUTF8` instead went to `convert_UTF8_to_JSON`. While I'm not 100% sure,
+the likely reason is that the larger part of these 9% was spent loading the strings content from RAM into the CPU cache, and not processing it.
 Since we still go over these bytes later on, they still do the actually costly part of fetching the memory.
 
 Still, a 3% improvement was nice to see.
