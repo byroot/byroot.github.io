@@ -534,3 +534,5 @@ Comparison:
 I have way more optimizations than these ones to talk about, but I feel like it's already a pretty packed blog post.
 
 So I'll stop here and work on some followup soon, hopefully I won't lose my motivation to write :).
+
+Edit: Looks like I didn't, [part two is here](/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html).
