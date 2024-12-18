@@ -222,7 +222,7 @@ there was a reason we didn’t do it yet.</p>
 
 <p>That said, even without inline caches, <code class="language-plaintext highlighter-rouge">respond_to?</code> usually avoids doing the full method lookup.</p>
 
-<p>Given how horrendously expensive they are, method lookups have two layers of cache.is
+<p>Given how horrendously expensive they are, method lookups have two layers of cache.
 Inside the <code class="language-plaintext highlighter-rouge">Class</code> object structure, there is a field called <code class="language-plaintext highlighter-rouge">cc_tbl</code> for “call cache table”.
 That’s essentially a Hash with method names as keys, and “call caches” as values.</p>
 
