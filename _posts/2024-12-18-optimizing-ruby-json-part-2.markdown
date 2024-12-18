@@ -193,7 +193,7 @@ there was a reason we didn't do it yet.
 
 That said, even without inline caches, `respond_to?` usually avoids doing the full method lookup.
 
-Given how horrendously expensive they are, method lookups have two layers of cache.is
+Given how horrendously expensive they are, method lookups have two layers of cache.
 Inside the `Class` object structure, there is a field called `cc_tbl` for "call cache table".
 That's essentially a Hash with method names as keys, and "call caches" as values.
 
