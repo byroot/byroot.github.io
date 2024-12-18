@@ -161,7 +161,8 @@ vm_search_method_fastpath(VALUE cd_owner, struct rb_call_data *cd, VALUE klass)
 {% endhighlight %}
 
 So in short, every single call site has a cache that contains the class of the last object this method was called on, and the result of the previous search.
-Revalidating that cache is just a simple pointer comparison and a check in a bitmap to ensure the cache wasn't invalidated.
+Revalidating that cache is just a simple pointer comparison to ensure we're still dealing with an instance of the same class,
+and a check in a bitmap to ensure the cache wasn't invalidated by something like `define_method` or `remove_method`.
 
 That is a ton less work than the slow path, and since in practice most call sites are "monomorphic", meaning they only ever apply to a single type,
 this cache hit rate is fairly high.
