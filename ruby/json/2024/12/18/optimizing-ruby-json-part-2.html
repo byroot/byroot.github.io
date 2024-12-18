@@ -175,7 +175,7 @@ but to reiterate here, when Ruby compiles your code into YARV bytecode, for ever
 <span class="mo">0001</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:bar</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
 <span class="mo">0003</span> <span class="n">leave</span></code></pre></figure>
 
-<p>Which down the line will end up in []<code class="language-plaintext highlighter-rouge">vm_search_method_fastpath</code>](https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/vm_insnhelper.c#L2256-L2279), that has access to <code class="language-plaintext highlighter-rouge">cc</code> AKA a “callcache”.
+<p>Which down the line will end up in <a href="https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/vm_insnhelper.c#L2256-L2279"><code class="language-plaintext highlighter-rouge">vm_search_method_fastpath</code></a>, that has access to <code class="language-plaintext highlighter-rouge">cc</code> AKA a “callcache”.
 The actual method is a bit hard to read with lots of asserts etc, but here’s a stripped-down version that should be easy to understand:</p>
 
 <figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="k">const</span> <span class="k">struct</span> <span class="n">rb_callcache</span> <span class="o">*</span>
