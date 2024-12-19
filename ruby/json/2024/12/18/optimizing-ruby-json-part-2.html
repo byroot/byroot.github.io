@@ -294,7 +294,7 @@ and avoid <code class="language-plaintext highlighter-rouge">respond_to?</code> 
 <p>So instead of using <code class="language-plaintext highlighter-rouge">Array#compact</code>, we do multiple nested <code class="language-plaintext highlighter-rouge">if thing.nil?</code> checks. It’s more verbose, but much more efficient, allocations
 free, and JIT very well.</p>
 
-<p>The <code class="language-plaintext highlighter-rouge">is_a?(Hash)</code> calls are no performance concern on Ruby 3.2+ thanks to <a href="https://www.youtube.com/watch?v=qlq-iQGtCgs">John Howthorn’s stellar work</a>, so they can stay.</p>
+<p>The <code class="language-plaintext highlighter-rouge">is_a?(Hash)</code> calls are no performance concern on Ruby 3.2+ thanks to <a href="https://www.youtube.com/watch?v=qlq-iQGtCgs">John Hawthorn’s stellar work</a>, so they can stay.</p>
 
 <p>As for <code class="language-plaintext highlighter-rouge">respond_to?</code>, we can’t fully eliminate it, but at least we can avoid calling it when the variable is <code class="language-plaintext highlighter-rouge">nil</code>, which should be most of the time.</p>
 
