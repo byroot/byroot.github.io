@@ -269,7 +269,7 @@ end
 So instead of using `Array#compact`, we do multiple nested `if thing.nil?` checks. It's more verbose, but much more efficient, allocations
 free, and JIT very well.
 
-The `is_a?(Hash)` calls are no performance concern on Ruby 3.2+ thanks to [John Howthorn's stellar work](https://www.youtube.com/watch?v=qlq-iQGtCgs), so they can stay.
+The `is_a?(Hash)` calls are no performance concern on Ruby 3.2+ thanks to [John Hawthorn's stellar work](https://www.youtube.com/watch?v=qlq-iQGtCgs), so they can stay.
 
 As for `respond_to?`, we can't fully eliminate it, but at least we can avoid calling it when the variable is `nil`, which should be most of the time.
 
