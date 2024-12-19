@@ -656,3 +656,5 @@ and I probably won't have time to write in the next few days, so it's probably b
 
 At this rate, and based only on the number of commits I haven't yet covered, I may need 5 or 6 more parts,
 but I hope I won't have to disgress as much as the series progress, and not all commits may be worth talking about.
+
+Edit: [Part two is here](/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html).
