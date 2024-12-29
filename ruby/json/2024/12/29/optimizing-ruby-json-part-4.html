@@ -173,7 +173,7 @@ cache as it’s a very “hot” memory region.</p>
 cases that’s not suitable. You can also not resize (<code class="language-plaintext highlighter-rouge">realloc</code>) it from a callee function.
 Additionally, the stack is limited in size.
 On most modern UNIX-like systems you got a fairly generous <code class="language-plaintext highlighter-rouge">8MiB</code> of stack space for the main thread, but only <code class="language-plaintext highlighter-rouge">1MiB</code> on Windows.
-But many systems give less stack space to additional threads, for instance, Alpine Linux which uses the <code class="language-plaintext highlighter-rouge">musl libc</code> only gives
+And most systems give less stack space to additional threads, for instance, Alpine Linux which uses the <code class="language-plaintext highlighter-rouge">musl libc</code> only gives
 <code class="language-plaintext highlighter-rouge">128kiB</code> of stack space to additional threads, which really isn’t a lot. That’s why it’s not rare for Ruby C extension maintainers
 to get Alpine-specific bug reports.</p>
 
