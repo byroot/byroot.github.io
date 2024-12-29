@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Optimizing Ruby’s JSON, Part 4 | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Optimizing Ruby’s JSON, Part 4" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="In the previous post, we established that as long as ruby/json wasn’t competitive on micro-benchmarks, public perception wouldn’t change. Since what made ruby/json appear so bad on micro-benchmarks was its setup cost, we had to find ways to reduce it further." />
+<meta property="og:description" content="In the previous post, we established that as long as ruby/json wasn’t competitive on micro-benchmarks, public perception wouldn’t change. Since what made ruby/json appear so bad on micro-benchmarks was its setup cost, we had to find ways to reduce it further." />
+<link rel="canonical" href="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2024-12-29T18:21:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Optimizing Ruby’s JSON, Part 4" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2024-12-29T18:21:51+00:00","datePublished":"2024-12-29T18:21:51+00:00","description":"In the previous post, we established that as long as ruby/json wasn’t competitive on micro-benchmarks, public perception wouldn’t change. Since what made ruby/json appear so bad on micro-benchmarks was its setup cost, we had to find ways to reduce it further.","headline":"Optimizing Ruby’s JSON, Part 4","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"},"url":"https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Optimizing Ruby&#39;s JSON, Part 4</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2024-12-29T18:21:51+00:00" itemprop="datePublished">Dec 29, 2024
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p><a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">In the previous post</a>, we established that as long as <code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t competitive on
+micro-benchmarks, public perception wouldn’t change. Since what made <code class="language-plaintext highlighter-rouge">ruby/json</code> appear so bad on micro-benchmarks was its setup cost, we had to
+find ways to reduce it further.</p>
+
+<h2 id="spot-the-seven-differences">Spot the Seven Differences</h2>
+
+<p>So I decided to file <a href="https://github.com/ruby/json/issues/655">this performance discrepancy as a bug</a>, and investigate it as such and started
+profiling Stephen’s micro-benchmark with both <code class="language-plaintext highlighter-rouge">ruby/json</code> and <code class="language-plaintext highlighter-rouge">oj</code>:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_encoding</span> <span class="s2">"small mixed"</span><span class="p">,</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="s2">"string"</span><span class="p">,</span> <span class="p">{</span> <span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span> <span class="p">},</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">]]</span></code></pre></figure>
+
+<p>As mentioned in previous parts, I expected the extra allocation would be the main issue, and that re-using the <code class="language-plaintext highlighter-rouge">JSON::State</code> object would
+put us on par with <code class="language-plaintext highlighter-rouge">Oj</code>, but it’s always good to revalidate our assumptions:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+        json (reuse)   467.051k i/100ms
+                json   252.570k i/100ms
+                  oj   529.741k i/100ms
+Calculating -------------------------------------
+        json (reuse)      4.857M (± 1.9%) i/s  (205.88 ns/i) -     24.287M in   5.001995s
+                json      2.689M (± 0.5%) i/s  (371.86 ns/i) -     13.639M in   5.071865s
+                  oj      5.860M (± 0.6%) i/s  (170.65 ns/i) -     29.665M in   5.062753s
+
+Comparison:
+        json (reuse):  4857171.1 i/s
+                  oj:  5859811.8 i/s - 1.21x  faster
+                json:  2689181.9 i/s - 1.81x  slower
+</code></pre></div></div>
+
+<p>Even without that extra allocation, we were still 20% slower, that was unexpected, and should be fixed before exploring ways to eliminate the <code class="language-plaintext highlighter-rouge">State</code> allocation.</p>
+
+<p>As always, this meant profiling, but this time I profiled both <code class="language-plaintext highlighter-rouge">ruby/json</code> and <code class="language-plaintext highlighter-rouge">Oj</code> to see where the difference might be:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">require</span> <span class="s2">"json"</span>
+
+<span class="n">i</span> <span class="o">=</span> <span class="mi">20_000_000</span>
+<span class="n">data</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="s2">"string"</span><span class="p">,</span> <span class="p">{</span> <span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span> <span class="p">},</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">]]</span>
+<span class="n">state</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">State</span><span class="p">.</span><span class="nf">new</span>
+<span class="k">while</span> <span class="n">i</span> <span class="o">&gt;</span> <span class="mi">0</span>
+  <span class="n">i</span> <span class="o">-=</span> <span class="mi">1</span>
+  <span class="n">state</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p><a href="https://share.firefox.dev/3W29huf">Full profile</a></p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">require</span> <span class="s2">"oj"</span>
+
+<span class="no">Oj</span><span class="p">.</span><span class="nf">default_options</span> <span class="o">=</span> <span class="no">Oj</span><span class="p">.</span><span class="nf">default_options</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="ss">mode: :compat</span><span class="p">)</span>
+
+<span class="n">i</span> <span class="o">=</span> <span class="mi">20_000_000</span>
+<span class="n">data</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="s2">"string"</span><span class="p">,</span> <span class="p">{</span> <span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span> <span class="p">},</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">]]</span>
+<span class="k">while</span> <span class="n">i</span> <span class="o">&gt;</span> <span class="mi">0</span>
+  <span class="n">i</span> <span class="o">-=</span> <span class="mi">1</span>
+  <span class="no">Oj</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p><a href="https://share.firefox.dev/40d4VTH">Full profile</a></p>
+
+<p>Once I got the two profiles, it was a matter of playing “Spot the seven differences”.</p>
+
+<p><img src="/assets/articles/json-4/oj-flamegraph.png" alt="" /></p>
+
+<p><img src="/assets/articles/json-4/json-flamegraph.png" alt="" /></p>
+
+<p>Something that jumped to me quite quickly, is that on that micro-benchmark, even though we’re re-using our <code class="language-plaintext highlighter-rouge">JSON::State</code> object,
+we still spend a significant amount of time allocating and freeing our internal buffer. Still, on the <code class="language-plaintext highlighter-rouge">Oj</code> profile, there wasn’t
+any <code class="language-plaintext highlighter-rouge">malloc</code> or <code class="language-plaintext highlighter-rouge">free</code> call. This suggested that <code class="language-plaintext highlighter-rouge">Oj</code> re-used a persistent buffer across calls or allocated it on the stack.</p>
+
+<p>A quick investigation of <code class="language-plaintext highlighter-rouge">Oj</code>’s source code confirmed it was the latter:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">typedef</span> <span class="k">struct</span> <span class="n">_out</span> <span class="p">{</span>
+    <span class="kt">char</span>      <span class="n">stack_buffer</span><span class="p">[</span><span class="mi">4096</span><span class="p">];</span>
+    <span class="kt">char</span>     <span class="o">*</span><span class="n">buf</span><span class="p">;</span>
+    <span class="kt">char</span>     <span class="o">*</span><span class="n">end</span><span class="p">;</span>
+    <span class="kt">char</span>     <span class="o">*</span><span class="n">cur</span><span class="p">;</span>
+    <span class="c1">// ...</span>
+<span class="p">}</span> <span class="o">*</span><span class="n">Out</span><span class="p">;</span>
+
+<span class="c1">// ...</span>
+
+<span class="cm">/* Document-method: dump
+ * call-seq: dump(obj, options={})
+ *
+ * Dumps an Object (obj) to a string.
+ * - *obj* [_Object_] Object to serialize as an JSON document String
+ * - *options* [_Hash_] same as default_options
+ */</span>
+<span class="k">static</span> <span class="n">VALUE</span> <span class="nf">dump</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="n">VALUE</span> <span class="o">*</span><span class="n">argv</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">self</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="n">dump_arg</span> <span class="n">arg</span><span class="p">;</span>
+    <span class="k">struct</span> <span class="n">_out</span>     <span class="n">out</span><span class="p">;</span> <span class="c1">// Stack allocation</span>
+    <span class="k">struct</span> <span class="n">_options</span> <span class="n">copts</span> <span class="o">=</span> <span class="n">oj_default_options</span><span class="p">;</span>
+    <span class="c1">// ...</span>
+<span class="p">}</span></code></pre></figure>
+
+<h2 id="stack-and-heap">Stack and Heap</h2>
+
+<p>Since this post is intended for people not necessarily familiar with C, I need to explain a bit what the stack and the heap are.
+This is just meant as a quick introduction.</p>
+
+<p>The heap is most of the RAM available on your system, if you need memory to store some data, you call <code class="language-plaintext highlighter-rouge">malloc(number_of_bytes)</code>
+and get a pointer back that is at least as big as the number of bytes you asked for, and once you are done with it you call <code class="language-plaintext highlighter-rouge">free(pointer)</code>.</p>
+
+<p>There are many different allocators (e.g. <code class="language-plaintext highlighter-rouge">jemalloc</code>, <code class="language-plaintext highlighter-rouge">tcmalloc</code>), using various algorithms and techniques to keep track of which memory is used and
+how large each allocated chunk is, but even with the best allocators, <code class="language-plaintext highlighter-rouge">malloc</code> and <code class="language-plaintext highlighter-rouge">free</code> are somewhat costly. In addition, if you don’t know upfront
+how much memory you actually need, you might need to call <code class="language-plaintext highlighter-rouge">new_pointer = realloc(pointer, new_size)</code> to allocate a larger chunk and copy the content
+over and free the old chunk, this is fairly expensive.</p>
+
+<p>And for Ruby C extensions specifically, you generally don’t use <code class="language-plaintext highlighter-rouge">malloc / free / realloc</code>, but <code class="language-plaintext highlighter-rouge">ruby_xmalloc / ruby_xfree / rubyx_realloc</code>,
+which are wrappers around the standard functions which additionally update Ruby GC statistics, so that the GC can trigger after some
+threshold is reached which can further increase the cost of heap allocations.</p>
+
+<p>On the other hand, the stack is a memory region that’s preallocated for each native thread, and that is used to store the current state of a function,
+such as local variables while calling another function. For instance, if you have a function <code class="language-plaintext highlighter-rouge">f</code> with two <code class="language-plaintext highlighter-rouge">int64_t</code> local variables <code class="language-plaintext highlighter-rouge">a</code> and <code class="language-plaintext highlighter-rouge">b</code>,
+<code class="language-plaintext highlighter-rouge">a</code> will be stored at <code class="language-plaintext highlighter-rouge">stack_pointer + 0</code> and <code class="language-plaintext highlighter-rouge">b</code> at <code class="language-plaintext highlighter-rouge">stack_pointer + 8</code>. And if <code class="language-plaintext highlighter-rouge">f</code> calls into another function <code class="language-plaintext highlighter-rouge">f2</code>, the stack pointer will be
+incremented by <code class="language-plaintext highlighter-rouge">16</code> before entering <code class="language-plaintext highlighter-rouge">f2</code>, and restored back to its previous value when returning from <code class="language-plaintext highlighter-rouge">f2</code>.</p>
+
+<p>This makes stack allocations essentially free, at least compared to heap allocations, and it’s almost guaranteed data stored there will be in the CPU
+cache as it’s a very “hot” memory region.</p>
+
+<p>But stack allocation isn’t a silver bullet, first because whenever you return from the function that memory should be considered freed, so in many
+cases that’s not suitable. You can also not resize (<code class="language-plaintext highlighter-rouge">realloc</code>) it from a callee function.
+Additionally, the stack is limited in size.
+On most modern UNIX-like systems you got a fairly generous <code class="language-plaintext highlighter-rouge">8MiB</code> of stack space for the main thread, but only <code class="language-plaintext highlighter-rouge">1MiB</code> on Windows.
+But many systems give less stack space to additional threads, for instance, Alpine Linux which uses the <code class="language-plaintext highlighter-rouge">musl libc</code> only gives
+<code class="language-plaintext highlighter-rouge">128kiB</code> of stack space to additional threads, which really isn’t a lot. That’s why it’s not rare for Ruby C extension maintainers
+to get Alpine-specific bug reports.</p>
+
+<h2 id="stack-allocated-buffer-struct">Stack Allocated Buffer Struct</h2>
+
+<p>So stack allocations should be used carefully and reasonably, the conventional wisdom being to not allocate more than <code class="language-plaintext highlighter-rouge">1kiB</code> on the stack, and to only
+do it in leaf functions (that don’t call any other functions), or functions that only call into a few known functions.</p>
+
+<p>In our case, the <code class="language-plaintext highlighter-rouge">JSON::State#generate</code> method isn’t a leaf function, and might call into arbitrary Ruby code if it needs to call <code class="language-plaintext highlighter-rouge">#to_json</code> or
+<code class="language-plaintext highlighter-rouge">#to_s</code> on an object, so <code class="language-plaintext highlighter-rouge">4kiB</code> seemed a bit excessive to me, but still, we could use stack allocations reasonably to gain some performance.</p>
+
+<p><code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t just doing one <code class="language-plaintext highlighter-rouge">malloc+free</code> call, but two. The first one in <code class="language-plaintext highlighter-rouge">cState_prepare_buffer</code> allocates the <code class="language-plaintext highlighter-rouge">FBuffer</code> struct, which
+contains the buffer metadata, such as its capacity:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">typedef</span> <span class="k">struct</span> <span class="n">FBufferStruct</span> <span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">initial_length</span><span class="p">;</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span><span class="p">;</span>
+    <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">len</span><span class="p">;</span>
+    <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">capa</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">FBuffer</span><span class="p">;</span></code></pre></figure>
+
+<p>That struct being just <code class="language-plaintext highlighter-rouge">32B</code> large, it makes a lot of sense to allocate it on the stack, which would save a pair of <code class="language-plaintext highlighter-rouge">malloc+free</code> calls,
+and only increase the stack size by a negligible amount.</p>
+
+<p><a href="https://github.com/ruby/json/pull/657/">You can see the diff</a>, it’s not complicated but requires a lot of small changes across the
+codebase. Additionally, since the parser also used <code class="language-plaintext highlighter-rouge">FBuffer</code>, it had to be modified too to embed the <code class="language-plaintext highlighter-rouge">FBuffer</code> struct inside the <code class="language-plaintext highlighter-rouge">JSON_ParserStruct</code>
+instead of just keeping a pointer.</p>
+
+<p>The gains were pretty good for such a small change:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   265.435k i/100ms
+Calculating -------------------------------------
+               after      2.831M (± 1.2%) i/s  (353.28 ns/i) -     14.333M in   5.064502s
+
+Comparison:
+              before:  2630445.8 i/s
+               after:  2830628.7 i/s - 1.08x  faster
+</code></pre></div></div>
+
+<p>But still not enough.</p>
+
+<h2 id="efficient-integer-priting">Efficient Integer Priting</h2>
+
+<p>Before continuing on reducing the setup cost, another thing that surprised me on that profile was the <code class="language-plaintext highlighter-rouge">3.6%</code> spent in <code class="language-plaintext highlighter-rouge">fltoa</code>.
+Not that <code class="language-plaintext highlighter-rouge">3.6%</code> is anywhere near a hotspot, but that’s a bit much for such a simple function.
+If you are not familiar with C naming conventions, you may wonder what this function is doing. In the C standard library you have
+several functions to parse strings as various integer types, such as <code class="language-plaintext highlighter-rouge">atoi</code>, <code class="language-plaintext highlighter-rouge">atol</code>, and <code class="language-plaintext highlighter-rouge">atoll</code>, for <code class="language-plaintext highlighter-rouge">int</code>, <code class="language-plaintext highlighter-rouge">long</code> and <code class="language-plaintext highlighter-rouge">long long</code>
+respectively. Why <code class="language-plaintext highlighter-rouge">ato</code>? Because C doesn’t really have strings, but arrays of bytes, hence “array to int” -&gt; <code class="language-plaintext highlighter-rouge">atoi</code>. That’s also probably
+where the Ruby <code class="language-plaintext highlighter-rouge">#to_i</code> method got its name from.</p>
+
+<p>So here, <code class="language-plaintext highlighter-rouge">fltoa</code> is a <code class="language-plaintext highlighter-rouge">long to string</code> conversion function, and <code class="language-plaintext highlighter-rouge">f</code> is just the namespace for the <code class="language-plaintext highlighter-rouge">fbuffer.h</code> file.</p>
+
+<p>Let’s have a look at how it is done:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">void</span> <span class="nf">freverse</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="n">start</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">end</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">char</span> <span class="n">c</span><span class="p">;</span>
+
+    <span class="k">while</span> <span class="p">(</span><span class="n">end</span> <span class="o">&gt;</span> <span class="n">start</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">c</span> <span class="o">=</span> <span class="o">*</span><span class="n">end</span><span class="p">,</span> <span class="o">*</span><span class="n">end</span><span class="o">--</span> <span class="o">=</span> <span class="o">*</span><span class="n">start</span><span class="p">,</span> <span class="o">*</span><span class="n">start</span><span class="o">++</span> <span class="o">=</span> <span class="n">c</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kt">long</span> <span class="nf">fltoa</span><span class="p">(</span><span class="kt">long</span> <span class="n">number</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">buf</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">static</span> <span class="kt">char</span> <span class="n">digits</span><span class="p">[]</span> <span class="o">=</span> <span class="s">"0123456789"</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">sign</span> <span class="o">=</span> <span class="n">number</span><span class="p">;</span>
+    <span class="kt">char</span><span class="o">*</span> <span class="n">tmp</span> <span class="o">=</span> <span class="n">buf</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="n">number</span> <span class="o">=</span> <span class="o">-</span><span class="n">number</span><span class="p">;</span>
+    <span class="k">do</span> <span class="o">*</span><span class="n">tmp</span><span class="o">++</span> <span class="o">=</span> <span class="n">digits</span><span class="p">[</span><span class="n">number</span> <span class="o">%</span> <span class="mi">10</span><span class="p">];</span> <span class="k">while</span> <span class="p">(</span><span class="n">number</span> <span class="o">/=</span> <span class="mi">10</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">*</span><span class="n">tmp</span><span class="o">++</span> <span class="o">=</span> <span class="sc">'-'</span><span class="p">;</span>
+    <span class="n">freverse</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="n">tmp</span> <span class="o">-</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">tmp</span> <span class="o">-</span> <span class="n">buf</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kt">void</span> <span class="nf">fbuffer_append_long</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">long</span> <span class="n">number</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">char</span> <span class="n">buf</span><span class="p">[</span><span class="mi">20</span><span class="p">];</span>
+    <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">fltoa</span><span class="p">(</span><span class="n">number</span><span class="p">,</span> <span class="n">buf</span><span class="p">);</span>
+    <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">fb</span><span class="p">,</span> <span class="n">buf</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>There’s something quite odd here. First, we allocate a <code class="language-plaintext highlighter-rouge">20B</code> buffer on the stack, write the number in reverse in the buffer, reverse the string
+and finally copy the stack buffer onto the output buffer.</p>
+
+<p>In Ruby, it would look like:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">DIGITS</span> <span class="o">=</span> <span class="p">(</span><span class="sc">'0'</span><span class="p">..</span><span class="sc">'9'</span><span class="p">).</span><span class="n">to_a</span>
+
+<span class="n">def</span> <span class="n">fltoa</span><span class="p">(</span><span class="n">number</span><span class="p">)</span>
+  <span class="n">negative</span> <span class="o">=</span> <span class="n">number</span><span class="p">.</span><span class="n">negative</span><span class="o">?</span>
+  <span class="n">number</span> <span class="o">=</span> <span class="n">number</span><span class="p">.</span><span class="n">abs</span>
+
+  <span class="n">buffer</span> <span class="o">=</span> <span class="s">""</span><span class="p">.</span><span class="n">b</span>
+
+  <span class="n">loop</span> <span class="k">do</span>
+    <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="n">DIGITS</span><span class="p">[</span><span class="n">number</span> <span class="o">%</span> <span class="mi">10</span><span class="p">]</span>
+    <span class="n">number</span> <span class="o">/=</span> <span class="mi">10</span>
+    <span class="k">break</span> <span class="k">if</span> <span class="n">number</span><span class="p">.</span><span class="n">zero</span><span class="o">?</span>
+  <span class="n">end</span>
+
+  <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="s">"-"</span> <span class="k">if</span> <span class="n">negative</span>
+
+  <span class="n">buffer</span><span class="p">.</span><span class="n">reverse</span><span class="o">!</span>
+  <span class="n">buffer</span>
+<span class="n">end</span></code></pre></figure>
+
+<p>Writing the number in reverse can be a useful trick if you are appending it to an existing buffer of dynamic length because you don’t know upfront
+how long the number will be nor where the buffer ends.</p>
+
+<p>But here we’re writing inside a stack buffer of known size and then copying the result, so it’s a bit wasteful.</p>
+
+<p>Instead <a href="https://github.com/ruby/json/pull/656">we can write in the stack buffer backward, starting from the end of the buffer</a>,
+and save on having to reverse the digits at the end.</p>
+
+<p>Here again, it’s a small optimization on a very specific part of the generator, so I crafted a micro-benchmark to see if it had the expected benefits:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_encoding</span> <span class="s2">"integers"</span><span class="p">,</span> <span class="p">(</span><span class="mi">1_000_000</span><span class="o">..</span><span class="mi">1_001_000</span><span class="p">).</span><span class="nf">to_a</span></code></pre></figure>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding integers (8009 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after     9.770k i/100ms
+Calculating -------------------------------------
+               after     97.929k (± 0.9%) i/s   (10.21 μs/i) -    498.270k in   5.088542s
+
+Comparison:
+              before:    88309.9 i/s
+               after:    97928.6 i/s - 1.11x  faster
+</code></pre></div></div>
+
+<p>Not bad, probably will only be noticeable for documents containing lots of large integers, but also a very simple optimization.</p>
+
+<p>This can probably be optimized further by writing directly in the output buffer so that we don’t need to copy, and maybe even use <code class="language-plaintext highlighter-rouge">log</code> to
+compute upfront how many digits the number has, but that was good enough for now, so I went back to reduce setup cost.</p>
+
+<h2 id="using-an-rstring-as-buffer">Using an RString as Buffer</h2>
+
+<p>So I went to profile Stephen’s micro-benchmark again:</p>
+
+<p><img src="/assets/articles/json-4/json-flamegraph-2.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4a4oocr">Full profile</a></p>
+
+<p>As you can see, we’re now calling <code class="language-plaintext highlighter-rouge">malloc</code> and <code class="language-plaintext highlighter-rouge">free</code> half as much, but still 100% more than <code class="language-plaintext highlighter-rouge">Oj</code>, and once we’re done filling our buffer,
+we copy all its content in another memory region managed by Ruby when calling <code class="language-plaintext highlighter-rouge">str_enc_new</code> (actually <code class="language-plaintext highlighter-rouge">rb_utf8_str_new</code>, but the profiler doesn’t see it because of inlining).</p>
+
+<p>On micro-benchmarks the copy is negligible, but on larger ones like <code class="language-plaintext highlighter-rouge">twitter.json</code>, it can amount to as much as 4% of the overall runtime:</p>
+
+<p><img src="/assets/articles/json-4/strnew-flamegraph.png" alt="" /></p>
+
+<p>The cost of allocating the String object is close to invisible compared to the copy.</p>
+
+<p>So at that point, you are probably wondering why not simply directly use the Ruby String as our buffer.
+We would let Ruby manage the memory right from the start, save the copy, and for micro-benchmarks, we’d probably
+fit inside an embedded String (more on that later). We also wouldn’t have to be extra careful to free our internal buffer
+in case an exception is raised, so it would eliminate many potential sources of memory leaks.</p>
+
+<p>That’s not exactly a novel idea, there are a bunch of methods inside Ruby itself that do that exact thing, like <code class="language-plaintext highlighter-rouge">Time#strftime</code>,
+and <a href="https://github.com/ruby/json/compare/master...etiennebarrie:json:use-ruby-strings">I had prototyped it a couple of month prior during a pairing session</a>
+with <a href="https://github.com/etiennebarrie">Étienne Barrié</a>.</p>
+
+<p>So I went on <a href="https://github.com/byroot/json/commit/8e61886e009f4df1e447f1808293f8e62a09c90a">to reimplement that again</a>, given so much had
+changed since then that rebasing would have been harder.</p>
+
+<p>Unfortunately, it wasn’t the win you could expect, quite the opposite:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   208.242k i/100ms
+Calculating -------------------------------------
+               after      2.201M (± 1.0%) i/s  (454.41 ns/i) -     11.037M in   5.015727s
+
+Comparison:
+              before:  2648506.5 i/s
+               after:  2200665.8 i/s - 1.20x  slower
+
+
+== Encoding twitter.json (466906 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   205.000 i/100ms
+Calculating -------------------------------------
+               after      2.065k (± 1.5%) i/s  (484.37 μs/i) -     10.455k in   5.065262s
+
+Comparison:
+              before:     2099.6 i/s
+               after:     2064.5 i/s - same-ish: difference falls within error
+</code></pre></div></div>
+
+<p>It didn’t move the needle on real-world benchmarks, and noticeably degraded performance on micro-benchmarks.</p>
+
+<p><img src="/assets/articles/json-4/rstring-buffer-flamegraph.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/40dqHXk">Full profile</a>.</p>
+
+<p>Why did it end up slower? The answer is it depends. When resizing a Ruby String, Ruby doesn’t simply call <code class="language-plaintext highlighter-rouge">realloc</code> like <code class="language-plaintext highlighter-rouge">ruby/json</code>
+does for its raw buffer, it also calls <a href="https://man7.org/linux/man-pages/man3/malloc_usable_size.3.html"><code class="language-plaintext highlighter-rouge">malloc_usable_size</code></a>,
+or the platform equivalent, <a href="https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/malloc_size.3.html"><code class="language-plaintext highlighter-rouge">malloc_size</code> on <code class="language-plaintext highlighter-rouge">macOS</code></a>
+or <a href="https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/msize?view=msvc-170"><code class="language-plaintext highlighter-rouge">_msize</code> on Windows</a>.</p>
+
+<p><img src="/assets/articles/json-4/str-resize-flamegraph.png" alt="" /></p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="kt">void</span> <span class="o">*</span>
+<span class="nf">rb_gc_impl_realloc</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">objspace_ptr</span><span class="p">,</span> <span class="kt">void</span> <span class="o">*</span><span class="n">ptr</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">new_size</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">old_size</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// snip...</span>
+
+    <span class="n">old_size</span> <span class="o">=</span> <span class="n">objspace_malloc_size</span><span class="p">(</span><span class="n">objspace</span><span class="p">,</span> <span class="n">ptr</span><span class="p">,</span> <span class="n">old_size</span><span class="p">);</span>
+    <span class="n">TRY_WITH_GC</span><span class="p">(</span><span class="n">new_size</span><span class="p">,</span> <span class="n">mem</span> <span class="o">=</span> <span class="n">RB_GNUC_EXTENSION_BLOCK</span><span class="p">(</span><span class="n">realloc</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="n">new_size</span><span class="p">)));</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">mem</span><span class="p">)</span> <span class="k">return</span> <span class="n">mem</span><span class="p">;</span>
+    <span class="n">new_size</span> <span class="o">=</span> <span class="n">objspace_malloc_size</span><span class="p">(</span><span class="n">objspace</span><span class="p">,</span> <span class="n">mem</span><span class="p">,</span> <span class="n">new_size</span><span class="p">);</span>
+
+    <span class="c1">// snip...</span>
+
+    <span class="n">objspace_malloc_increase</span><span class="p">(</span><span class="n">objspace</span><span class="p">,</span> <span class="n">mem</span><span class="p">,</span> <span class="n">new_size</span><span class="p">,</span> <span class="n">old_size</span><span class="p">,</span> <span class="n">MEMOP_TYPE_REALLOC</span><span class="p">);</span>
+
+    <span class="k">return</span> <span class="n">mem</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>This again is to keep the GC statistics up to date and give the opportunity to the GC to trigger if some threshold is hit.</p>
+
+<p>Something I wonder though, and that I ought to investigate, is that <code class="language-plaintext highlighter-rouge">rb_gc_impl_realloc</code> is provided with the known <code class="language-plaintext highlighter-rouge">old_size</code>
+and <code class="language-plaintext highlighter-rouge">new_size</code>. Sometimes it’s <code class="language-plaintext highlighter-rouge">0</code> when the called doesn’t know what the size was, but for strings, I believe it does, and yet
+data information is simply ignored unless no <code class="language-plaintext highlighter-rouge">malloc_usable_size</code> is available:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kr">inline</span> <span class="kt">size_t</span>
+<span class="nf">objspace_malloc_size</span><span class="p">(</span><span class="n">rb_objspace_t</span> <span class="o">*</span><span class="n">objspace</span><span class="p">,</span> <span class="kt">void</span> <span class="o">*</span><span class="n">ptr</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">hint</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="cp">#ifdef HAVE_MALLOC_USABLE_SIZE
+</span>    <span class="k">return</span> <span class="n">malloc_usable_size</span><span class="p">(</span><span class="n">ptr</span><span class="p">);</span>
+<span class="cp">#else
+</span>    <span class="k">return</span> <span class="n">hint</span><span class="p">;</span>
+<span class="cp">#endif
+</span><span class="p">}</span></code></pre></figure>
+
+<p>Just like <code class="language-plaintext highlighter-rouge">malloc / free</code> etc, the performance of <code class="language-plaintext highlighter-rouge">malloc_usable_size</code> varies a lot depending on the allocator, I haven’t benchmarked
+on Linux, nor with <code class="language-plaintext highlighter-rouge">jemalloc</code>, so it’s possible that this overhead would have been negligible there, and that may be why Ruby doesn’t try to skip
+that call when possible?</p>
+
+<p>But as mentioned at the end of the last post, we’re here to change perception, so we have to be faster on the machines users are more likely to use
+for benchmarking, and that includes <code class="language-plaintext highlighter-rouge">macOS</code> with the default allocator.</p>
+
+<p>In hindsight, there’s something else I could have done to make using a Ruby string as a buffer faster:</p>
+
+<figure class="highlight"><pre><code class="language-diff" data-lang="diff"><span class="gh">diff --git a/ext/json/ext/generator/generator.c b/ext/json/ext/generator/generator.c
+index da78fe1..effc8cc 100644
+</span><span class="gd">--- a/ext/json/ext/generator/generator.c
+</span><span class="gi">+++ b/ext/json/ext/generator/generator.c
+</span><span class="p">@@ -1024,8 +1024,8 @@</span> static VALUE cState_partial_generate(VALUE self, VALUE obj)
+ {
+     GET_STATE(self);
+ 
+<span class="gd">-    VALUE string = rb_utf8_str_new(NULL, 0);
+-    rb_str_resize(string, state-&gt;buffer_initial_length - 1);
+</span><span class="gi">+    VALUE string = rb_str_buf_new(state-&gt;buffer_initial_length - 1);
++    rb_enc_associate_index(string, utf8_encindex);
+</span>     SBuffer buffer = {
+         .capa = state-&gt;buffer_initial_length - 1,
+         .str = string,</code></pre></figure>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   290.040k i/100ms
+Calculating -------------------------------------
+               after      3.127M (± 0.3%) i/s  (319.84 ns/i) -     15.662M in   5.009436s
+
+Comparison:
+              before:  2616126.5 i/s
+               after:  3126563.7 i/s - 1.20x  faster
+
+
+== Encoding twitter.json (466906 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   202.000 i/100ms
+Calculating -------------------------------------
+               after      2.049k (± 2.9%) i/s  (488.12 μs/i) -     10.302k in   5.032888s
+
+Comparison:
+              before:     2114.5 i/s
+               after:     2048.7 i/s - same-ish: difference falls within error
+</code></pre></div></div>
+
+<p>Quite a nice gain for such a small change, and you may wonder what’s so different about these two lines of code.</p>
+
+<h2 id="variable-width-allocation-and-embeded-objects">Variable Width Allocation and Embeded Objects</h2>
+
+<p>When Ruby allocates an object, it doesn’t call <code class="language-plaintext highlighter-rouge">malloc</code> like a C program would.
+Instead, it asks the GC for what’s called a “slot”, which means a fixed-size memory region inside a memory page
+managed by the GC.</p>
+
+<p>Up until the introduction of <a href="https://bugs.ruby-lang.org/issues/18045">Variable Width Allocation</a> by <a href="https://peterzhu.ca/">Peter Zhu</a> and
+<a href="https://www.eightbitraptor.com/">Matt Valentine-House</a> in Ruby 3.2, all Ruby slots were of the same size: <code class="language-plaintext highlighter-rouge">40B</code>.</p>
+
+<p>You might wonder, how can all objects be of the same size if you are able to create strings or arrays of arbitrary size?
+That’s because many of the Ruby core types, like <code class="language-plaintext highlighter-rouge">String</code>, <code class="language-plaintext highlighter-rouge">Array</code> etc, have multiple internal representations.</p>
+
+<p>To stick with the <code class="language-plaintext highlighter-rouge">String</code> example, here is a simplified version of what its layout looks like in <code class="language-plaintext highlighter-rouge">rstring.h</code>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">struct</span> <span class="n">RString</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="n">RBasic</span> <span class="p">{</span>
+      <span class="n">VALUE</span> <span class="n">flags</span><span class="p">;</span>
+      <span class="n">VALUE</span> <span class="n">klass</span><span class="p">;</span>
+    <span class="p">}</span> <span class="n">basic</span><span class="p">;</span>
+
+    <span class="kt">long</span> <span class="n">len</span><span class="p">;</span>
+    <span class="k">union</span> <span class="p">{</span>
+        <span class="k">struct</span> <span class="p">{</span>
+            <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span><span class="p">;</span>
+            <span class="kt">long</span> <span class="n">capa</span><span class="p">;</span>
+        <span class="p">}</span> <span class="n">heap</span><span class="p">;</span>
+
+        <span class="k">struct</span> <span class="p">{</span>
+            <span class="kt">char</span> <span class="n">ary</span><span class="p">[</span><span class="mi">1</span><span class="p">];</span>
+        <span class="p">}</span> <span class="n">embed</span><span class="p">;</span>
+    <span class="p">}</span> <span class="n">as</span><span class="p">;</span>
+<span class="p">};</span></code></pre></figure>
+
+<p>If you are unfamiliar with C’s <code class="language-plaintext highlighter-rouge">union</code>, it means that the struct can contain either of its sub structs.</p>
+
+<p>To better visualize, here’s how Ruby stores the <code class="language-plaintext highlighter-rouge">"Hello World"</code> string:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>flags</th>
+      <th>klass</th>
+      <th>length</th>
+      <th>*ptr</th>
+      <th>capa</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0x000234</td>
+      <td>0xffeff</td>
+      <td>11</td>
+      <td>Hello Wo</td>
+      <td>rld\0</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Each column is 8 bytes wide, or 64 bits, the first 8 bytes are used to store the object flags, we touched on those before,
+the following 8 bytes are used to store a pointer to the object class, and then the last 24 bytes are used to store the string content inside
+the object slot.</p>
+
+<p>So you can deduce that strings can be as long as 16 ASCII characters, or rather 15 because you need one byte to store the terminating <code class="language-plaintext highlighter-rouge">NULL</code> byte.
+Perhaps you’ve read in the past about this limit, and remember that it was 23 characters. That was true but <a href="https://github.com/ruby/ruby/pull/7908">was recently changed by Peter</a>
+because it required packing the embedded length inside the <code class="language-plaintext highlighter-rouge">flags</code> bitmap instead, which made things slower. That’s your classic memory usage vs execution speed tradeoff.</p>
+
+<p>Now if we try to append content to that string, and go past the embedded capacity, say, 200 characters long, it will call <code class="language-plaintext highlighter-rouge">malloc(201)</code>, store the string content inside
+that malloced region and the object slot will look like this instead:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>flags</th>
+      <th>klass</th>
+      <th>length</th>
+      <th>*ptr</th>
+      <th>capa</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0x000234</td>
+      <td>0xffeff</td>
+      <td>11</td>
+      <td>0xbbbef</td>
+      <td>200</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>But with the introduction of Variable Width Allocation, slots are still fixed-sized in a way, but there are now multiple sizes: <code class="language-plaintext highlighter-rouge">40</code>, <code class="language-plaintext highlighter-rouge">80</code>, <code class="language-plaintext highlighter-rouge">160</code>,
+<code class="language-plaintext highlighter-rouge">320</code> and <code class="language-plaintext highlighter-rouge">640</code>. A slot can’t grow in size, so in the above scenario where we appended to a string, nothing changes, Ruby will still have to “spill”
+the content on the string on the heap by calling <code class="language-plaintext highlighter-rouge">malloc</code>.</p>
+
+<p>If we ask Ruby upfront for a larger string, it will make sure to allocate a larger slot for it if that allows it to be embedded.</p>
+
+<p>In the diff above I call <code class="language-plaintext highlighter-rouge">rb_str_buf_new(state-&gt;buffer_initial_length - 1)</code> or <code class="language-plaintext highlighter-rouge">rb_str_buf_new(511)</code>, so on Ruby 3.2+, Ruby will allocate a <code class="language-plaintext highlighter-rouge">640B</code>
+wide slot for us, allowing us to store up to <code class="language-plaintext highlighter-rouge">640 - 24 - 1 = 615</code> bytes before having to spill on the heap, and given our micro-benchmark only needs <code class="language-plaintext highlighter-rouge">34B</code>
+it means no <code class="language-plaintext highlighter-rouge">malloc</code> nor <code class="language-plaintext highlighter-rouge">free</code> call for the buffer, only a Ruby object slot allocation, which is way cheaper in most cases.</p>
+
+<p>Since we’ll need to ask Ruby to allocate us an object slot so we can return a String object, we might as well ask for a larger one in case we can 
+fit in it. If the cost for a <code class="language-plaintext highlighter-rouge">40B</code> or <code class="language-plaintext highlighter-rouge">640B</code> slot is the same, might as well get the bigger one.</p>
+
+<p>In addition to saving on the <code class="language-plaintext highlighter-rouge">malloc</code> call, we also save on the <code class="language-plaintext highlighter-rouge">free</code> call. When GC triggers and there’s no longer any reference to that slot, Ruby
+will just mark the slot as available.</p>
+
+<h2 id="be-nice-with-your-mother">Be Nice With Your Mother</h2>
+
+<p>But I didn’t think of this at that time, so maybe that’s something I’ll need to revisit in the future.</p>
+
+<p>Instead <a href="https://github.com/ruby/json/commit/fe607f4806ac1d448c1ea5ae7324fdbab183d2ca">I resigned myself to using a stack allocation for the buffer content too</a>.
+But I went with a much more conservative size than <code class="language-plaintext highlighter-rouge">Oj</code>, a mere <code class="language-plaintext highlighter-rouge">512B</code>.</p>
+
+<p>The implementation is rather simple, I simply had to add one extra <code class="language-plaintext highlighter-rouge">type</code> field inside the <code class="language-plaintext highlighter-rouge">FBuffer</code> struct
+to keep track of the buffer provenance, so that we behave a bit differently inside <code class="language-plaintext highlighter-rouge">fbuffer_inc_capa</code> if the buffer is on the stack.
+Here’s the implementation with some extra comments:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span> <span class="nf">fbuffer_inc_capa</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">requested</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">requested</span> <span class="o">&gt;</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span> <span class="o">-</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">len</span><span class="p">))</span> <span class="p">{</span>
+        <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">required</span><span class="p">;</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span><span class="p">))</span> <span class="p">{</span>
+            <span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">ALLOC_N</span><span class="p">(</span><span class="kt">char</span><span class="p">,</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">initial_length</span><span class="p">);</span>
+            <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span> <span class="o">=</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">initial_length</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="k">for</span> <span class="p">(</span><span class="n">required</span> <span class="o">=</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span><span class="p">;</span> <span class="n">requested</span> <span class="o">&gt;</span> <span class="n">required</span> <span class="o">-</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">len</span><span class="p">;</span> <span class="n">required</span> <span class="o">&lt;&lt;=</span> <span class="mi">1</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">required</span> <span class="o">&gt;</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">fb</span><span class="o">-&gt;</span><span class="n">type</span> <span class="o">==</span> <span class="n">STACK</span><span class="p">)</span> <span class="p">{</span>
+                <span class="c1">// If the buffer is on the stack</span>
+                <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">old_buffer</span> <span class="o">=</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span><span class="p">;</span>
+                <span class="c1">// We allocate a larger buffer on the heap</span>
+                <span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">ALLOC_N</span><span class="p">(</span><span class="kt">char</span><span class="p">,</span> <span class="n">required</span><span class="p">);</span>
+                <span class="c1">// Mark it as now being on the heap</span>
+                <span class="n">fb</span><span class="o">-&gt;</span><span class="n">type</span> <span class="o">=</span> <span class="n">HEAP</span><span class="p">;</span>
+                <span class="c1">// Copy the old content over</span>
+                <span class="n">MEMCPY</span><span class="p">(</span><span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span><span class="p">,</span> <span class="n">old_buffer</span><span class="p">,</span> <span class="kt">char</span><span class="p">,</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">len</span><span class="p">);</span>
+            <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                <span class="n">REALLOC_N</span><span class="p">(</span><span class="n">fb</span><span class="o">-&gt;</span><span class="n">ptr</span><span class="p">,</span> <span class="kt">char</span><span class="p">,</span> <span class="n">required</span><span class="p">);</span>
+            <span class="p">}</span>
+            <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span> <span class="o">=</span> <span class="n">required</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>This had the expected effect on micro-benchmarks, a nice 7% improvement:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   286.112k i/100ms
+Calculating -------------------------------------
+               after      3.024M (± 0.7%) i/s  (330.67 ns/i) -     15.164M in   5.014435s
+
+Comparison:
+              before:  2836034.1 i/s
+               after:  3024200.8 i/s - 1.07x  faster
+</code></pre></div></div>
+
+<p>However, I quickly noticed that it also became way slower on real-world benchmarks:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   156.000 i/100ms
+Calculating -------------------------------------
+               after      1.572k (± 1.7%) i/s  (636.13 μs/i) -      7.956k in   5.062686s
+
+Comparison:
+              before:     2134.0 i/s
+               after:     1572.0 i/s - 1.36x  slower
+</code></pre></div></div>
+
+<p>While I was determined to spend a lot of effort in improving <code class="language-plaintext highlighter-rouge">ruby/json</code> performance on micro-benchmarks, degrading its performance
+on real-world benchmarks was a huge red line for me, so I had to figure out what happened.</p>
+
+<p>So I went back to my profiler, and started playing “Spot the seven differences” again:</p>
+
+<p>Before:</p>
+
+<p><img src="/assets/articles/json-4/before.png" alt="" /></p>
+
+<p>After:</p>
+
+<p><img src="/assets/articles/json-4/after.png" alt="" /></p>
+
+<p>It’s far from obvious if you don’t know what to look for, but you can see that before we were spending <code class="language-plaintext highlighter-rouge">50%</code> of the runtime in <code class="language-plaintext highlighter-rouge">generate_json_string</code>, and afterward, only <code class="language-plaintext highlighter-rouge">3.1%</code>
+and instead, the top was trusted by a bunch of smaller functions called by <code class="language-plaintext highlighter-rouge">generate_json_string</code>.</p>
+
+<p>These are the signs of what is sometimes referred to as “the mother of all optimizations”: inlining.</p>
+
+<p>Even in C, calling a function isn’t that cheap. It’s cheap enough that you generally don’t think about it but costly enough that you try to minimize
+function calls in hotspots.</p>
+
+<p>You can do that by refactoring your code to use bigger functions, or even copying code around using macros, but that gets old quickly.
+Instead, the compiler does that for us, it identifies the small leaf functions that aren’t worth calling and instead copies its content inside the parent,
+even if it means copy-pasting it dozens and dozens of times. In addition to saving on the overhead of a function call, it also allows to optimize the caller
+and callee together, sometimes allowing to eliminate redundant computations or simply dead code.</p>
+
+<p>That’s what the <code class="language-plaintext highlighter-rouge">inline</code> keyword is for in the <code class="language-plaintext highlighter-rouge">static inline void fbuffer_inc_capa...</code> declaration, it’s a way to tell the compiler that it would be
+a good idea to inline this function. But that’s all it is, just a compiler hint, the compiler can still decide that you are wrong and that it knows better.</p>
+
+<p>I don’t know the intricacies of <code class="language-plaintext highlighter-rouge">LLVM/clang</code> enough to know for certain why it decided to no longer inline all these functions, but I guessed that it
+was because I made <code class="language-plaintext highlighter-rouge">fbuffer_inc_capa</code> much larger.</p>
+
+<p>The reason it’s important <code class="language-plaintext highlighter-rouge">fbuffer_inc_capa</code> is inlined, is because 99%+ of the time, we return from it after just a very simple comparison:
+<code class="language-plaintext highlighter-rouge">RB_UNLIKELY(requested &gt; fb-&gt;capa - fb-&gt;len)</code>. That’s the part we want inlined, so we don’t pay for a function call just for that check.
+The rest of the function we don’t care so much, we rarely ever go into it.</p>
+
+<p>So to appease the compiler, and make that conditional appealing to inline again, <a href="https://github.com/ruby/json/commit/41c021580e48754aa4bfc71c8363b1fb233ed8c8">the solution would be to extract the large amount of code that is
+rarely executed in another function that isn’t marked as <code class="language-plaintext highlighter-rouge">inline</code></a>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">void</span> <span class="nf">fbuffer_do_inc_capa</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">requested</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// snip...</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span> <span class="nf">fbuffer_inc_capa</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">requested</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">requested</span> <span class="o">&gt;</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">capa</span> <span class="o">-</span> <span class="n">fb</span><span class="o">-&gt;</span><span class="n">len</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">fbuffer_do_inc_capa</span><span class="p">(</span><span class="n">fb</span><span class="p">,</span> <span class="n">requested</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Running the benchmarks again with both changes, we finally had what we expected:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   290.616k i/100ms
+Calculating -------------------------------------
+               after      3.093M (± 0.3%) i/s  (323.30 ns/i) -     15.693M in   5.073761s
+
+Comparison:
+              before:  2829771.3 i/s
+               after:  3093060.4 i/s - 1.09x  faster
+
+
+== Encoding twitter.json (466906 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   208.000 i/100ms
+Calculating -------------------------------------
+               after      2.088k (± 0.5%) i/s  (479.01 μs/i) -     10.608k in   5.081469s
+
+Comparison:
+              before:     2108.3 i/s
+               after:     2087.6 i/s - same-ish: difference falls within error
+</code></pre></div></div>
+
+<p>We squeezed a tiny bit more performance on the micro-benchmark, and the real work benchmark wasn’t noticeably impacted.</p>
+
+<h2 id="to-be-continued">To Be Continued</h2>
+
+<p>At that point, with all the above optimizations, we were now faster than <code class="language-plaintext highlighter-rouge">Oj</code> when reusing the <code class="language-plaintext highlighter-rouge">JSON::State</code> object,
+but still quite a bit slower when allocating it on every call:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+        json (reuse)   619.700k i/100ms
+                json   291.441k i/100ms
+                  oj   532.966k i/100ms
+Calculating -------------------------------------
+        json (reuse)      6.628M (± 4.9%) i/s  (150.88 ns/i) -     33.464M in   5.064856s
+                json      3.191M (± 0.5%) i/s  (313.35 ns/i) -     16.029M in   5.022818s
+                  oj      5.873M (± 0.9%) i/s  (170.26 ns/i) -     29.846M in   5.082087s
+
+Comparison:
+        json (reuse):  6627811.3 i/s
+                  oj:  5873337.3 i/s - 1.13x  slower
+                json:  3191361.6 i/s - 2.08x  slower
+</code></pre></div></div>
+
+<p>So there was no way around it, I had to find how to automatically re-use that <code class="language-plaintext highlighter-rouge">JSON::State</code> object. Or how to not allocate it at all?</p>
+
+<p>But that’s a story for the next part.</p>
+
+  </div><a class="u-url" href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
