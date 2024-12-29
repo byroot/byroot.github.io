@@ -593,9 +593,9 @@ fit in it. If the cost for a <code class="language-plaintext highlighter-rouge">
 <p>In addition to saving on the <code class="language-plaintext highlighter-rouge">malloc</code> call, we also save on the <code class="language-plaintext highlighter-rouge">free</code> call. When GC triggers and there’s no longer any reference to that slot, Ruby
 will just mark the slot as available.</p>
 
-<h2 id="be-nice-with-your-mother">Be Nice With Your Mother</h2>
-
 <p>But I didn’t think of this at that time, so maybe that’s something I’ll need to revisit in the future.</p>
+
+<h2 id="be-nice-to-your-mother">Be Nice To Your Mother</h2>
 
 <p>Instead <a href="https://github.com/ruby/json/commit/fe607f4806ac1d448c1ea5ae7324fdbab183d2ca">I resigned myself to using a stack allocation for the buffer content too</a>.
 But I went with a much more conservative size than <code class="language-plaintext highlighter-rouge">Oj</code>, a mere <code class="language-plaintext highlighter-rouge">512B</code>.</p>
