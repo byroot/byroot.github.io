@@ -547,3 +547,5 @@ reducing the setup cost even further. But that's a story for the next post.
 
 In the next post, we'll dive into how the setup cost was optimized further, and then at some point, we'll have to
 start talking about optimizing the parser.
+
+Edit: [Part four is here](/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html).
