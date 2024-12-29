@@ -139,7 +139,7 @@ But stack allocation isn't a silver bullet, first because whenever you return fr
 cases that's not suitable. You can also not resize (`realloc`) it from a callee function.
 Additionally, the stack is limited in size.
 On most modern UNIX-like systems you got a fairly generous `8MiB` of stack space for the main thread, but only `1MiB` on Windows.
-But many systems give less stack space to additional threads, for instance, Alpine Linux which uses the `musl libc` only gives
+And most systems give less stack space to additional threads, for instance, Alpine Linux which uses the `musl libc` only gives
 `128kiB` of stack space to additional threads, which really isn't a lot. That's why it's not rare for Ruby C extension maintainers
 to get Alpine-specific bug reports.
 
