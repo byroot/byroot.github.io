@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2024-12-29T19:05:38+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 4</title><link href="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 4" /><published>2024-12-29T18:21:51+00:00</published><updated>2024-12-29T18:21:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"><![CDATA[<p><a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">In the previous post</a>, we established that as long as <code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t competitive on
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2024-12-29T19:08:48+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 4</title><link href="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 4" /><published>2024-12-29T18:21:51+00:00</published><updated>2024-12-29T18:21:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"><![CDATA[<p><a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">In the previous post</a>, we established that as long as <code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t competitive on
 micro-benchmarks, public perception wouldn’t change. Since what made <code class="language-plaintext highlighter-rouge">ruby/json</code> appear so bad on micro-benchmarks was its setup cost, we had to
 find ways to reduce it further.</p>
 
@@ -242,6 +242,27 @@ how long the number will be nor where the buffer ends.</p>
 
 <p>Instead <a href="https://github.com/ruby/json/pull/656">we can write in the stack buffer backward, starting from the end of the buffer</a>,
 and save on having to reverse the digits at the end.</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">long</span> <span class="nf">fltoa</span><span class="p">(</span><span class="kt">long</span> <span class="n">number</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">buf</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">static</span> <span class="k">const</span> <span class="kt">char</span> <span class="n">digits</span><span class="p">[]</span> <span class="o">=</span> <span class="s">"0123456789"</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">sign</span> <span class="o">=</span> <span class="n">number</span><span class="p">;</span>
+    <span class="kt">char</span><span class="o">*</span> <span class="n">tmp</span> <span class="o">=</span> <span class="n">buf</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="n">number</span> <span class="o">=</span> <span class="o">-</span><span class="n">number</span><span class="p">;</span>
+    <span class="k">do</span> <span class="o">*</span><span class="n">tmp</span><span class="o">--</span> <span class="o">=</span> <span class="n">digits</span><span class="p">[</span><span class="n">number</span> <span class="o">%</span> <span class="mi">10</span><span class="p">];</span> <span class="k">while</span> <span class="p">(</span><span class="n">number</span> <span class="o">/=</span> <span class="mi">10</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">*</span><span class="n">tmp</span><span class="o">--</span> <span class="o">=</span> <span class="sc">'-'</span><span class="p">;</span>
+    <span class="k">return</span> <span class="n">buf</span> <span class="o">-</span> <span class="n">tmp</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cp">#define LONG_BUFFER_SIZE 20
+</span><span class="k">static</span> <span class="kt">void</span> <span class="nf">fbuffer_append_long</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">long</span> <span class="n">number</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">char</span> <span class="n">buf</span><span class="p">[</span><span class="n">LONG_BUFFER_SIZE</span><span class="p">];</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">buffer_end</span> <span class="o">=</span> <span class="n">buf</span> <span class="o">+</span> <span class="n">LONG_BUFFER_SIZE</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">fltoa</span><span class="p">(</span><span class="n">number</span><span class="p">,</span> <span class="n">buffer_end</span> <span class="o">-</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">fb</span><span class="p">,</span> <span class="n">buffer_end</span> <span class="o">-</span> <span class="n">len</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
 
 <p>Here again, it’s a small optimization on a very specific part of the generator, so I crafted a micro-benchmark to see if it had the expected benefits:</p>
 

@@ -293,6 +293,27 @@ how long the number will be nor where the buffer ends.</p>
 <p>Instead <a href="https://github.com/ruby/json/pull/656">we can write in the stack buffer backward, starting from the end of the buffer</a>,
 and save on having to reverse the digits at the end.</p>
 
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">long</span> <span class="nf">fltoa</span><span class="p">(</span><span class="kt">long</span> <span class="n">number</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">buf</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">static</span> <span class="k">const</span> <span class="kt">char</span> <span class="n">digits</span><span class="p">[]</span> <span class="o">=</span> <span class="s">"0123456789"</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">sign</span> <span class="o">=</span> <span class="n">number</span><span class="p">;</span>
+    <span class="kt">char</span><span class="o">*</span> <span class="n">tmp</span> <span class="o">=</span> <span class="n">buf</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="n">number</span> <span class="o">=</span> <span class="o">-</span><span class="n">number</span><span class="p">;</span>
+    <span class="k">do</span> <span class="o">*</span><span class="n">tmp</span><span class="o">--</span> <span class="o">=</span> <span class="n">digits</span><span class="p">[</span><span class="n">number</span> <span class="o">%</span> <span class="mi">10</span><span class="p">];</span> <span class="k">while</span> <span class="p">(</span><span class="n">number</span> <span class="o">/=</span> <span class="mi">10</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">sign</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">*</span><span class="n">tmp</span><span class="o">--</span> <span class="o">=</span> <span class="sc">'-'</span><span class="p">;</span>
+    <span class="k">return</span> <span class="n">buf</span> <span class="o">-</span> <span class="n">tmp</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cp">#define LONG_BUFFER_SIZE 20
+</span><span class="k">static</span> <span class="kt">void</span> <span class="nf">fbuffer_append_long</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">fb</span><span class="p">,</span> <span class="kt">long</span> <span class="n">number</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">char</span> <span class="n">buf</span><span class="p">[</span><span class="n">LONG_BUFFER_SIZE</span><span class="p">];</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">buffer_end</span> <span class="o">=</span> <span class="n">buf</span> <span class="o">+</span> <span class="n">LONG_BUFFER_SIZE</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">fltoa</span><span class="p">(</span><span class="n">number</span><span class="p">,</span> <span class="n">buffer_end</span> <span class="o">-</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">fb</span><span class="p">,</span> <span class="n">buffer_end</span> <span class="o">-</span> <span class="n">len</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
 <p>Here again, it’s a small optimization on a very specific part of the generator, so I crafted a micro-benchmark to see if it had the expected benefits:</p>
 
 <figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_encoding</span> <span class="s2">"integers"</span><span class="p">,</span> <span class="p">(</span><span class="mi">1_000_000</span><span class="o">..</span><span class="mi">1_001_000</span><span class="p">).</span><span class="nf">to_a</span></code></pre></figure>
