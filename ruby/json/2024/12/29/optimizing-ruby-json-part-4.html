@@ -581,7 +581,7 @@ that malloced region and the object slot will look like this instead:</p>
 <code class="language-plaintext highlighter-rouge">320</code> and <code class="language-plaintext highlighter-rouge">640</code>. A slot can’t grow in size, so in the above scenario where we appended to a string, nothing changes, Ruby will still have to “spill”
 the content on the string on the heap by calling <code class="language-plaintext highlighter-rouge">malloc</code>.</p>
 
-<p>If we ask Ruby upfront for a larger string, it will make sure to allocate a larger slot for it if that allows it to be embedded.</p>
+<p>However, if we ask Ruby upfront for a larger string, it will make sure to allocate a larger slot for it if that allows it to be embedded.</p>
 
 <p>In the diff above I call <code class="language-plaintext highlighter-rouge">rb_str_buf_new(state-&gt;buffer_initial_length - 1)</code> or <code class="language-plaintext highlighter-rouge">rb_str_buf_new(511)</code>, so on Ruby 3.2+, Ruby will allocate a <code class="language-plaintext highlighter-rouge">640B</code>
 wide slot for us, allowing us to store up to <code class="language-plaintext highlighter-rouge">640 - 24 - 1 = 615</code> bytes before having to spill on the heap, and given our micro-benchmark only needs <code class="language-plaintext highlighter-rouge">34B</code>
