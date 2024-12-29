@@ -266,6 +266,29 @@ But here we're writing inside a stack buffer of known size and then copying the 
 Instead [we can write in the stack buffer backward, starting from the end of the buffer](https://github.com/ruby/json/pull/656),
 and save on having to reverse the digits at the end.
 
+{% highlight c %}
+static long fltoa(long number, char *buf)
+{
+    static const char digits[] = "0123456789";
+    long sign = number;
+    char* tmp = buf;
+
+    if (sign < 0) number = -number;
+    do *tmp-- = digits[number % 10]; while (number /= 10);
+    if (sign < 0) *tmp-- = '-';
+    return buf - tmp;
+}
+
+#define LONG_BUFFER_SIZE 20
+static void fbuffer_append_long(FBuffer *fb, long number)
+{
+    char buf[LONG_BUFFER_SIZE];
+    char *buffer_end = buf + LONG_BUFFER_SIZE;
+    long len = fltoa(number, buffer_end - 1);
+    fbuffer_append(fb, buffer_end - len, len);
+}
+{% endhighlight %}
+
 Here again, it's a small optimization on a very specific part of the generator, so I crafted a micro-benchmark to see if it had the expected benefits:
 
 {% highlight ruby %}
