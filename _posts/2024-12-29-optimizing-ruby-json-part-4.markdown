@@ -535,7 +535,7 @@ But with the introduction of Variable Width Allocation, slots are still fixed-si
 `320` and `640`. A slot can't grow in size, so in the above scenario where we appended to a string, nothing changes, Ruby will still have to "spill"
 the content on the string on the heap by calling `malloc`.
 
-If we ask Ruby upfront for a larger string, it will make sure to allocate a larger slot for it if that allows it to be embedded.
+However, if we ask Ruby upfront for a larger string, it will make sure to allocate a larger slot for it if that allows it to be embedded.
 
 In the diff above I call `rb_str_buf_new(state->buffer_initial_length - 1)` or `rb_str_buf_new(511)`, so on Ruby 3.2+, Ruby will allocate a `640B`
 wide slot for us, allowing us to store up to `640 - 24 - 1 = 615` bytes before having to spill on the heap, and given our micro-benchmark only needs `34B`
