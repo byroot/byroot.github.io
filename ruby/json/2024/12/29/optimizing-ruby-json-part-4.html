@@ -570,7 +570,7 @@ that malloced region and the object slot will look like this instead:</p>
     <tr>
       <td>0x000234</td>
       <td>0xffeff</td>
-      <td>11</td>
+      <td>200</td>
       <td>0xbbbef</td>
       <td>200</td>
     </tr>
@@ -595,7 +595,7 @@ will just mark the slot as available.</p>
 
 <p>But I didn’t think of this at that time, so maybe that’s something I’ll need to revisit in the future.</p>
 
-<h2 id="be-nice-to-your-mother">Be Nice To Your Mother</h2>
+<h2 id="be-nice-to--your-mother">Be Nice To  Your Mother</h2>
 
 <p>Instead <a href="https://github.com/ruby/json/commit/fe607f4806ac1d448c1ea5ae7324fdbab183d2ca">I resigned myself to using a stack allocation for the buffer content too</a>.
 But I went with a much more conservative size than <code class="language-plaintext highlighter-rouge">Oj</code>, a mere <code class="language-plaintext highlighter-rouge">512B</code>.</p>
