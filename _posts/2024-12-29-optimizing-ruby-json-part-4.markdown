@@ -547,9 +547,9 @@ fit in it. If the cost for a `40B` or `640B` slot is the same, might as well get
 In addition to saving on the `malloc` call, we also save on the `free` call. When GC triggers and there's no longer any reference to that slot, Ruby
 will just mark the slot as available.
 
-## Be Nice With Your Mother
-
 But I didn't think of this at that time, so maybe that's something I'll need to revisit in the future.
+
+## Be Nice To Your Mother
 
 Instead [I resigned myself to using a stack allocation for the buffer content too](https://github.com/ruby/json/commit/fe607f4806ac1d448c1ea5ae7324fdbab183d2ca).
 But I went with a much more conservative size than `Oj`, a mere `512B`.
