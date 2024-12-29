@@ -529,7 +529,7 @@ that malloced region and the object slot will look like this instead:
 
 | flags    | klass   | length | *ptr     | capa  |
 |----------|---------|--------|----------|-------|
-| 0x000234 | 0xffeff | 11     | 0xbbbef  | 200   |
+| 0x000234 | 0xffeff | 200    | 0xbbbef  | 200   |
 
 But with the introduction of Variable Width Allocation, slots are still fixed-sized in a way, but there are now multiple sizes: `40`, `80`, `160`,
 `320` and `640`. A slot can't grow in size, so in the above scenario where we appended to a string, nothing changes, Ruby will still have to "spill"
@@ -549,7 +549,7 @@ will just mark the slot as available.
 
 But I didn't think of this at that time, so maybe that's something I'll need to revisit in the future.
 
-## Be Nice To Your Mother
+## Be Nice To  Your Mother
 
 Instead [I resigned myself to using a stack allocation for the buffer content too](https://github.com/ruby/json/commit/fe607f4806ac1d448c1ea5ae7324fdbab183d2ca).
 But I went with a much more conservative size than `Oj`, a mere `512B`.
