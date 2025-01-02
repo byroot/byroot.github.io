@@ -123,7 +123,7 @@ how large each allocated chunk is, but even with the best allocators, `malloc` a
 how much memory you actually need, you might need to call `new_pointer = realloc(pointer, new_size)` to allocate a larger chunk and copy the content
 over and free the old chunk, this is fairly expensive.
 
-And for Ruby C extensions specifically, you generally don't use `malloc / free / realloc`, but `ruby_xmalloc / ruby_xfree / rubyx_realloc`,
+And for Ruby C extensions specifically, you generally don't use `malloc / free / realloc`, but `ruby_xmalloc / ruby_xfree / ruby_xrealloc`,
 which are wrappers around the standard functions which additionally update Ruby GC statistics, so that the GC can trigger after some
 threshold is reached which can further increase the cost of heap allocations.
 
@@ -187,7 +187,7 @@ Comparison:
 
 But still not enough.
 
-## Efficient Integer Priting
+## Efficient Integer Printing
 
 Before continuing on reducing the setup cost, another thing that surprised me on that profile was the `3.6%` spent in `fltoa`.
 Not that `3.6%` is anywhere near a hotspot, but that's a bit much for such a simple function.
