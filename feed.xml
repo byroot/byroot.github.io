@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2024-12-29T21:00:06+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 4</title><link href="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 4" /><published>2024-12-29T18:21:51+00:00</published><updated>2024-12-29T18:21:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"><![CDATA[<p><a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">In the previous post</a>, we established that as long as <code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t competitive on
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-02T18:14:27+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 4</title><link href="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 4" /><published>2024-12-29T18:21:51+00:00</published><updated>2024-12-29T18:21:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html"><![CDATA[<p><a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">In the previous post</a>, we established that as long as <code class="language-plaintext highlighter-rouge">ruby/json</code> wasn’t competitive on
 micro-benchmarks, public perception wouldn’t change. Since what made <code class="language-plaintext highlighter-rouge">ruby/json</code> appear so bad on micro-benchmarks was its setup cost, we had to
 find ways to reduce it further.</p>
 
@@ -107,7 +107,7 @@ how large each allocated chunk is, but even with the best allocators, <code clas
 how much memory you actually need, you might need to call <code class="language-plaintext highlighter-rouge">new_pointer = realloc(pointer, new_size)</code> to allocate a larger chunk and copy the content
 over and free the old chunk, this is fairly expensive.</p>
 
-<p>And for Ruby C extensions specifically, you generally don’t use <code class="language-plaintext highlighter-rouge">malloc / free / realloc</code>, but <code class="language-plaintext highlighter-rouge">ruby_xmalloc / ruby_xfree / rubyx_realloc</code>,
+<p>And for Ruby C extensions specifically, you generally don’t use <code class="language-plaintext highlighter-rouge">malloc / free / realloc</code>, but <code class="language-plaintext highlighter-rouge">ruby_xmalloc / ruby_xfree / ruby_xrealloc</code>,
 which are wrappers around the standard functions which additionally update Ruby GC statistics, so that the GC can trigger after some
 threshold is reached which can further increase the cost of heap allocations.</p>
 
@@ -168,7 +168,7 @@ Comparison:
 
 <p>But still not enough.</p>
 
-<h2 id="efficient-integer-priting">Efficient Integer Priting</h2>
+<h2 id="efficient-integer-printing">Efficient Integer Printing</h2>
 
 <p>Before continuing on reducing the setup cost, another thing that surprised me on that profile was the <code class="language-plaintext highlighter-rouge">3.6%</code> spent in <code class="language-plaintext highlighter-rouge">fltoa</code>.
 Not that <code class="language-plaintext highlighter-rouge">3.6%</code> is anywhere near a hotspot, but that’s a bit much for such a simple function.
