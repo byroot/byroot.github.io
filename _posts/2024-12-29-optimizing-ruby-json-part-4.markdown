@@ -193,10 +193,10 @@ Before continuing on reducing the setup cost, another thing that surprised me on
 Not that `3.6%` is anywhere near a hotspot, but that's a bit much for such a simple function.
 If you are not familiar with C naming conventions, you may wonder what this function is doing. In the C standard library you have
 several functions to parse strings as various integer types, such as `atoi`, `atol`, and `atoll`, for `int`, `long` and `long long`
-respectively. Why `ato`? Because C doesn't really have strings, but arrays of bytes, hence "array to int" -> `atoi`. That's also probably
+respectively. Why `ato`? Because these functions assume a stream of ASCII encoded bytes[^1], hence "ASCII to int" -> `atoi`. That's also probably
 where the Ruby `#to_i` method got its name from.
 
-So here, `fltoa` is a `long to string` conversion function, and `f` is just the namespace for the `fbuffer.h` file.
+So here, `fltoa` is a `long to ASCII` conversion function, and `f` is just the namespace for the `fbuffer.h` file.
 
 Let's have a look at how it is done:
 
@@ -728,3 +728,5 @@ Comparison:
 So there was no way around it, I had to find how to automatically re-use that `JSON::State` object. Or how to not allocate it at all?
 
 But that's a story for the next part.
+
+[^1]: In the initial version of this post I wrongly assumed the `a` suffix was referring to "arrays of bytes". Thanks to f33d5173 and ciupicri for lettingme know the real meaning on HN.
