@@ -224,10 +224,10 @@ Comparison:
 Not that <code class="language-plaintext highlighter-rouge">3.6%</code> is anywhere near a hotspot, but that’s a bit much for such a simple function.
 If you are not familiar with C naming conventions, you may wonder what this function is doing. In the C standard library you have
 several functions to parse strings as various integer types, such as <code class="language-plaintext highlighter-rouge">atoi</code>, <code class="language-plaintext highlighter-rouge">atol</code>, and <code class="language-plaintext highlighter-rouge">atoll</code>, for <code class="language-plaintext highlighter-rouge">int</code>, <code class="language-plaintext highlighter-rouge">long</code> and <code class="language-plaintext highlighter-rouge">long long</code>
-respectively. Why <code class="language-plaintext highlighter-rouge">ato</code>? Because C doesn’t really have strings, but arrays of bytes, hence “array to int” -&gt; <code class="language-plaintext highlighter-rouge">atoi</code>. That’s also probably
+respectively. Why <code class="language-plaintext highlighter-rouge">ato</code>? Because these functions assume a stream of ASCII encoded bytes<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>, hence “ASCII to int” -&gt; <code class="language-plaintext highlighter-rouge">atoi</code>. That’s also probably
 where the Ruby <code class="language-plaintext highlighter-rouge">#to_i</code> method got its name from.</p>
 
-<p>So here, <code class="language-plaintext highlighter-rouge">fltoa</code> is a <code class="language-plaintext highlighter-rouge">long to string</code> conversion function, and <code class="language-plaintext highlighter-rouge">f</code> is just the namespace for the <code class="language-plaintext highlighter-rouge">fbuffer.h</code> file.</p>
+<p>So here, <code class="language-plaintext highlighter-rouge">fltoa</code> is a <code class="language-plaintext highlighter-rouge">long to ASCII</code> conversion function, and <code class="language-plaintext highlighter-rouge">f</code> is just the namespace for the <code class="language-plaintext highlighter-rouge">fbuffer.h</code> file.</p>
 
 <p>Let’s have a look at how it is done:</p>
 
@@ -766,6 +766,14 @@ Comparison:
 <p>So there was no way around it, I had to find how to automatically re-use that <code class="language-plaintext highlighter-rouge">JSON::State</code> object. Or how to not allocate it at all?</p>
 
 <p>But that’s a story for the next part.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>In the initial version of this post I wrongly assumed the <code class="language-plaintext highlighter-rouge">a</code> suffix was referring to “arrays of bytes”. Thanks to f33d5173 and ciupicri for lettingme know the real meaning on HN. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
 
   </div><a class="u-url" href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html" hidden></a>
 </article>
