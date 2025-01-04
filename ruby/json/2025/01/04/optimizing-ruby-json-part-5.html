@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Optimizing Ruby’s JSON, Part 5 | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Optimizing Ruby’s JSON, Part 5" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="In the previous post, we showed how we eliminated two malloc/free pairs of calls when generating small JSON documents, and how that put us ahead of Oj when reusing the JSON::State object." />
+<meta property="og:description" content="In the previous post, we showed how we eliminated two malloc/free pairs of calls when generating small JSON documents, and how that put us ahead of Oj when reusing the JSON::State object." />
+<link rel="canonical" href="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-01-04T19:28:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Optimizing Ruby’s JSON, Part 5" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-01-04T19:28:51+00:00","datePublished":"2025-01-04T19:28:51+00:00","description":"In the previous post, we showed how we eliminated two malloc/free pairs of calls when generating small JSON documents, and how that put us ahead of Oj when reusing the JSON::State object.","headline":"Optimizing Ruby’s JSON, Part 5","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html"},"url":"https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Optimizing Ruby&#39;s JSON, Part 5</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-01-04T19:28:51+00:00" itemprop="datePublished">Jan 4, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p><a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">In the previous post</a>, we showed how we eliminated two <code class="language-plaintext highlighter-rouge">malloc/free</code> pairs of calls
+when generating small JSON documents, and how that put us ahead of Oj when reusing the <code class="language-plaintext highlighter-rouge">JSON::State</code> object.</p>
+
+<p>But that API isn’t the one people use, so if we wanted to come out ahead in the micro-benchmarks users might perform themselves, we had to
+find a way to get rid of that <code class="language-plaintext highlighter-rouge">JSON::State</code> allocation too, or to somehow make it faster.</p>
+
+<h2 id="typed-data">Typed Data</h2>
+
+<p>Because that <code class="language-plaintext highlighter-rouge">JSON::State</code> allocation, isn’t just about any allocations. In Ruby, everything is an object, but not all objects are created equal.
+In previous parts I touched on how some objects aren’t actually allocated, and called “immediates”, I also touched on how core objects like <code class="language-plaintext highlighter-rouge">String</code> and
+<code class="language-plaintext highlighter-rouge">Array</code> has both “embedded” and “heap” representations.</p>
+
+<p><code class="language-plaintext highlighter-rouge">JSON::State</code> is a type defined in C from the extension, using the <code class="language-plaintext highlighter-rouge">TypedData</code> API. <a href="https://blog.peterzhu.ca/ruby-c-ext-part-7/">Peter Zhu has a great blog post that goes in-depth into
+how these work and how to use them</a>, but I’ll offer a quicker explanation here.</p>
+
+<p>To define a custom object type, you start by defining a C structure that holds the type metadata:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="k">const</span> <span class="n">rb_data_type_t</span> <span class="n">JSON_Generator_State_type</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s">"JSON/Generator/State"</span><span class="p">,</span>
+    <span class="p">{</span>
+        <span class="p">.</span><span class="n">dmark</span> <span class="o">=</span> <span class="n">State_mark</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">dfree</span> <span class="o">=</span> <span class="n">State_free</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">dsize</span> <span class="o">=</span> <span class="n">State_memsize</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">dcompact</span> <span class="o">=</span> <span class="n">State_compact</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="n">RUBY_TYPED_WB_PROTECTED</span> <span class="o">|</span> <span class="n">RUBY_TYPED_FREE_IMMEDIATELY</span> <span class="o">|</span> <span class="n">RUBY_TYPED_FROZEN_SHAREABLE</span><span class="p">,</span>
+<span class="p">};</span></code></pre></figure>
+
+<p>You can read Peter’s post if you want to know all the juicy details, but in short, it’s a collection of flags and callbacks to instruct the GC
+on how to deal with this object. For instance <code class="language-plaintext highlighter-rouge">State_mark</code> allows the GC to list all the references this object has to other objects.</p>
+
+<p>And then you define an allocator function, that will replace the default <code class="language-plaintext highlighter-rouge">Class#allocate</code> method for that class when you register it with <code class="language-plaintext highlighter-rouge">rb_define_alloc_func</code>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">cState_s_allocate</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">klass</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">JSON_Generator_State</span> <span class="o">*</span><span class="n">state</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">obj</span> <span class="o">=</span> <span class="n">TypedData_Make_Struct</span><span class="p">(</span>
+      <span class="n">klass</span><span class="p">,</span>
+      <span class="n">JSON_Generator_State</span><span class="p">,</span>
+      <span class="o">&amp;</span><span class="n">JSON_Generator_State_type</span><span class="p">,</span>
+      <span class="n">state</span>
+    <span class="p">);</span>
+    <span class="n">state</span><span class="o">-&gt;</span><span class="n">max_nesting</span> <span class="o">=</span> <span class="mi">100</span><span class="p">;</span>
+    <span class="n">state</span><span class="o">-&gt;</span><span class="n">buffer_initial_length</span> <span class="o">=</span> <span class="n">FBUFFER_INITIAL_LENGTH_DEFAULT</span><span class="p">;</span>
+    <span class="k">return</span> <span class="n">obj</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="c1">// snip...</span>
+
+<span class="kt">void</span> <span class="nf">Init_generator</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">mJSON</span> <span class="o">=</span> <span class="n">rb_define_module</span><span class="p">(</span><span class="s">"JSON"</span><span class="p">);</span>
+    <span class="n">VALUE</span> <span class="n">mExt</span> <span class="o">=</span> <span class="n">rb_define_module_under</span><span class="p">(</span><span class="n">mJSON</span><span class="p">,</span> <span class="s">"Ext"</span><span class="p">);</span>
+    <span class="n">VALUE</span> <span class="n">mGenerator</span> <span class="o">=</span> <span class="n">rb_define_module_under</span><span class="p">(</span><span class="n">mExt</span><span class="p">,</span> <span class="s">"Generator"</span><span class="p">);</span>
+
+    <span class="n">cState</span> <span class="o">=</span> <span class="n">rb_define_class_under</span><span class="p">(</span><span class="n">mGenerator</span><span class="p">,</span> <span class="s">"State"</span><span class="p">,</span> <span class="n">rb_cObject</span><span class="p">);</span>
+    <span class="n">rb_define_alloc_func</span><span class="p">(</span><span class="n">cState</span><span class="p">,</span> <span class="n">cState_s_allocate</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>The <code class="language-plaintext highlighter-rouge">TypedData_Make_Struct</code> macro takes care of allocating a <code class="language-plaintext highlighter-rouge">40B</code> object slots of type <code class="language-plaintext highlighter-rouge">T_DATA</code>, as well as to call <code class="language-plaintext highlighter-rouge">ruby_xcalloc(sizeof(JSON_Generator_State))</code>
+so we have some heap memory to store the object state.</p>
+
+<p>The difference between <code class="language-plaintext highlighter-rouge">calloc</code> and <code class="language-plaintext highlighter-rouge">malloc</code>, is that when you use <code class="language-plaintext highlighter-rouge">malloc</code>, the memory that is allocated for you is left as is, with whatever data was
+in it when it was last freed. Whereas <code class="language-plaintext highlighter-rouge">calloc</code> will do some extra work to fill that memory with zeros.</p>
+
+<p>The struct used to interpret the content of the <code class="language-plaintext highlighter-rouge">40B</code> slot is <a href="https://github.com/ruby/ruby/blob/c936699431477a565b9e4036bc3b1fc186ac9918/include/ruby/internal/core/rtypeddata.h#L350-L371"><code class="language-plaintext highlighter-rouge">RTypedData</code> defined in <code class="language-plaintext highlighter-rouge">rtypeddata.h</code></a>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">struct</span> <span class="n">RTypedData</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="n">RBasic</span> <span class="n">basic</span><span class="p">;</span>
+    <span class="k">const</span> <span class="n">rb_data_type_t</span> <span class="o">*</span><span class="k">const</span> <span class="n">type</span><span class="p">;</span>
+    <span class="k">const</span> <span class="n">VALUE</span> <span class="n">typed_flag</span><span class="p">;</span>
+    <span class="kt">void</span> <span class="o">*</span><span class="n">data</span><span class="p">;</span>
+<span class="p">};</span></code></pre></figure>
+
+<table>
+  <thead>
+    <tr>
+      <th>flags</th>
+      <th>klass</th>
+      <th>type</th>
+      <th>typed_flag</th>
+      <th>*data</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0x0c</td>
+      <td>0xffeff</td>
+      <td>0xbbbef</td>
+      <td>0x1</td>
+      <td>0xcccdef</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>As for the <code class="language-plaintext highlighter-rouge">JSON_Generator_State</code> struct, it’s a simple struct holding our configuration, for a total of <code class="language-plaintext highlighter-rouge">72B</code> on 64-bit platforms:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">typedef</span> <span class="k">struct</span> <span class="n">JSON_Generator_StateStruct</span> <span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">indent</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">space</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">space_before</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">object_nl</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">array_nl</span><span class="p">;</span>
+
+    <span class="kt">long</span> <span class="n">max_nesting</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">depth</span><span class="p">;</span>
+    <span class="kt">long</span> <span class="n">buffer_initial_length</span><span class="p">;</span>
+
+    <span class="n">bool</span> <span class="n">allow_nan</span><span class="p">;</span>
+    <span class="n">bool</span> <span class="n">ascii_only</span><span class="p">;</span>
+    <span class="n">bool</span> <span class="n">script_safe</span><span class="p">;</span>
+    <span class="n">bool</span> <span class="n">strict</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">JSON_Generator_State</span><span class="p">;</span></code></pre></figure>
+
+<p>With this explanation, you may have understood that it’s not a simple object allocation we’re dealing with, but a noticeably more expensive operation.
+This can be easily confirmed by profiling yet again:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">require</span> <span class="s2">"json"</span>
+
+<span class="n">i</span> <span class="o">=</span> <span class="mi">20_000_000</span>
+<span class="n">data</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="s2">"string"</span><span class="p">,</span> <span class="p">{</span> <span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span> <span class="p">},</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">]]</span>
+<span class="k">while</span> <span class="n">i</span> <span class="o">&gt;</span> <span class="mi">0</span>
+  <span class="n">i</span> <span class="o">-=</span> <span class="mi">1</span>
+  <span class="no">JSON</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>If we consider the cost of the object slot allocation, plus the heap allocation, and also the extra cost of Ruby’s GC having to call
+<code class="language-plaintext highlighter-rouge">ruby_xfree</code> when these objects are garbage collected, it all amounts to practically 30% of the overall runtime, which is massive:</p>
+
+<p><img src="/assets/articles/json-5/json-state-alloc-flamegraph.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/40odFp1">Full profile</a></p>
+
+<p>In addition, you can see inside <code class="language-plaintext highlighter-rouge">rb_class_new_instance_pass_kw</code> that we’re spending quite a bit of time inside <code class="language-plaintext highlighter-rouge">rb_call0</code>.
+That’s because when you call <code class="language-plaintext highlighter-rouge">.new</code> on a Ruby class, it pretty much works like this:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">Class</span>
+  <span class="k">def</span> <span class="nf">new</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">instance</span> <span class="o">=</span> <span class="n">allocate</span>
+    <span class="n">instance</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="ss">:initialize</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+    <span class="n">instance</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>But as of Ruby 3.4, this logic is implemented in C, so it can’t benefit from an inline cache and other niceties,
+instead, it has to rely on the Global Call Cache Cache Table, but also forwards arguments from C, which isn’t the most efficient.</p>
+
+<p>That’s why <a href="https://github.com/ruby/ruby/pull/9289">Aaron Patterson has been trying to reimplement <code class="language-plaintext highlighter-rouge">Class#new</code> in Ruby</a>, but it’s not quite ready yet.</p>
+
+<h2 id="embeding-rtypeddata">Embeding RTypedData</h2>
+
+<p>As you might have noticed on the flame graph, allocating the object slot really is the least of our problems, it’s really the heap allocation and
+deallocation that’s impacting performance very negatively.
+Given that the existing API somewhat imposes a <code class="language-plaintext highlighter-rouge">JSON::State</code> allocation, if we can’t eliminate it, we can instead try to make it cheaper.</p>
+
+<p>Since our <code class="language-plaintext highlighter-rouge">JSON_Generator_State</code> is only <code class="language-plaintext highlighter-rouge">72B</code>, with the extra <code class="language-plaintext highlighter-rouge">32B</code> imposed by <code class="language-plaintext highlighter-rouge">RTypedData</code> it could theoretically fit in a <code class="language-plaintext highlighter-rouge">160B</code> slot,
+which would be perfect.</p>
+
+<p>Back in 2023, <a href="https://github.com/ruby/ruby/pull/7440">I paired with Peter on allowing <code class="language-plaintext highlighter-rouge">TypedData</code> objects to be embeded</a>,
+and we used that new capability to embed various core classes, <a href="https://github.com/ruby/ruby/pull/7440">the most notable one being <code class="language-plaintext highlighter-rouge">Time</code></a>, and it
+did almost cut the cost of <code class="language-plaintext highlighter-rouge">Time.now</code> in half:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>|                        |compare-ruby|built-ruby|
+|:-----------------------|-----------:|---------:|
+|Time.now                |     12.150M|   22.025M|
+|                        |           -|     1.81x|
+|Time.now(in: "+09:00")  |      3.545M|    4.794M|
+|                        |           -|     1.35x|
+</code></pre></div></div>
+
+<p>So embedding <code class="language-plaintext highlighter-rouge">JSON::State</code> would be a big win with very little effort.
+I’d just need to add <code class="language-plaintext highlighter-rouge">RUBY_TYPED_EMBEDDABLE</code> in the <code class="language-plaintext highlighter-rouge">JSON_Generator_State_type</code>, and remove the <code class="language-plaintext highlighter-rouge">ruby_xfree</code> call in <code class="language-plaintext highlighter-rouge">State_free</code>, and that’s it,
+the setup cost would be cut in half.</p>
+
+<p>Except there was one problem: we never made <code class="language-plaintext highlighter-rouge">RUBY_TYPED_EMBEDDABLE</code> a public API, as we thought it might be too easy to shoot yourself in
+the foot with it, and we didn’t want to expose the C API users to a whole new class of hard-to-understand crashes.</p>
+
+<p>Embedded objects are hard to use from C because, since Ruby 2.7, Ruby’s GC is capable of compacting the heap, which means moving live objects from one
+slot to another. So when working in C with an embedded object, you have to be very careful not to hold onto a native pointer that is pointing inside
+the object slot, because if the GC moves the object, the pointer you previously got is now pointing inside a totally different object, which can
+cause all sorts of memory corruption issues, and from experience these are among the hardest bugs to investigate and fix.</p>
+
+<p>Maybe we should still expose this API, it could definitely lead to some nice performance gains for some native gems, but that requires some careful
+considerations, and would take time. When I was working on this patch, we were already almost in November, way too late in the Ruby release cycle to
+hope to get a decision before the Ruby 3.4 release.</p>
+
+<p>So that wasn’t a viable option, I needed to find another solution.</p>
+
+<h2 id="using-a-t_object">Using a T_OBJECT</h2>
+
+<p>That’s where I thought about using a “regular” object, AKA a <code class="language-plaintext highlighter-rouge">T_OBJECT</code>. That’s the internal types of all the objects you define in pure Ruby,
+and as long as you define all the instance variables in the <code class="language-plaintext highlighter-rouge">initialize</code> method, they’re pretty much guaranteed to be embedded too.</p>
+
+<p>After all, I recently moved the <code class="language-plaintext highlighter-rouge">State#configure</code> method from C into Ruby, I could go further and turn
+<code class="language-plaintext highlighter-rouge">JSON::State</code> into a PORO. That would for sure make it much faster to allocate and initialize, plus it would benefit from JIT, and would allow sharing
+more code with the JRuby and TruffleRuby implementations of <code class="language-plaintext highlighter-rouge">JSON.generate</code>.</p>
+
+<p>But while the instantiation would get faster, access to the <code class="language-plaintext highlighter-rouge">JSON::State</code> fields from C would get slower, and that is for two reasons.</p>
+
+<p>First, all the native fields in the struct, like <code class="language-plaintext highlighter-rouge">long depth</code>, would now need to be boxed (<a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html#boxing-day">I explained what it means in part 3</a>).
+So that means some small overhead for every access, but it would probably be negligible.</p>
+
+<p>The real problem would be uncached instance variable lookups. Because to look up an instance variable, just like for methods,
+you need quite a bit of work. Here again, you can check <a href="https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/">my previous post on Object Shapes to understand why</a>.</p>
+
+<p>When that lookup is done from Ruby code, we benefit from inline caches, so most of the time it’s just an integer comparison to revalidate the cache,
+and then a simple memory read at an offset.</p>
+
+<p>But when looking up the instance variables of an object from C extensions, the only possible API is <code class="language-plaintext highlighter-rouge">rb_ivar_get</code>, so that means no inline caches.
+Contrary to uncached method lookups, you have no equivalent to the Global Call Cache Cache Table for instance variables, you have to go through a
+full lookup every time. It’s less expensive than for a method, but still, you have to walk up the shape tree, so that’s potentially a lot of pointer
+chasing.</p>
+
+<p>If there was a C API to do cached instance variable lookups, I think using a <code class="language-plaintext highlighter-rouge">T_OBJECT</code> would have been a great solution, but since it isn’t
+the case, I quickly gave up on the idea, it wasn’t even worth prototyping and profiling, and I 100% expected it not to perform well enough.</p>
+
+<p>I also quickly considered using a Ruby <code class="language-plaintext highlighter-rouge">Struct</code> class, as those aren’t <code class="language-plaintext highlighter-rouge">T_OBJECT</code> but <code class="language-plaintext highlighter-rouge">T_STRUCT</code>, they’re also embedded, but the position of each
+member is stored in an Array, so in some cases, it can be a bit faster to look up uncached, but I wasn’t hopeful it would move the needle enough.</p>
+
+<h2 id="reusing-state">Reusing State</h2>
+
+<p>If I couldn’t make the allocation faster, another avenue would be to find a way to reuse the object.</p>
+
+<p>Technically, the <code class="language-plaintext highlighter-rouge">JSON::State</code> is mutable, and the various <code class="language-plaintext highlighter-rouge">#to_json</code> methods are free to add arbitrary fields into it, like some sort of Hash,
+as a way to pass information around. But in practice, no-one really uses that, so I was OK with considering such a minor breaking change.</p>
+
+<p>But a bigger challenge was JSON’s global configuration.</p>
+
+<p>If you look at the <code class="language-plaintext highlighter-rouge">JSON.generate</code> method:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+  <span class="k">if</span> <span class="no">State</span> <span class="o">===</span> <span class="n">opts</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">opts</span>
+  <span class="k">else</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="no">State</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">opts</span><span class="p">)</span>
+  <span class="k">end</span>
+  <span class="n">state</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>It would be easy to avoid allocating a new <code class="language-plaintext highlighter-rouge">State</code> object when <code class="language-plaintext highlighter-rouge">opts</code> is <code class="language-plaintext highlighter-rouge">nil</code> and instead use a single immutable <code class="language-plaintext highlighter-rouge">State</code> object.
+That would definitely speed up <code class="language-plaintext highlighter-rouge">JSON.generate</code> enough to get ahead on all or at least most micro-benchmarks.</p>
+
+<p>But even though the benchmarks inside <code class="language-plaintext highlighter-rouge">ruby/json</code> call <code class="language-plaintext highlighter-rouge">JSON.generate</code>, a lot of code out there, and presumably other people’s benchmarks might just as
+well call <code class="language-plaintext highlighter-rouge">JSON.dump</code>, and in such case, <code class="language-plaintext highlighter-rouge">opts</code> wouldn’t be <code class="language-plaintext highlighter-rouge">nil</code>, but set to <code class="language-plaintext highlighter-rouge">JSON.dump_default_options</code> or another Hash derived from it, hence that
+optimization would be out the window pretty quickly.</p>
+
+<p>I toyed with various ideas on how I could detect changes to <code class="language-plaintext highlighter-rouge">JSON.dump_default_options</code> to keep a cached <code class="language-plaintext highlighter-rouge">JSON::State</code> object around,
+but that’s not realistic because it defaults to a mutable hash, so I’d need to monkey-patch dozens of methods to be notified when it is mutated.</p>
+
+<p>As a side note, I really hate <code class="language-plaintext highlighter-rouge">JSON.dump_default_options</code>. It’s really not a good idea to
+globally change how a library behaves like this, as the various other libraries that depend on the <code class="language-plaintext highlighter-rouge">json</code> gem likely don’t expect it at all.
+I’d like to deprecate it for the next major version, but we’ll see.</p>
+
+<h2 id="lazy-allocation">Lazy Allocation</h2>
+
+<p>At that point, I had been thinking about this problem for a few days, with no real solution in sight, until it hit me: the <code class="language-plaintext highlighter-rouge">JSON::State</code> only needs to be
+allocated if a <code class="language-plaintext highlighter-rouge">#to_json</code> method has to be called, and it’s not that frequent.
+If you are using some serialization framework in the style of Active Model Serializers, it most likely already converts all objects that don’t directly
+map to a JSON type into some more primitive Ruby objects that are serializable without having to call <code class="language-plaintext highlighter-rouge">#to_json</code> on them.</p>
+
+<p>Similarly, if you use Rails JSON rendering, likely via something like <code class="language-plaintext highlighter-rouge">render json: obj</code>, <a href="https://github.com/rails/rails/blob/e64e5d31cdeafee142e32e604b513a39de779651/activesupport/lib/active_support/json/encoding.rb#L57-L88">it first converts the given object tree into primitive types</a>,
+so here again, <code class="language-plaintext highlighter-rouge">#to_json</code> calls are unlikely.</p>
+
+<p>Overall, if <code class="language-plaintext highlighter-rouge">#to_json</code> needs to be called, we’re likely not in a situation where that one extra allocation will make a measurable difference.</p>
+
+<p>But even if we don’t need to allocate the <code class="language-plaintext highlighter-rouge">JSON::State</code> instance, we still need to have some memory somewhere for a <code class="language-plaintext highlighter-rouge">JSON_Generator_State</code> struct,
+because our C code needs to be able to check the configuration somehow.
+Since it’s only <code class="language-plaintext highlighter-rouge">72B</code>, it can very comfortably fit in the C stack, making it close to free.</p>
+
+<p>The downside though, is that <a href="/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html#jump-tables">the <code class="language-plaintext highlighter-rouge">State#configure</code> method we moved from C to Ruby in part two</a>,
+well <a href="https://github.com/ruby/json/commit/5c0d428d4c518e651edd3d57dca83ab601944505">it had to go back to C</a>.
+I was a bit sad, but as we say here, sometimes you need to take a step back in order to take a big jump forward.</p>
+
+<p>The next step was to introduce a new internal API to allow to bypass <code class="language-plaintext highlighter-rouge">State#generate</code>, so that <code class="language-plaintext highlighter-rouge">JSON.generate</code> was now:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+  <span class="k">if</span> <span class="no">State</span> <span class="o">===</span> <span class="n">opts</span>
+    <span class="n">opts</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+  <span class="k">else</span>
+    <span class="no">State</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>By calling into a class method, we don’t require the allocation.
+For the pure-Ruby version of the generator, it didn’t change much, as there would be now way to elide the allocation, so I implemented
+<code class="language-plaintext highlighter-rouge">JSON::Pure::State.generate</code> in a fairly obvious way:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">module</span> <span class="nn">JSON</span>
+  <span class="k">module</span> <span class="nn">Pure</span>
+    <span class="k">module</span> <span class="nn">Generator</span>
+    <span class="k">class</span> <span class="nc">State</span>
+      <span class="k">def</span> <span class="nc">self</span><span class="o">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+        <span class="n">new</span><span class="p">(</span><span class="n">opts</span><span class="p">).</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+      <span class="k">end</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>For the C extension, this allowed to allocate the <code class="language-plaintext highlighter-rouge">JSON_Generator_State</code> on the stack:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">cState_m_generate</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">klass</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">obj</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">opts</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">JSON_Generator_State</span> <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+    <span class="n">state_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">state</span><span class="p">);</span>
+    <span class="n">configure_state</span><span class="p">(</span><span class="o">&amp;</span><span class="n">state</span><span class="p">,</span> <span class="n">opts</span><span class="p">);</span>
+    <span class="kt">char</span> <span class="n">stack_buffer</span><span class="p">[</span><span class="n">FBUFFER_STACK_SIZE</span><span class="p">];</span>
+    <span class="n">FBuffer</span> <span class="n">buffer</span> <span class="o">=</span> <span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+    <span class="n">fbuffer_stack_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffer</span><span class="p">,</span> <span class="n">state</span><span class="p">.</span><span class="n">buffer_initial_length</span><span class="p">,</span> <span class="n">stack_buffer</span><span class="p">,</span> <span class="n">FBUFFER_STACK_SIZE</span><span class="p">);</span>
+    <span class="k">struct</span> <span class="n">generate_json_data</span> <span class="n">data</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="p">.</span><span class="n">buffer</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">buffer</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">vstate</span> <span class="o">=</span> <span class="n">Qfalse</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">state</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">state</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">obj</span> <span class="o">=</span> <span class="n">obj</span><span class="p">,</span>
+        <span class="p">.</span><span class="n">func</span> <span class="o">=</span> <span class="n">generate_json</span><span class="p">,</span>
+    <span class="p">};</span>
+    <span class="n">rb_rescue</span><span class="p">(</span><span class="n">generate_json_try</span><span class="p">,</span> <span class="p">(</span><span class="n">VALUE</span><span class="p">)</span><span class="o">&amp;</span><span class="n">data</span><span class="p">,</span> <span class="n">generate_json_rescue</span><span class="p">,</span> <span class="p">(</span><span class="n">VALUE</span><span class="p">)</span><span class="o">&amp;</span><span class="n">data</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">fbuffer_to_s</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffer</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>If you are unfamiliar with the <code class="language-plaintext highlighter-rouge">state = {0};</code> syntax, it’s asking the compiler to zero out the memory it allocated on the stack, because otherwise
+our struct would just be initialized with whatever was left on the stack, which isn’t great.</p>
+
+<p>The other important thing to notice here is the <code class="language-plaintext highlighter-rouge">struct generate_json_data</code>, which is defined as this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">struct</span> <span class="n">generate_json_data</span> <span class="p">{</span>
+    <span class="n">FBuffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">vstate</span><span class="p">;</span>
+    <span class="n">JSON_Generator_State</span> <span class="o">*</span><span class="n">state</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">obj</span><span class="p">;</span>
+    <span class="n">generator_func</span> <span class="n">func</span><span class="p">;</span>
+<span class="p">};</span></code></pre></figure>
+
+<p>That structure isn’t new, it was there before the patch, but you can notice it has both <code class="language-plaintext highlighter-rouge">JSON_Generator_State *state</code>, in other words, a pointer
+to the struct holding our configuration, and <code class="language-plaintext highlighter-rouge">VALUE vstate</code> which is a reference to the <code class="language-plaintext highlighter-rouge">TypedData</code> that holds the pointer.</p>
+
+<p>It’s a bit of a duplication, but that avoids some pointer chasing every time the code needs to check if some configuration flag is set.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">vstate</code> used to be initialized to <code class="language-plaintext highlighter-rouge">self</code>, but now we initialize it to <code class="language-plaintext highlighter-rouge">Qfalse</code>, which conceptually is the global reference to Ruby’s singleton
+<code class="language-plaintext highlighter-rouge">false</code> object. But in practice <code class="language-plaintext highlighter-rouge">false</code> is an immediate, and simply <code class="language-plaintext highlighter-rouge">0</code>.</p>
+
+<p>With that in place, I could then implement the lazy initialization. A lot of internal functions used to receive the <code class="language-plaintext highlighter-rouge">vstate</code> as an argument, and in C
+arguments are passed by copy, so if I wanted to lazily allocate the <code class="language-plaintext highlighter-rouge">State</code> object, it had to be passed by reference instead.</p>
+
+<p>In short, it meant changing the signature of many functions like this:</p>
+
+<figure class="highlight"><pre><code class="language-diff" data-lang="diff"><span class="gd">- static void generate_json_integer(FBuffer *buffer, VALUE Vstate, JSON_Generator_State *state, VALUE obj)
+</span><span class="gi">+ static void generate_json_integer(FBuffer *buffer, struct generate_json_data *data, JSON_Generator_State *state, VALUE obj)</span></code></pre></figure>
+
+<p>And then change the one place where we call <code class="language-plaintext highlighter-rouge">#to_json</code>, to use a new <code class="language-plaintext highlighter-rouge">vstate_get</code> helper:</p>
+
+<figure class="highlight"><pre><code class="language-diff" data-lang="diff"><span class="gd">- tmp = rb_funcall(obj, i_to_json, 1, Vstate);
+</span><span class="gi">+ tmp = rb_funcall(obj, i_to_json, 1, vstate_get(data));</span></code></pre></figure>
+
+<p>Which is in concept very similar to the class memoization pattern in Ruby:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">void</span> <span class="nf">vstate_spill</span><span class="p">(</span><span class="k">struct</span> <span class="n">generate_json_data</span> <span class="o">*</span><span class="n">data</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">vstate</span> <span class="o">=</span> <span class="n">cState_s_allocate</span><span class="p">(</span><span class="n">cState</span><span class="p">);</span>
+    <span class="n">GET_STATE</span><span class="p">(</span><span class="n">vstate</span><span class="p">);</span>
+    <span class="n">MEMCPY</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">state</span><span class="p">,</span> <span class="n">JSON_Generator_State</span><span class="p">,</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="n">data</span><span class="o">-&gt;</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span><span class="p">;</span>
+    <span class="n">data</span><span class="o">-&gt;</span><span class="n">vstate</span> <span class="o">=</span> <span class="n">vstate</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">VALUE</span> <span class="nf">vstate_get</span><span class="p">(</span><span class="k">struct</span> <span class="n">generate_json_data</span> <span class="o">*</span><span class="n">data</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">vstate</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">vstate_spill</span><span class="p">(</span><span class="n">data</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">vstate</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>As always, C code makes it a bit cryptic, but you should be able to recognize the memoization pattern in <code class="language-plaintext highlighter-rouge">vstate_get</code>.</p>
+
+<p>As for <code class="language-plaintext highlighter-rouge">vstate_spill</code>, spilling is a term often used when moving data from registers onto the RAM because it can’t fit there anymore.
+Similarly here, we’re “spilling” the <code class="language-plaintext highlighter-rouge">JSON_Generator_State</code> struct from the stack onto the heap.</p>
+
+<p>We also update the <code class="language-plaintext highlighter-rouge">data-&gt;state</code> pointer, so that if the <code class="language-plaintext highlighter-rouge">#to_json</code> method we called mutate the configuration,
+it’s immediately reflected (but please don’t do this, I beg you).</p>
+
+<p>As predicted by the flame graph, avoiding this allocation had a massive impact on micro-benchmarks:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   506.104k i/100ms
+Calculating -------------------------------------
+               after      5.389M (± 0.2%) i/s  (185.57 ns/i) -     27.330M in   5.071556s
+
+Comparison:
+              before:  3113113.5 i/s
+               after:  5388830.4 i/s - 1.73x  faster
+</code></pre></div></div>
+
+<p>Enough of a jump that <code class="language-plaintext highlighter-rouge">JSON.generate</code> performance was now almost on par with re-using the <code class="language-plaintext highlighter-rouge">JSON::State</code> object, and a bit ahead of <code class="language-plaintext highlighter-rouge">Oj</code></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+                json   613.914k i/100ms
+        json (reuse)   624.068k i/100ms
+                  oj   545.935k i/100ms
+Calculating -------------------------------------
+                json      6.550M (± 0.1%) i/s  (152.67 ns/i) -     33.151M in   5.061360s
+        json (reuse)      6.667M (± 0.1%) i/s  (149.99 ns/i) -     33.700M in   5.054534s
+                  oj      5.822M (± 0.1%) i/s  (171.76 ns/i) -     29.480M in   5.063498s
+
+Comparison:
+                json:  6549898.9 i/s
+        json (reuse):  6667228.7 i/s - 1.02x  faster
+                  oj:  5822168.8 i/s - 1.12x  slower
+</code></pre></div></div>
+
+<p>And now, the setup cost was finally almost invisible on the flame graph:</p>
+
+<p><img src="/assets/articles/json-5/final-flamegraph.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4abYzY8">Full profile</a></p>
+
+<h2 id="to-be-continued">To Be Continued</h2>
+
+<p>This was the final optimization done to the generator worth detailing here.</p>
+
+<p>Hence, I can finally start talking about the parser in the next part.</p>
+
+<p>I think I’ll only need two, maybe three parts for the parsing side.</p>
+
+  </div><a class="u-url" href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
