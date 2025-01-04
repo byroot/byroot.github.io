@@ -727,6 +727,6 @@ Comparison:
 
 So there was no way around it, I had to find how to automatically re-use that `JSON::State` object. Or how to not allocate it at all?
 
-But that's a story for the next part.
+But that's a story for [the next part](/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html).
 
 [^1]: In the initial version of this post I wrongly assumed the `a` suffix was referring to "arrays of bytes". Thanks to f33d5173 and ciupicri for lettingme know the real meaning on HN.
