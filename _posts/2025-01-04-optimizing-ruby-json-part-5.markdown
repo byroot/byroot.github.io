@@ -13,7 +13,7 @@ find a way to get rid of that `JSON::State` allocation too, or to somehow make i
 
 ## Typed Data
 
-Because that `JSON::State` allocation, isn't just about any allocations. In Ruby, everything is an object, but not all objects are created equal.
+Because that `JSON::State` allocation, isn't just about any allocation. In Ruby, everything is an object, but not all objects are created equal.
 In previous parts I touched on how some objects aren't actually allocated, and called "immediates", I also touched on how core objects like `String` and
 `Array` has both "embedded" and "heap" representations.
 
@@ -192,7 +192,7 @@ So that wasn't a viable option, I needed to find another solution.
 
 ## Using a T_OBJECT
 
-That's where I thought about using a "regular" object, AKA a `T_OBJECT`. That's the internal types of all the objects you define in pure Ruby,
+That's where I thought about using a "regular" object, AKA a `T_OBJECT`. That's the internal type of all the objects you define in pure Ruby,
 and as long as you define all the instance variables in the `initialize` method, they're pretty much guaranteed to be embedded too.
 
 After all, I recently moved the `State#configure` method from C into Ruby, I could go further and turn
