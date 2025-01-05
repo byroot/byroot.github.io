@@ -58,7 +58,7 @@ find a way to get rid of that <code class="language-plaintext highlighter-rouge"
 
 <p>Because that <code class="language-plaintext highlighter-rouge">JSON::State</code> allocation, isn’t just about any allocation. In Ruby, everything is an object, but not all objects are created equal.
 In previous parts I touched on how some objects aren’t actually allocated, and called “immediates”, I also touched on how core objects like <code class="language-plaintext highlighter-rouge">String</code> and
-<code class="language-plaintext highlighter-rouge">Array</code> has both “embedded” and “heap” representations.</p>
+<code class="language-plaintext highlighter-rouge">Array</code> have both “embedded” and “heap” representations.</p>
 
 <p><code class="language-plaintext highlighter-rouge">JSON::State</code> is a type defined in C from the extension, using the <code class="language-plaintext highlighter-rouge">TypedData</code> API. <a href="https://blog.peterzhu.ca/ruby-c-ext-part-7/">Peter Zhu has a great blog post that goes in-depth into
 how these work and how to use them</a>, but I’ll offer a quicker explanation here.</p>
