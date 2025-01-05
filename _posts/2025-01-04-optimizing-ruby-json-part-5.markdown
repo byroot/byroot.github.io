@@ -15,7 +15,7 @@ find a way to get rid of that `JSON::State` allocation too, or to somehow make i
 
 Because that `JSON::State` allocation, isn't just about any allocation. In Ruby, everything is an object, but not all objects are created equal.
 In previous parts I touched on how some objects aren't actually allocated, and called "immediates", I also touched on how core objects like `String` and
-`Array` has both "embedded" and "heap" representations.
+`Array` have both "embedded" and "heap" representations.
 
 `JSON::State` is a type defined in C from the extension, using the `TypedData` API. [Peter Zhu has a great blog post that goes in-depth into
 how these work and how to use them](https://blog.peterzhu.ca/ruby-c-ext-part-7/), but I'll offer a quicker explanation here.
