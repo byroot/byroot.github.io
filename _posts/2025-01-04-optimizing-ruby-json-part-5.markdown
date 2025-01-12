@@ -445,3 +445,5 @@ This was the final optimization done to the generator worth detailing here.
 Hence, I can finally start talking about the parser in the next part.
 
 I think I'll only need two, maybe three parts for the parsing side.
+
+Edit: [Part 6 is here](/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html).
