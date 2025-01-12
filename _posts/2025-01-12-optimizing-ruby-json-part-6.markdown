@@ -388,7 +388,7 @@ This is very similar to the optimizations performed in earlier parts so I won't 
 
 ## More Stack Allocation
 
-Similarly, another optimization I directly ported from the encoding code, was to stack allocate from structures.
+Similarly, another optimization I directly ported from the encoding code, was to allocate some structures on the stack.
 
 The `ruby/json` parser uses a small buffer for some operations, such as parsing numbers.
 
