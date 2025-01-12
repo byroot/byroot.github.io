@@ -60,7 +60,7 @@ around setup costs were the same as the one applied to the encoder, so I will si
 with <a href="https://github.com/ruby/json/pull/512">multiple parser initialization speedups</a>.</p>
 
 <p><a href="https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html#gccct">I mentioned the first one in part two</a>,
-the parser’s ``#initialize<code class="language-plaintext highlighter-rouge"> method was doing hash lookups in a very inefficient way by using </code>rb_funcall` to check if specific keys,
+the parser’s <code class="language-plaintext highlighter-rouge">#initialize</code> method was doing hash lookups in a very inefficient way by using <code class="language-plaintext highlighter-rouge">rb_funcall</code> to check if specific keys,
 were present:</p>
 
 <figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define option_given_p(opts, key) RTEST(rb_funcall(opts, i_key_p, 1, key))</span></code></pre></figure>
