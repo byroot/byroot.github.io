@@ -17,7 +17,7 @@ When I took over the gem, there was a pull request by [Luke Gruber](https://gith
 with [multiple parser initialization speedups](https://github.com/ruby/json/pull/512).
 
 [I mentioned the first one in part two](https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html#gccct),
-the parser's ``#initialize` method was doing hash lookups in a very inefficient way by using `rb_funcall` to check if specific keys,
+the parser's `#initialize` method was doing hash lookups in a very inefficient way by using `rb_funcall` to check if specific keys,
 were present:
 
 {% highlight c %}
