@@ -1,4 +1,1035 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-05T10:39:53+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 5</title><link href="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 5" /><published>2025-01-04T19:28:51+00:00</published><updated>2025-01-04T19:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html"><![CDATA[<p><a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">In the previous post</a>, we showed how we eliminated two <code class="language-plaintext highlighter-rouge">malloc/free</code> pairs of calls
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-12T20:19:14+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 6</title><link href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 6" /><published>2025-01-12T16:28:51+00:00</published><updated>2025-01-12T16:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html"><![CDATA[<p>After wrapping up about the encoder optimizations <a href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html">in the previous post</a>,
+we can now start talking about the parser side.</p>
+
+<p>It certainly won’t be as long, because the parser didn’t need as much work, but also because some optimizations, particularly
+around setup costs were the same as the one applied to the encoder, so I will simply reference them quickly.</p>
+
+<h2 id="efficient-hash-operations">Efficient Hash Operations</h2>
+
+<p>When I took over the gem, there was a pull request by <a href="https://github.com/luke-gru">Luke Gruber</a> that had been sitting there for almost a year,
+with <a href="https://github.com/ruby/json/pull/512">multiple parser initialization speedups</a>.</p>
+
+<p><a href="https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html#gccct">I mentioned the first one in part two</a>,
+the parser’s ``#initialize<code class="language-plaintext highlighter-rouge"> method was doing hash lookups in a very inefficient way by using </code>rb_funcall` to check if specific keys,
+were present:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define option_given_p(opts, key) RTEST(rb_funcall(opts, i_key_p, 1, key))</span></code></pre></figure>
+
+<p>I beleive at one point using <code class="language-plaintext highlighter-rouge">rb_funcall</code> may have been necessary because <code class="language-plaintext highlighter-rouge">opts</code>, wasn’t always a real Hash,
+but these days were long gone, so Luke was able to replace it with a much more efficient version:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">hash_has_key</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">key</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">Qundef</span> <span class="o">==</span> <span class="n">rb_hash_lookup2</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">Qundef</span><span class="p">))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="n">Qtrue</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">Qfalse</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="cp">#define option_given_p(opts, key) (RTEST(hash_has_key(opts, key)))</span></code></pre></figure>
+
+<p>It is much much better as it doesn’t have to go through method lookup and all that.
+Instead, it uses <code class="language-plaintext highlighter-rouge">rb_hash_lookup2</code>, the C equivalent of <code class="language-plaintext highlighter-rouge">Hash#fetch</code>. If <code class="language-plaintext highlighter-rouge">key</code> exists in the hash, the associated value
+is returned. If it doesn’t exist, what we provided as a third argument is returned to us.</p>
+
+<p>And <code class="language-plaintext highlighter-rouge">Qundef</code> is a special Ruby value, similar to <code class="language-plaintext highlighter-rouge">undefined</code> in JavaScript, but only used inside the virtual machine.
+Actual Ruby code can’t possibly interact with <code class="language-plaintext highlighter-rouge">Qundef</code>, it would literally cause a VM crash.
+As such we know it’s not possible for the hash to contain <code class="language-plaintext highlighter-rouge">Qundef</code> and we can use it as our return value in case of a miss.</p>
+
+<p>So translated in Ruby, it would be something like:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">UNDEF</span> <span class="o">=</span> <span class="no">BasicObject</span><span class="p">.</span><span class="nf">new</span>
+<span class="n">private_constant</span> <span class="ss">:UNDEF</span>
+<span class="k">def</span> <span class="nf">hash_has_key</span><span class="p">(</span><span class="nb">hash</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+  <span class="k">if</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">fetch</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="no">UNDEF</span><span class="p">)</span> <span class="o">==</span> <span class="no">UNDEF</span>
+    <span class="k">return</span> <span class="kp">true</span>
+  <span class="k">end</span>
+  <span class="kp">false</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>At that point, you may have been screaming internally for a few paragraphs, searching for how to submit a pull request on my blog
+to fix the typo, but no it’s not a typo, at least not on my part, the pull request indeed had the logic reversed.
+I admit I only noticed it while writing this post.</p>
+
+<p>But that’s not a problem, because even aside from that bug, it still was a bit more contrived than necessary.
+For some reason, it returns a Ruby boolean (<code class="language-plaintext highlighter-rouge">Qfalse</code> and <code class="language-plaintext highlighter-rouge">Qtrue</code> are global references to Ruby’s <code class="language-plaintext highlighter-rouge">true</code> and <code class="language-plaintext highlighter-rouge">false</code>
+immediate objects, defined in <a href="https://github.com/ruby/ruby/blob/335bba0fde0c0407377b6e10050ab6c2ad0d3270/include/ruby/internal/special_consts.h#L86-L120"><code class="language-plaintext highlighter-rouge">special_consts.h</code></a>).</p>
+
+<p>Translated in decimal, it means we’re returning <code class="language-plaintext highlighter-rouge">0</code> when the key doesn’t exist, and <code class="language-plaintext highlighter-rouge">20</code> when it exists.
+And then we use the <code class="language-plaintext highlighter-rouge">RTEST</code> macro, to check if the return value is <code class="language-plaintext highlighter-rouge">4</code> (<code class="language-plaintext highlighter-rouge">Qnil</code>), which is impossible, and if that’s the case we
+turn that <code class="language-plaintext highlighter-rouge">4</code> into a <code class="language-plaintext highlighter-rouge">0</code>, otherwise we return the original number.</p>
+
+<p>To be fair, modern CPUs and compilers can chew through that sort of overhead, making it barely measurable,
+but it just felt wrong not to simplify it further.</p>
+
+<p>Since the PR had to be rebased anyway, I simplified Luke’s version further to turn it into:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define option_given_p(opts, key) (rb_hash_lookup2(opts, key, Qundef) != Qundef)</span></code></pre></figure>
+
+<h2 id="bail-out-early">Bail Out Early</h2>
+
+<p>Another important optimization that was in Luke’s pull request, was inside the code responsible for parsing floating point numbers.</p>
+
+<p><code class="language-plaintext highlighter-rouge">JSON.parse</code> has an option called <code class="language-plaintext highlighter-rouge">decimal_class</code>, which allows decimal numbers to be parsed into something other than <code class="language-plaintext highlighter-rouge">Float</code> objects,
+typically into <code class="language-plaintext highlighter-rouge">BigDecimal</code> objects.</p>
+
+<p>The float parsing code looked like this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">char</span> <span class="o">*</span><span class="nf">JSON_parse_float</span><span class="p">(</span><span class="n">JSON_Parser</span> <span class="o">*</span><span class="n">json</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">p</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">pe</span><span class="p">,</span> <span class="n">VALUE</span> <span class="o">*</span><span class="n">result</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// snipp...</span>
+
+    <span class="n">VALUE</span> <span class="n">mod</span> <span class="o">=</span> <span class="n">Qnil</span><span class="p">;</span>
+    <span class="n">ID</span> <span class="n">method_id</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">rb_respond_to</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_try_convert</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">mod</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">;</span>
+        <span class="n">method_id</span> <span class="o">=</span> <span class="n">i_try_convert</span><span class="p">;</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">rb_respond_to</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_new</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">mod</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">;</span>
+        <span class="n">method_id</span> <span class="o">=</span> <span class="n">i_new</span><span class="p">;</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">RB_TYPE_P</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">T_CLASS</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">VALUE</span> <span class="n">name</span> <span class="o">=</span> <span class="n">rb_class_name</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">);</span>
+        <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">name_cstr</span> <span class="o">=</span> <span class="n">RSTRING_PTR</span><span class="p">(</span><span class="n">name</span><span class="p">);</span>
+        <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">last_colon</span> <span class="o">=</span> <span class="n">strrchr</span><span class="p">(</span><span class="n">name_cstr</span><span class="p">,</span> <span class="sc">':'</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">last_colon</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">mod_path_end</span> <span class="o">=</span> <span class="n">last_colon</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+            <span class="n">VALUE</span> <span class="n">mod_path</span> <span class="o">=</span> <span class="n">rb_str_substr</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">mod_path_end</span> <span class="o">-</span> <span class="n">name_cstr</span><span class="p">);</span>
+            <span class="n">mod</span> <span class="o">=</span> <span class="n">rb_path_to_class</span><span class="p">(</span><span class="n">mod_path</span><span class="p">);</span>
+
+            <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">method_name_beg</span> <span class="o">=</span> <span class="n">last_colon</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+            <span class="kt">long</span> <span class="n">before_len</span> <span class="o">=</span> <span class="n">method_name_beg</span> <span class="o">-</span> <span class="n">name_cstr</span><span class="p">;</span>
+            <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">RSTRING_LEN</span><span class="p">(</span><span class="n">name</span><span class="p">)</span> <span class="o">-</span> <span class="n">before_len</span><span class="p">;</span>
+            <span class="n">VALUE</span> <span class="n">method_name</span> <span class="o">=</span> <span class="n">rb_str_substr</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">before_len</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+            <span class="n">method_id</span> <span class="o">=</span> <span class="n">SYM2ID</span><span class="p">(</span><span class="n">rb_str_intern</span><span class="p">(</span><span class="n">method_name</span><span class="p">));</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">mod</span> <span class="o">=</span> <span class="n">rb_mKernel</span><span class="p">;</span>
+            <span class="n">method_id</span> <span class="o">=</span> <span class="n">SYM2ID</span><span class="p">(</span><span class="n">rb_str_intern</span><span class="p">(</span><span class="n">name</span><span class="p">));</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="c1">// Actual float parsing starts here</span>
+    <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">p</span> <span class="o">-</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">;</span>
+    <span class="n">fbuffer_clear</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">);</span>
+    <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+    <span class="n">fbuffer_append_char</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="sc">'\0'</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">method_id</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">VALUE</span> <span class="n">text</span> <span class="o">=</span> <span class="n">rb_str_new2</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">));</span>
+        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_funcallv</span><span class="p">(</span><span class="n">mod</span><span class="p">,</span> <span class="n">method_id</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">text</span><span class="p">);</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">DBL2NUM</span><span class="p">(</span><span class="n">rb_cstr_to_dbl</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">1</span><span class="p">));</span>
+    <span class="p">}</span>
+
+    <span class="k">return</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Even if you are unfamiliar with C, with the comment I added you probably noticed that this routine has an insanely costly prelude.
+We’re first checking if the <code class="language-plaintext highlighter-rouge">decimal_class</code> option responds to <code class="language-plaintext highlighter-rouge">try_convert</code>, then if it responds to <code class="language-plaintext highlighter-rouge">new</code>, and finally if it’s a <code class="language-plaintext highlighter-rouge">Class</code>
+object. If you read part 2 of the series, you might remember that checking if an object responds to a method isn’t cheap.</p>
+
+<p>But providing a custom class to handle decimal numbers is a niche option, certainly not the common case,
+hence Luke’s patch rightfully wrapped all this <code class="language-plaintext highlighter-rouge">decimal_class</code> prelude into a cheap:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">NIL_P</span><span class="p">(</span><span class="n">jons</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">))</span> <span class="p">{</span>
+  <span class="c1">// prelude</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>To just bypass it all in the overwhelming majority of cases.</p>
+
+<p>To be honest, the patch could have gone farther, as it really makes no sense for this code to be inside <code class="language-plaintext highlighter-rouge">JSON_parse_float</code>.
+The <code class="language-plaintext highlighter-rouge">decimal_class</code> is provided when you instantiate the parser and isn’t ever going to change for the parser lifetime,
+hence this argument parsing code should be in the constructor, not in a subroutine that will be called as many times as there are
+decimal numbers in the parsed document.</p>
+
+<p>As is often the case, this performance issue happened gradually.</p>
+
+<p>In the early versions of the <code class="language-plaintext highlighter-rouge">json</code> gem, the check performed inside <code class="language-plaintext highlighter-rouge">JSON_parse_float</code> was a simple <code class="language-plaintext highlighter-rouge">nil</code> check:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">if</span> <span class="p">(</span><span class="n">NIL_P</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">))</span> <span class="p">{</span>
+  <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_float_new</span><span class="p">(</span><span class="n">rb_cstr_to_dbl</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">1</span><span class="p">));</span>
+<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+  <span class="n">VALUE</span> <span class="n">text</span><span class="p">;</span>
+  <span class="n">text</span> <span class="o">=</span> <span class="n">rb_str_new2</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">));</span>
+  <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_funcall</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_new</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">text</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Translated in Ruby it would be:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">if</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">nil?</span>
+  <span class="vi">@buffer</span><span class="p">.</span><span class="nf">to_f</span>
+<span class="k">else</span>
+  <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="vi">@buffer</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>So there was nothing to move to the constructor, it was as simple as a conditional as you could get.</p>
+
+<p>But then over time the <code class="language-plaintext highlighter-rouge">BigDecimal</code> gem evolved, and <code class="language-plaintext highlighter-rouge">BigDecimal.new</code> was no longer a good way to instantiate these objects.
+So in 2018, <a href="https://github.com/ruby/json/commit/ef2092f4d288ff666bcf10ffa43e58a91c649293">the maintainer of the <code class="language-plaintext highlighter-rouge">bigdecimal</code> gem submitted a patch to the <code class="language-plaintext highlighter-rouge">json</code> gem, to fix the deprecation warnings</a>,
+and the check became a bit more complex, but still very reasonable:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">if</span> <span class="p">(</span><span class="n">NIL_P</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">))</span> <span class="p">{</span>
+  <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_float_new</span><span class="p">(</span><span class="n">rb_cstr_to_dbl</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">1</span><span class="p">));</span>
+<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+  <span class="n">VALUE</span> <span class="n">text</span><span class="p">;</span>
+  <span class="n">text</span> <span class="o">=</span> <span class="n">rb_str_new2</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">));</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">is_bigdecimal_class</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">))</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_funcall</span><span class="p">(</span><span class="n">Qnil</span><span class="p">,</span> <span class="n">i_BigDecimal</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">text</span><span class="p">);</span>
+  <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_funcall</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_new</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">text</span><span class="p">);</span>
+  <span class="p">}</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Again, in Ruby:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">if</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">nil?</span>
+  <span class="vi">@buffer</span><span class="p">.</span><span class="nf">to_f</span>
+<span class="k">elsif</span> <span class="vi">@decimal_class</span> <span class="o">==</span> <span class="o">::</span><span class="no">BigDecimal</span>
+  <span class="no">BigDecimal</span><span class="p">(</span><span class="vi">@buffer</span><span class="p">)</span>
+<span class="k">else</span>
+  <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="vi">@buffer</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>Now, when <code class="language-plaintext highlighter-rouge">decimal_class</code> isn’t <code class="language-plaintext highlighter-rouge">nil</code>, we’d also check if it is pointing to the <code class="language-plaintext highlighter-rouge">BigDecimal</code> class specifically.
+Here again, really no concern, especially since most of the time we’d fall into the <code class="language-plaintext highlighter-rouge">nil</code> condition.</p>
+
+<p>But then, <a href="https://github.com/ruby/json/commit/ae5ef25af52b2b92d7ecf40feeca09c324c0d777">in 2020, there was yet another iteration on that logic</a>,
+to make it more consistent with other parts of Ruby, and that’s where the check became way more expensive, and where the cheap
+<code class="language-plaintext highlighter-rouge">nil</code> check that allowed to bail out early most of the time disappeared.</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">VALUE</span> <span class="n">mod</span> <span class="o">=</span> <span class="n">Qnil</span><span class="p">;</span>
+<span class="n">ID</span> <span class="n">method_id</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+<span class="k">if</span> <span class="p">(</span><span class="n">rb_respond_to</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_try_convert</span><span class="p">))</span> <span class="p">{</span>
+    <span class="n">mod</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">;</span>
+    <span class="n">method_id</span> <span class="o">=</span> <span class="n">i_try_convert</span><span class="p">;</span>
+<span class="p">}</span> <span class="k">else</span> <span class="nf">if</span> <span class="p">(</span><span class="n">rb_respond_to</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">i_new</span><span class="p">))</span> <span class="p">{</span>
+    <span class="n">mod</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">;</span>
+    <span class="n">method_id</span> <span class="o">=</span> <span class="n">i_new</span><span class="p">;</span>
+<span class="p">}</span> <span class="k">else</span> <span class="nf">if</span> <span class="p">(</span><span class="n">RB_TYPE_P</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">,</span> <span class="n">T_CLASS</span><span class="p">))</span> <span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">name</span> <span class="o">=</span> <span class="n">rb_class_name</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">decimal_class</span><span class="p">);</span>
+    <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">name_cstr</span> <span class="o">=</span> <span class="n">RSTRING_PTR</span><span class="p">(</span><span class="n">name</span><span class="p">);</span>
+    <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">last_colon</span> <span class="o">=</span> <span class="n">strrchr</span><span class="p">(</span><span class="n">name_cstr</span><span class="p">,</span> <span class="sc">':'</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">last_colon</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">mod_path_end</span> <span class="o">=</span> <span class="n">last_colon</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="n">VALUE</span> <span class="n">mod_path</span> <span class="o">=</span> <span class="n">rb_str_substr</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">mod_path_end</span> <span class="o">-</span> <span class="n">name_cstr</span><span class="p">);</span>
+        <span class="n">mod</span> <span class="o">=</span> <span class="n">rb_path_to_class</span><span class="p">(</span><span class="n">mod_path</span><span class="p">);</span>
+
+        <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">method_name_beg</span> <span class="o">=</span> <span class="n">last_colon</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="kt">long</span> <span class="n">before_len</span> <span class="o">=</span> <span class="n">method_name_beg</span> <span class="o">-</span> <span class="n">name_cstr</span><span class="p">;</span>
+        <span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">RSTRING_LEN</span><span class="p">(</span><span class="n">name</span><span class="p">)</span> <span class="o">-</span> <span class="n">before_len</span><span class="p">;</span>
+        <span class="n">VALUE</span> <span class="n">method_name</span> <span class="o">=</span> <span class="n">rb_str_substr</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">before_len</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+        <span class="n">method_id</span> <span class="o">=</span> <span class="n">SYM2ID</span><span class="p">(</span><span class="n">rb_str_intern</span><span class="p">(</span><span class="n">method_name</span><span class="p">));</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">mod</span> <span class="o">=</span> <span class="n">rb_mKernel</span><span class="p">;</span>
+        <span class="n">method_id</span> <span class="o">=</span> <span class="n">SYM2ID</span><span class="p">(</span><span class="n">rb_str_intern</span><span class="p">(</span><span class="n">name</span><span class="p">));</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// snip...</span>
+
+<span class="k">if</span> <span class="p">(</span><span class="n">method_id</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">text</span> <span class="o">=</span> <span class="n">rb_str_new2</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">));</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_funcallv</span><span class="p">(</span><span class="n">mod</span><span class="p">,</span> <span class="n">method_id</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">text</span><span class="p">);</span>
+<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">DBL2NUM</span><span class="p">(</span><span class="n">rb_cstr_to_dbl</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">1</span><span class="p">));</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Which in Ruby would be:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">mod</span> <span class="o">=</span> <span class="nb">method</span> <span class="o">=</span> <span class="kp">nil</span>
+
+<span class="k">if</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:try_convert</span><span class="p">)</span>
+  <span class="n">mod</span> <span class="o">=</span> <span class="vi">@decimal_class</span>
+  <span class="nb">method</span> <span class="o">=</span> <span class="ss">:try_convert</span>
+<span class="k">elsif</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:new</span><span class="p">)</span>
+  <span class="n">mod</span> <span class="o">=</span> <span class="vi">@decimal_class</span>
+  <span class="nb">method</span> <span class="o">=</span> <span class="ss">:new</span>
+<span class="k">elsif</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Class</span><span class="p">)</span>
+  <span class="k">if</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">name</span><span class="p">.</span><span class="nf">include?</span><span class="p">(</span><span class="s2">"::"</span><span class="p">)</span>
+    <span class="o">*</span><span class="n">namespace</span><span class="p">,</span> <span class="nb">name</span> <span class="o">=</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">name</span><span class="p">.</span><span class="nf">split</span><span class="p">(</span><span class="s2">"::"</span><span class="p">)</span>
+    <span class="n">mod</span> <span class="o">=</span> <span class="no">Object</span><span class="p">.</span><span class="nf">const_get</span><span class="p">(</span><span class="n">namespace</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"::"</span><span class="p">))</span>
+    <span class="nb">method</span> <span class="o">=</span> <span class="nb">name</span><span class="p">.</span><span class="nf">to_sym</span>
+  <span class="k">else</span>
+    <span class="n">mod</span> <span class="o">=</span> <span class="no">Kernel</span>
+    <span class="nb">method</span> <span class="o">=</span> <span class="vi">@decimal_class</span><span class="p">.</span><span class="nf">name</span><span class="p">.</span><span class="nf">to_sym</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="c1"># snip...</span>
+
+<span class="k">if</span> <span class="nb">method</span>
+  <span class="n">mod</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="nb">method</span><span class="p">,</span> <span class="vi">@buffer</span><span class="p">)</span>
+<span class="k">else</span>
+  <span class="vi">@buffer</span><span class="p">.</span><span class="nf">to_f</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>So quite a lot of logic.</p>
+
+<p>To be clear, I’m absolutely not pointing fingers here, hindsight is 20/20 and I’m guilty of similar mistakes in the past.
+I just thought it was a good occasion to showcase how some code can become slower over time.</p>
+
+<p>The code is initially simple and quite fast, and then it grows in complexity over time for perfectly legitimate reasons,
+with targetted patches that focus on a single function.
+Without an integrated benchmark suite, it’s very easy to merge changes without realizing their performance impact, especially
+since you often review a diff, without necessarily paying too much attention to where it is located.</p>
+
+<h2 id="eliding-option-hash-allocation">Eliding Option Hash Allocation</h2>
+
+<p>Soon after rebasing Luke’s patches, I improved the setup cost further using similar techniques as for the generator.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">JSON.parse</code> method used to be defined as:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="p">{})</span>
+  <span class="no">Parser</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">**</span><span class="p">(</span><span class="n">opts</span><span class="o">||</span><span class="p">{})).</span><span class="nf">parse</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>This means we always allocate an option Hash, even when no option was passed, and then splat it for little benefits.</p>
+
+<p>By rewriting it as:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+  <span class="k">if</span> <span class="n">opts</span><span class="p">.</span><span class="nf">nil?</span>
+    <span class="no">Parser</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">source</span><span class="p">).</span><span class="nf">parse</span>
+  <span class="k">else</span>
+    <span class="no">Parser</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span><span class="p">).</span><span class="nf">parse</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>I managed to get rid of a useless allocation.</p>
+
+<p>Similarly, the <code class="language-plaintext highlighter-rouge">JSON.load</code> method, used to be:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">load</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="nb">proc</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">options</span> <span class="o">=</span> <span class="p">{})</span>
+  <span class="n">opts</span> <span class="o">=</span> <span class="n">load_default_options</span><span class="p">.</span><span class="nf">merge</span> <span class="n">options</span>
+  <span class="k">if</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span> <span class="ss">:to_str</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">to_str</span>
+  <span class="k">elsif</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span> <span class="ss">:to_io</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">to_io</span><span class="p">.</span><span class="nf">read</span>
+  <span class="k">elsif</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:read</span><span class="p">)</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">read</span>
+  <span class="k">end</span>
+  <span class="k">if</span> <span class="n">opts</span><span class="p">[</span><span class="ss">:allow_blank</span><span class="p">]</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="n">source</span><span class="p">.</span><span class="nf">nil?</span> <span class="o">||</span> <span class="n">source</span><span class="p">.</span><span class="nf">empty?</span><span class="p">)</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="s1">'null'</span>
+  <span class="k">end</span>
+  <span class="n">result</span> <span class="o">=</span> <span class="n">parse</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span><span class="p">)</span>
+  <span class="n">recurse_proc</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="o">&amp;</span><span class="nb">proc</span><span class="p">)</span> <span class="k">if</span> <span class="nb">proc</span>
+  <span class="n">result</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>Which I optimized into:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">load</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="nb">proc</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">options</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+  <span class="n">opts</span> <span class="o">=</span> <span class="k">if</span> <span class="n">options</span><span class="p">.</span><span class="nf">nil?</span>
+    <span class="n">load_default_options</span>
+  <span class="k">else</span>
+    <span class="n">load_default_options</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+  <span class="k">end</span>
+
+  <span class="k">unless</span> <span class="n">source</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">String</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span> <span class="ss">:to_str</span>
+      <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">to_str</span>
+    <span class="k">elsif</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span> <span class="ss">:to_io</span>
+      <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">to_io</span><span class="p">.</span><span class="nf">read</span>
+    <span class="k">elsif</span> <span class="n">source</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:read</span><span class="p">)</span>
+      <span class="n">source</span> <span class="o">=</span> <span class="n">source</span><span class="p">.</span><span class="nf">read</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">if</span> <span class="n">opts</span><span class="p">[</span><span class="ss">:allow_blank</span><span class="p">]</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="n">source</span><span class="p">.</span><span class="nf">nil?</span> <span class="o">||</span> <span class="n">source</span><span class="p">.</span><span class="nf">empty?</span><span class="p">)</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="s1">'null'</span>
+  <span class="k">end</span>
+  <span class="n">result</span> <span class="o">=</span> <span class="n">parse</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span><span class="p">)</span>
+  <span class="n">recurse_proc</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="o">&amp;</span><span class="nb">proc</span><span class="p">)</span> <span class="k">if</span> <span class="nb">proc</span>
+  <span class="n">result</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>First to avoid a Hash allocation when no option is passed,
+and also to avoid calling <code class="language-plaintext highlighter-rouge">respond_to?</code> on the most common case, which is where <code class="language-plaintext highlighter-rouge">source</code> is a String.
+It also saved a useless <code class="language-plaintext highlighter-rouge">String#to_str</code> call in that common case.</p>
+
+<p>This is very similar to the optimizations performed in earlier parts so I won’t repeat here why this is preferable.</p>
+
+<h2 id="more-stack-allocation">More Stack Allocation</h2>
+
+<p>Similarly, another optimization I directly ported from the encoding code, was to stack allocate from structures.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">ruby/json</code> parser uses a small buffer for some operations, such as parsing numbers.</p>
+
+<p>The underlying Ruby APIs the parser uses for that are <code class="language-plaintext highlighter-rouge">rb_cstr_to_dbl</code> and <code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>.
+These APIs, as indicated by their name, expect “C strings” (<code class="language-plaintext highlighter-rouge">cstr</code>), in other words, <code class="language-plaintext highlighter-rouge">NULL</code> terminated strings, which
+isn’t very convenient in this context, as the numbers we’re interested in parsing are generally immediately followed by
+the remainder of the JSON document, likely a comma or some other delimiter.</p>
+
+<p>Hence, we have no choice but to first copy the string representation of the number into a separate buffer, add the <code class="language-plaintext highlighter-rouge">NULL</code>
+terminator and then invoke the function provided by Ruby.</p>
+
+<p>At this point, you are probably already thinking that this is wasteful and that it would be better to parse these numbers in
+place, but we’ll come back to it in the next post.</p>
+
+<p>In the meantime, a simple fix was to allocate that internal buffer on the stack as we did with the generator saving us a pair
+of <code class="language-plaintext highlighter-rouge">malloc/free</code> calls.</p>
+
+<p>First by <a href="https://github.com/ruby/json/commit/72110f7992c28c4a73e144b7b63b9ecded0f812e">allocating the <code class="language-plaintext highlighter-rouge">FBuffer</code> structure on the stack</a>,
+then also allocating the internal buffer there as well. But that too we discussed at length in previous parts, so I won’t spend
+too many words on it.</p>
+
+<h2 id="string-unescape">String Unescape</h2>
+
+<p>The previous optimizations were either old pull requests I rebased, or optimizations that were ported from the encoding code path,
+so they were basically no-brainers.</p>
+
+<p>After that, I went on profiling macro-benchmarks, especially <code class="language-plaintext highlighter-rouge">twitter.json</code>.</p>
+
+<p><img src="/assets/articles/json-6/parse-flamegraph.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4aeZiYA">Full profile</a></p>
+
+<p>Not so surprisingly, the most obvious hotspot was <code class="language-plaintext highlighter-rouge">json_string_unescape</code>, totaling over <code class="language-plaintext highlighter-rouge">23%</code> of the overall runtime.</p>
+
+<p>We’ll come back quite a few times to that function, so I’ll start by copying its initial version here and
+describe what it does.</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="k">const</span> <span class="kt">size_t</span> <span class="n">MAX_STACK_BUFFER_SIZE</span> <span class="o">=</span> <span class="mi">128</span><span class="p">;</span>
+
+<span class="k">static</span> <span class="n">VALUE</span> <span class="nf">json_string_unescape</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="n">string</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">stringEnd</span><span class="p">,</span> <span class="kt">int</span> <span class="n">intern</span><span class="p">,</span> <span class="kt">int</span> <span class="n">symbolize</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">result</span> <span class="o">=</span> <span class="n">Qnil</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">bufferSize</span> <span class="o">=</span> <span class="n">stringEnd</span> <span class="o">-</span> <span class="n">string</span><span class="p">;</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">p</span> <span class="o">=</span> <span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">pe</span> <span class="o">=</span> <span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">unescape</span><span class="p">,</span> <span class="o">*</span><span class="n">bufferStart</span><span class="p">,</span> <span class="o">*</span><span class="n">buffer</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">unescape_len</span><span class="p">;</span>
+    <span class="kt">char</span> <span class="n">buf</span><span class="p">[</span><span class="mi">4</span><span class="p">];</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">bufferSize</span> <span class="o">&gt;</span> <span class="n">MAX_STACK_BUFFER_SIZE</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">bufferStart</span> <span class="o">=</span> <span class="n">buffer</span> <span class="o">=</span> <span class="n">ALLOC_N</span><span class="p">(</span><span class="kt">char</span><span class="p">,</span> <span class="n">bufferSize</span> <span class="o">?</span> <span class="n">bufferSize</span> <span class="o">:</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+      <span class="n">bufferStart</span> <span class="o">=</span> <span class="n">buffer</span> <span class="o">=</span> <span class="n">ALLOCA_N</span><span class="p">(</span><span class="kt">char</span><span class="p">,</span> <span class="n">bufferSize</span> <span class="o">?</span> <span class="n">bufferSize</span> <span class="o">:</span> <span class="mi">1</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    <span class="k">while</span> <span class="p">(</span><span class="n">pe</span> <span class="o">&lt;</span> <span class="n">stringEnd</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="n">pe</span> <span class="o">==</span> <span class="sc">'\\'</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"?"</span><span class="p">;</span>
+            <span class="n">unescape_len</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">pe</span> <span class="o">&gt;</span> <span class="n">p</span><span class="p">)</span> <span class="p">{</span>
+              <span class="n">MEMCPY</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="kt">char</span><span class="p">,</span> <span class="n">pe</span> <span class="o">-</span> <span class="n">p</span><span class="p">);</span>
+              <span class="n">buffer</span> <span class="o">+=</span> <span class="n">pe</span> <span class="o">-</span> <span class="n">p</span><span class="p">;</span>
+            <span class="p">}</span>
+            <span class="k">switch</span> <span class="p">(</span><span class="o">*++</span><span class="n">pe</span><span class="p">)</span> <span class="p">{</span>
+                <span class="k">case</span> <span class="sc">'n'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\n</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'r'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\r</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'t'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\t</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'"'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\"</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'\\'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\\</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'b'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\b</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'f'</span><span class="p">:</span>
+                    <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"</span><span class="se">\f</span><span class="s">"</span><span class="p">;</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="k">case</span> <span class="sc">'u'</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="n">pe</span> <span class="o">&gt;</span> <span class="n">stringEnd</span> <span class="o">-</span> <span class="mi">4</span><span class="p">)</span> <span class="p">{</span>
+                      <span class="k">if</span> <span class="p">(</span><span class="n">bufferSize</span> <span class="o">&gt;</span> <span class="n">MAX_STACK_BUFFER_SIZE</span><span class="p">)</span> <span class="p">{</span>
+                        <span class="n">ruby_xfree</span><span class="p">(</span><span class="n">bufferStart</span><span class="p">);</span>
+                      <span class="p">}</span>
+                      <span class="n">raise_parse_error</span><span class="p">(</span><span class="s">"incomplete unicode character escape sequence at '%s'"</span><span class="p">,</span> <span class="n">p</span><span class="p">);</span>
+                    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                        <span class="kt">uint32_t</span> <span class="n">ch</span> <span class="o">=</span> <span class="n">unescape_unicode</span><span class="p">((</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="o">++</span><span class="n">pe</span><span class="p">);</span>
+                        <span class="n">pe</span> <span class="o">+=</span> <span class="mi">3</span><span class="p">;</span>
+                        <span class="cm">/* To handle values above U+FFFF, we take a sequence of
+                         * \uXXXX escapes in the U+D800..U+DBFF then
+                         * U+DC00..U+DFFF ranges, take the low 10 bits from each
+                         * to make a 20-bit number, then add 0x10000 to get the
+                         * final codepoint.
+                         *
+                         * See Unicode 15: 3.8 "Surrogates", 5.3 "Handling
+                         * Surrogate Pairs in UTF-16", and 23.6 "Surrogates
+                         * Area".
+                         */</span>
+                        <span class="k">if</span> <span class="p">((</span><span class="n">ch</span> <span class="o">&amp;</span> <span class="mh">0xFC00</span><span class="p">)</span> <span class="o">==</span> <span class="mh">0xD800</span><span class="p">)</span> <span class="p">{</span>
+                            <span class="n">pe</span><span class="o">++</span><span class="p">;</span>
+                            <span class="k">if</span> <span class="p">(</span><span class="n">pe</span> <span class="o">&gt;</span> <span class="n">stringEnd</span> <span class="o">-</span> <span class="mi">6</span><span class="p">)</span> <span class="p">{</span>
+                              <span class="k">if</span> <span class="p">(</span><span class="n">bufferSize</span> <span class="o">&gt;</span> <span class="n">MAX_STACK_BUFFER_SIZE</span><span class="p">)</span> <span class="p">{</span>
+                                <span class="n">ruby_xfree</span><span class="p">(</span><span class="n">bufferStart</span><span class="p">);</span>
+                              <span class="p">}</span>
+                              <span class="n">raise_parse_error</span><span class="p">(</span><span class="s">"incomplete surrogate pair at '%s'"</span><span class="p">,</span> <span class="n">p</span><span class="p">);</span>
+                            <span class="p">}</span>
+                            <span class="k">if</span> <span class="p">(</span><span class="n">pe</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="sc">'\\'</span> <span class="o">&amp;&amp;</span> <span class="n">pe</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="sc">'u'</span><span class="p">)</span> <span class="p">{</span>
+                                <span class="kt">uint32_t</span> <span class="n">sur</span> <span class="o">=</span> <span class="n">unescape_unicode</span><span class="p">((</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="n">pe</span> <span class="o">+</span> <span class="mi">2</span><span class="p">);</span>
+                                <span class="n">ch</span> <span class="o">=</span> <span class="p">(((</span><span class="n">ch</span> <span class="o">&amp;</span> <span class="mh">0x3F</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">10</span><span class="p">)</span> <span class="o">|</span> <span class="p">((((</span><span class="n">ch</span> <span class="o">&gt;&gt;</span> <span class="mi">6</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xF</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">16</span><span class="p">)</span>
+                                        <span class="o">|</span> <span class="p">(</span><span class="n">sur</span> <span class="o">&amp;</span> <span class="mh">0x3FF</span><span class="p">));</span>
+                                <span class="n">pe</span> <span class="o">+=</span> <span class="mi">5</span><span class="p">;</span>
+                            <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                                <span class="n">unescape</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="s">"?"</span><span class="p">;</span>
+                                <span class="k">break</span><span class="p">;</span>
+                            <span class="p">}</span>
+                        <span class="p">}</span>
+                        <span class="n">unescape_len</span> <span class="o">=</span> <span class="n">convert_UTF32_to_UTF8</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="n">ch</span><span class="p">);</span>
+                        <span class="n">unescape</span> <span class="o">=</span> <span class="n">buf</span><span class="p">;</span>
+                    <span class="p">}</span>
+                    <span class="k">break</span><span class="p">;</span>
+                <span class="nl">default:</span>
+                    <span class="n">p</span> <span class="o">=</span> <span class="n">pe</span><span class="p">;</span>
+                    <span class="k">continue</span><span class="p">;</span>
+            <span class="p">}</span>
+            <span class="n">MEMCPY</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">unescape</span><span class="p">,</span> <span class="kt">char</span><span class="p">,</span> <span class="n">unescape_len</span><span class="p">);</span>
+            <span class="n">buffer</span> <span class="o">+=</span> <span class="n">unescape_len</span><span class="p">;</span>
+            <span class="n">p</span> <span class="o">=</span> <span class="o">++</span><span class="n">pe</span><span class="p">;</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">pe</span><span class="o">++</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">pe</span> <span class="o">&gt;</span> <span class="n">p</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">MEMCPY</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="kt">char</span><span class="p">,</span> <span class="n">pe</span> <span class="o">-</span> <span class="n">p</span><span class="p">);</span>
+      <span class="n">buffer</span> <span class="o">+=</span> <span class="n">pe</span> <span class="o">-</span> <span class="n">p</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">result</span> <span class="o">=</span> <span class="n">build_string</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">bufferStart</span><span class="p">,</span> <span class="n">intern</span><span class="p">,</span> <span class="n">symbolize</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">bufferSize</span> <span class="o">&gt;</span> <span class="n">MAX_STACK_BUFFER_SIZE</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">ruby_xfree</span><span class="p">(</span><span class="n">bufferStart</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    <span class="k">return</span> <span class="n">result</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>The function receives a start and end pointers, in other words, a read-only slice of bytes, and then simply two minor
+boolean parameters indicating whether the parsed string should be interned or cast to a symbol, but we can easily ignore that
+part.</p>
+
+<p>At the beginning of it, the function allocates a dedicated buffer, if the string to unescape is <code class="language-plaintext highlighter-rouge">128B</code> or less, the buffer is
+allocated on the stack using <code class="language-plaintext highlighter-rouge">alloca</code>, or if it’s bigger, on the heap using <code class="language-plaintext highlighter-rouge">malloc</code>.</p>
+
+<p>The function then scans the original string, byte by byte in search of backslash characters, once one is found, all the
+scanned bytes until then are copied over in the buffer using <code class="language-plaintext highlighter-rouge">memcpy</code>, and then based on which characters follow the backslash,
+the unescaped version of it is appended to the buffer, and then it goes back to search for the next backslash.</p>
+
+<p>Once the entire source string has been scanned, the remaining bytes are copied with <code class="language-plaintext highlighter-rouge">memcpy</code>, and the Ruby String is built using
+the buffer as a source, and finally the buffer is freed.</p>
+
+<h2 id="a-note-on-simd">A Note on SIMD</h2>
+
+<p>One thing to note here is that the function tries to avoid the naive solution of copying bytes one by one right after having
+scanned them, and instead try to do it in batches using <code class="language-plaintext highlighter-rouge">memcpy</code> (which appears as <code class="language-plaintext highlighter-rouge">__platform_memmove</code> in profiles).
+This is because, while the implementation of <code class="language-plaintext highlighter-rouge">memcpy</code> is platform-specific, most implementations
+leverage SIMD registers to copy blocks of 16, 32, or more bytes in one CPU instruction, which is massively faster. So that’s good.</p>
+
+<p>If you are unfamiliar with what SMID is, I’ll try a simple explanation. Imagine you have a string, and you need to check if
+it is ASCII only or not, the naive implementation would be (using Ruby for clarity):</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">ascii_only?</span><span class="p">(</span><span class="n">string</span><span class="p">)</span>
+  <span class="n">string</span><span class="p">.</span><span class="nf">each_byte</span> <span class="k">do</span> <span class="o">|</span><span class="n">byte</span><span class="o">|</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">byte</span> <span class="o">&amp;</span> <span class="mh">0x80</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="c1"># 0x80 == 0b10000000</span>
+      <span class="k">return</span> <span class="kp">false</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+  <span class="kp">true</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>It’s quite straightforward, you go over bytes in the string one by one, and for each apply a bitmask (<code class="language-plaintext highlighter-rouge">0x80</code>) to validate
+it’s in the ASCII range, because ASCII characters are in the <code class="language-plaintext highlighter-rouge">0..127</code> range, so in binary form, it means only the 7 least
+significant bits can be set in each byte.</p>
+
+<p>But that’s a bit wasteful, as for each byte we need to:</p>
+
+<ul>
+  <li>Load the byte in a register.</li>
+  <li>Apply the bitwise AND.</li>
+  <li>Conditionally jump.</li>
+  <li>Increment the for loop counter.</li>
+  <li>Another conditional jump to go back at the beginning of the loop.</li>
+</ul>
+
+<p>Even if you ignore the relative cost of each of these steps, you can see that the actual operation we want to perform,
+the bitwise AND and the conditional jump, is entirely dwarfed by the work necessary to perform the looping.
+That’s about only 2 out of 5 instructions.</p>
+
+<p>But there’s a fairly well-known way to make this about 8 times faster on 64-bit processors, by checking the bytes in chunks
+of 8 instead of one by one:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">ascii_only?</span><span class="p">(</span><span class="n">string</span><span class="p">)</span>
+  <span class="n">string</span><span class="p">.</span><span class="nf">unpack</span><span class="p">(</span><span class="s2">"Q*C*"</span><span class="p">).</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">unsigned_int_64</span><span class="o">|</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">unsigned_int_64</span> <span class="o">&amp;</span> <span class="mh">0x8080808080808080</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span>
+      <span class="k">return</span> <span class="kp">false</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+  <span class="kp">true</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>Since a character is just one byte, and a processor register can hold 8 bytes (64-bit), you can load 8 characters in a
+single register, and apply the same bitmask to all of the 8 bytes at once, by simply repeating the <code class="language-plaintext highlighter-rouge">0x80</code> pattern, which
+drastically the ratio of useful instructions, and the number of times you have to loop.</p>
+
+<p>Well, <a href="https://en.wikipedia.org/wiki/Single_instruction,_multiple_data">SIMD, which stands for Single Instruction Multiple Data</a>,
+is exactly that idea, pushed further, with some even larger registers, and a wider set of specialized instructions to more easily
+work on what are essentially small arrays. You may have heard it referred to as <em>vectorization</em>.
+Some modern processors have SIMD registers as large as 512 bits, enough to copy or process 64 characters at once.</p>
+
+<p>The downside however is that different processors have different APIs, so if you want to support both x86_64 processors and ARM64
+processors, you need to write two versions of your routine, and probably a third version not using SIMD as a fallback.
+And even if you only support x86_64, older or lower-end processors will only have older API, for instance depending on how old of
+an Intel CPU you want to support you might need an SEE, SSE2, SSE3, SSSE3, SSE4.x, AVX, AVX2 and AVX-512 implementation, and as
+I’m writing this, Intel as announced the future AVX10 instruction set.</p>
+
+<p>And you don’t just need to write multiple versions, you also need some extra code to detect which CPU you’re running on
+and dynamically select the best usable implementation.</p>
+
+<p>So SIMD is very powerful, but it’s a ton of work to use it on multi-platform C code, too much work for me to consider
+maintaining that in <code class="language-plaintext highlighter-rouge">ruby/json</code>.</p>
+
+<h2 id="be-optimistic">Be Optimistic</h2>
+
+<p>Now that we said all that, what can we do to speed up <code class="language-plaintext highlighter-rouge">json_string_unescape</code>? As always the key is to start focusing on the
+happy path. We can easily assume most strings in a JSON document don’t need to be escaped. If we use <code class="language-plaintext highlighter-rouge">twitter.json</code> as an
+example, some of the tweet bodies contain newline characters (<code class="language-plaintext highlighter-rouge">\n</code>), and then their <code class="language-plaintext highlighter-rouge">source</code> property contains some HTML,
+hence having a few escaped double quotes. Other than that, none of the other strings need to be unescaped.</p>
+
+<p>In those cases, the current implementation is quite wasteful, we scan bytes one by one, copy them all into a buffer, and then ask
+Ruby to copy the content again inside a Ruby String. If the overwhelming majority of strings don’t need to be escaped,
+we can avoid one copy, and one buffer allocation and deallocation.</p>
+
+<p>So the idea is to wait until we’ve found the first backslash until we concern ourselves with allocating a buffer.
+You can <a href="https://github.com/ruby/json/commit/7e0f66546a53d99439db6ac30bdbcf6bebc7d801">look at the full patch</a>
+(if you do ignore the <code class="language-plaintext highlighter-rouge">parser.c</code> file which is machine-generated from <code class="language-plaintext highlighter-rouge">parser.rl</code>), but the crux of it is just 4 lines
+added at the top of <code class="language-plaintext highlighter-rouge">json_string_unescape</code>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c">    <span class="n">pe</span> <span class="o">=</span> <span class="n">memchr</span><span class="p">(</span><span class="n">p</span><span class="p">,</span> <span class="sc">'\\'</span><span class="p">,</span> <span class="n">bufferSize</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="n">pe</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="n">build_string</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="n">stringEnd</span><span class="p">,</span> <span class="n">intern</span><span class="p">,</span> <span class="n">symbolize</span><span class="p">);</span>
+    <span class="p">}</span></code></pre></figure>
+
+<p>Here I used <code class="language-plaintext highlighter-rouge">memchr</code>, which is a function that’s part of the C standard library (like <code class="language-plaintext highlighter-rouge">memcpy</code>), used to search for one
+character in a string, that’s something that is the ideal use case for SIMD. So it depends on which libc is used in the end,
+but there’s a very high chance it is optimized to use SIMD, without <code class="language-plaintext highlighter-rouge">ruby/json</code> needing to do the extra work.</p>
+
+<p>The result of just that small change was pretty good:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    60.000 i/100ms
+Calculating -------------------------------------
+               after    603.730 (± 0.2%) i/s    (1.66 ms/i) -      3.060k in   5.068496s
+
+Comparison:
+              before:      552.0 i/s
+               after:      603.7 i/s - 1.09x  faster
+</code></pre></div></div>
+
+<p>Given that <code class="language-plaintext highlighter-rouge">json_string_unescape</code> was profiled as <code class="language-plaintext highlighter-rouge">23%</code> of overall runtime, getting a <code class="language-plaintext highlighter-rouge">9%</code> speedup overall from just optimizing
+that one function is huge, close to a 2x improvement.</p>
+
+<h2 id="reuse-buffers">Reuse Buffers</h2>
+
+<p>My next idea to improve <code class="language-plaintext highlighter-rouge">json_string_unescape</code>, was that when we’re not in the happy path, rather than use a stack or heap
+buffer to do the unescaping, which we then have to copy a second time, we might as well work directly inside Ruby-owned memory,
+by using the Ruby string we’ll end up returning as our intermediary buffer.</p>
+
+<p>As I mentioned previously, Ruby strings can be hard to use as dynamic buffers from C, because if you need to resize them,
+you have to be very careful as to how the GC could react.</p>
+
+<p>But in this case, we’re unescaping JSON, so we know upfront that the final unescaped string won’t possibly be larger than the
+original escaped one, so we know we won’t need to resize the string.</p>
+
+<p>You can <a href="https://github.com/ruby/json/pull/671">look at the full patch</a>, but the crux of it is again at the top of
+<code class="language-plaintext highlighter-rouge">json_string_unescape</code>:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">VALUE</span> <span class="n">result</span> <span class="o">=</span> <span class="n">rb_str_buf_new</span><span class="p">(</span><span class="n">bufferSize</span><span class="p">);</span>
+<span class="n">rb_enc_associate_index</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">utf8_encindex</span><span class="p">);</span>
+<span class="n">buffer</span> <span class="o">=</span> <span class="n">bufferStart</span> <span class="o">=</span> <span class="n">RSTRING_PTR</span><span class="p">(</span><span class="n">result</span><span class="p">);</span></code></pre></figure>
+
+<p>Since our more realistic benchmarks don’t have that many strings that need escaping, the difference there isn’t very big,
+but by crafting a dedicated micro-benchmark, we can see it more easily:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_parsing</span> <span class="s2">"lots_unescape"</span><span class="p">,</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">([</span><span class="s2">"</span><span class="se">\n</span><span class="s2">"</span><span class="o">*</span><span class="mi">200</span><span class="p">]</span><span class="o">*</span><span class="mi">100</span><span class="p">)</span></code></pre></figure>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing lots_unescape (40301 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after     1.809k i/100ms
+Calculating -------------------------------------
+               after     18.048k (± 0.3%) i/s   (55.41 μs/i) -     90.450k in   5.011607s
+
+Comparison:
+              before:    16591.5 i/s
+               after:    18048.3 i/s - 1.09x  faster
+</code></pre></div></div>
+
+<p>And in general, even if something doesn’t help the happy path, hence doesn’t move the needle much on macro-benchmark, it’s
+still good not to neglect the performance of the unhappy path.</p>
+
+<h2 id="elide-parser-allocation">Elide Parser Allocation</h2>
+
+<p>The next optimization I performed, was another direct port of a previous optimization from the generator.</p>
+
+<p>If you remember the <code class="language-plaintext highlighter-rouge">JSON.parse</code> method:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
+  <span class="k">if</span> <span class="n">opts</span><span class="p">.</span><span class="nf">nil?</span>
+    <span class="no">Parser</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">source</span><span class="p">).</span><span class="nf">parse</span>
+  <span class="k">else</span>
+    <span class="no">Parser</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">opts</span><span class="p">).</span><span class="nf">parse</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>You can see we instantiate a <code class="language-plaintext highlighter-rouge">JSON::Parser</code> instance, but immediately discard it after having called a method on it.
+Using more pompous terms, the <code class="language-plaintext highlighter-rouge">Parser</code> instance doesn’t <em>escape</em> the <code class="language-plaintext highlighter-rouge">parse</code> method.
+As such we can entirely skip on allocating that object, like we did with the <code class="language-plaintext highlighter-rouge">JSON::State</code> instance, but it’s even simpler
+as we don’t even need logic to allocate it on the fly as it is never needed.</p>
+
+<p>Sufficiently advanced compilers can perform this sort of optimization on their own, that’s what they refer to as “escape analysis”,
+and that is how some JITs can sometimes actually reduce memory usage of an application, by automatically eluding some allocations.
+Here however it would be very hard for a compiler to perform as it would need to understand both the Ruby and C parts of the program,
+perhaps older versions of TruffleRuby would have been able to optimize this out when they used to interpret C extensions, but I’m not sure.</p>
+
+<p>You can look at <a href="https://github.com/ruby/json/pull/673">the full patch</a>, which shipped with a few other optimizations like
+the more efficient way to process option hashes, but nothing we haven’t talked about before, so let’s move on.</p>
+
+<h2 id="caching-parsed-objects">Caching Parsed Objects</h2>
+
+<p>At that point, <code class="language-plaintext highlighter-rouge">JSON.parse</code> was getting really close to alternatives on macro benchmarks,
+but I didn’t have any immediate ideas on what to do to go beyond that:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.3.4 (2024-07-09 revision be1089c8ec) +YJIT [arm64-darwin23]
+Warming up --------------------------------------
+                json    57.000 i/100ms
+                  oj    62.000 i/100ms
+          Oj::Parser    78.000 i/100ms
+           rapidjson    56.000 i/100ms
+Calculating -------------------------------------
+                json    573.527 (± 1.6%) i/s    (1.74 ms/i) -      2.907k in   5.070094s
+                  oj    619.368 (± 1.6%) i/s    (1.61 ms/i) -      3.100k in   5.006550s
+          Oj::Parser    770.095 (± 0.9%) i/s    (1.30 ms/i) -      3.900k in   5.064768s
+           rapidjson    560.601 (± 0.4%) i/s    (1.78 ms/i) -      2.856k in   5.094597s
+
+Comparison:
+                json:      573.5 i/s
+          Oj::Parser:      770.1 i/s - 1.34x  faster
+                  oj:      619.4 i/s - 1.08x  faster
+           rapidjson:      560.6 i/s - 1.02x  slower
+</code></pre></div></div>
+
+<p>Surely we should be able to match <code class="language-plaintext highlighter-rouge">Oj.load</code>, given it has a similar interface, but beating <code class="language-plaintext highlighter-rouge">Oj::Parser</code> wasn’t realistic
+because it had a major inherent advantage, its statefulness:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">Benchmark</span><span class="p">.</span><span class="nf">ips</span> <span class="k">do</span> <span class="o">|</span><span class="n">x</span><span class="o">|</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"json"</span><span class="p">)</span>      <span class="p">{</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="n">json_output</span><span class="p">)</span> <span class="p">}</span> <span class="k">if</span> <span class="no">RUN</span><span class="p">[</span><span class="ss">:json</span><span class="p">]</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"oj"</span><span class="p">)</span>        <span class="p">{</span> <span class="no">Oj</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="n">json_output</span><span class="p">)</span> <span class="p">}</span> <span class="k">if</span> <span class="no">RUN</span><span class="p">[</span><span class="ss">:oj</span><span class="p">]</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"Oj::Parser"</span><span class="p">)</span> <span class="p">{</span> <span class="no">Oj</span><span class="o">::</span><span class="no">Parser</span><span class="p">.</span><span class="nf">usual</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="n">json_output</span><span class="p">)</span> <span class="p">}</span> <span class="k">if</span> <span class="no">RUN</span><span class="p">[</span><span class="ss">:oj</span><span class="p">]</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"rapidjson"</span><span class="p">)</span> <span class="p">{</span> <span class="no">RapidJSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="n">json_output</span><span class="p">)</span> <span class="p">}</span> <span class="k">if</span> <span class="no">RUN</span><span class="p">[</span><span class="ss">:rapidjson</span><span class="p">]</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">compare!</span><span class="p">(</span><span class="ss">order: :baseline</span><span class="p">)</span>
+<span class="k">end</span></code></pre></figure>
+
+<p><code class="language-plaintext highlighter-rouge">Oj::Parser.usual</code> always returns the same <code class="language-plaintext highlighter-rouge">Oj::Parser</code> instance, and it has a few internal caches.
+For instance, it caches the parsed Hash keys, so that if the same key is encountered more than once, it is only allocated once.</p>
+
+<p>This is made easy by Ruby, because not many people know this, but when you use a string as a hash key, it often doesn’t use the
+key you gave it, but makes a copy:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="c1"># frozen_string_literal: true</span>
+
+<span class="nb">hash</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">key</span> <span class="o">=</span> <span class="s2">"my_key"</span>
+<span class="n">key_copy</span> <span class="o">=</span> <span class="n">key</span><span class="p">.</span><span class="nf">dup</span>
+<span class="nb">hash</span><span class="p">[</span><span class="n">key_copy</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">equal?</span><span class="p">(</span><span class="n">key_copy</span><span class="p">)</span> <span class="c1"># =&gt; false</span>
+<span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">equal?</span><span class="p">(</span><span class="n">key</span><span class="p">)</span> <span class="c1"># =&gt; true</span>
+<span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">frozen?</span> <span class="c1"># =&gt; true</span></code></pre></figure>
+
+<p>The reason is that hashes behave quite weirdly when their keys are mutated. Ruby lets you do it with other types, but given
+strings are among the most common hash keys, they are treated a bit differently, in pseudo-Ruby, the logic would be something like:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">Hash</span>
+  <span class="k">def</span> <span class="nf">[]=</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">entry</span> <span class="o">=</span> <span class="n">find_entry</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+      <span class="n">entry</span><span class="p">.</span><span class="nf">value</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">else</span>
+      <span class="k">if</span> <span class="n">key</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">String</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">key</span><span class="p">.</span><span class="nf">interned?</span>
+        <span class="k">if</span> <span class="n">interned_str</span> <span class="o">=</span> <span class="o">::</span><span class="no">RubyVM</span><span class="o">::</span><span class="no">INTERNED_STRING_TABLE</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+          <span class="n">key</span> <span class="o">=</span> <span class="n">interned_str</span>
+        <span class="k">elsif</span> <span class="o">!</span><span class="n">key</span><span class="p">.</span><span class="nf">frozen?</span>
+          <span class="n">key</span> <span class="o">=</span> <span class="n">key</span><span class="p">.</span><span class="nf">dup</span><span class="p">.</span><span class="nf">freeze</span>
+        <span class="k">end</span>
+      <span class="k">end</span>
+
+      <span class="nb">self</span> <span class="o">&lt;&lt;</span> <span class="no">Entry</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>So when inserting into a Hash, if the key is a String, and isn’t interned, Ruby will first try to check if an equivalent string <a href="https://en.wikipedia.org/wiki/Interning_(computer_science)">has been interned</a>.
+And if that’s the case, it replaces the provided key with its interned counterpart.</p>
+
+<p>If there is no equivalent interned string, then it checks if the provided key is frozen, if it isn’t, it makes a copy and freezes it.</p>
+
+<p>So it’s impossible to have a mutable String as a hash key, and if you insert something in a hash using a mutable string as a key,
+that will likely cause an extra allocation.</p>
+
+<p>That’s why when parsing some format into a hash, <a href="https://github.com/redis-rb/redis-client/commit/3c669f44c7478ffb222e483c8acbdb2a00bbfd65">it’s a good idea to pre-freeze string keys, as it can reduce allocations quite significantly</a>.</p>
+
+<p>But beyond just pre-freezing, you can also pre-intern the string, which is something <a href="https://github.com/ruby/json/pull/451">I added a while ago to the JSON gem</a>,
+long before I was a maintainer, using <a href="https://bugs.ruby-lang.org/issues/16029">a set of Ruby C APIs I added back in Ruby 3.0</a>.
+When using Ruby-level APIs, if you are parsing something and wish to intern a string, you can’t elude the allocation, because you need
+to build a string to be able to look up the interned strings table, so it’s some sort of chicken and egg problem.
+But these APIs allow to “find or create” an interned Ruby String, directly from a raw C string with only 0 or 1 allocation.</p>
+
+<p>The way they do it is by allocating what’s referred to as a “fake string” on the stack and using that to look up the table.
+If it’s a hit, then it returns the existing heap object it found, if not, it spills the “fake string” on the heap and intern
+it.</p>
+
+<p>If you are curious about it, you can look at <code class="language-plaintext highlighter-rouge">rb_interned_str</code>, <code class="language-plaintext highlighter-rouge">setup_fake_str</code> and <code class="language-plaintext highlighter-rouge">register_fstring</code> <a href="https://github.com/ruby/ruby/blob/d9e1a7cdf8a6e8327cd09a891fd45d6af357f926/string.c#L12507">in <code class="language-plaintext highlighter-rouge">string.c</code></a>,
+but the crux of it is here:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span>
+<span class="nf">setup_fake_str</span><span class="p">(</span><span class="k">struct</span> <span class="n">RString</span> <span class="o">*</span><span class="n">fake_str</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">name</span><span class="p">,</span> <span class="kt">long</span> <span class="n">len</span><span class="p">,</span> <span class="kt">int</span> <span class="n">encidx</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">fake_str</span><span class="o">-&gt;</span><span class="n">basic</span><span class="p">.</span><span class="n">flags</span> <span class="o">=</span> <span class="n">T_STRING</span><span class="o">|</span><span class="n">RSTRING_NOEMBED</span><span class="o">|</span><span class="n">STR_NOFREE</span><span class="o">|</span><span class="n">STR_FAKESTR</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">name</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">RUBY_ASSERT_ALWAYS</span><span class="p">(</span><span class="n">len</span> <span class="o">==</span> <span class="mi">0</span><span class="p">);</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="s">""</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">ENCODING_SET_INLINED</span><span class="p">((</span><span class="n">VALUE</span><span class="p">)</span><span class="n">fake_str</span><span class="p">,</span> <span class="n">encidx</span><span class="p">);</span>
+
+    <span class="n">RBASIC_SET_CLASS_RAW</span><span class="p">((</span><span class="n">VALUE</span><span class="p">)</span><span class="n">fake_str</span><span class="p">,</span> <span class="n">rb_cString</span><span class="p">);</span>
+    <span class="n">fake_str</span><span class="o">-&gt;</span><span class="n">len</span> <span class="o">=</span> <span class="n">len</span><span class="p">;</span>
+    <span class="n">fake_str</span><span class="o">-&gt;</span><span class="n">as</span><span class="p">.</span><span class="n">heap</span><span class="p">.</span><span class="n">ptr</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">name</span><span class="p">;</span>
+    <span class="n">fake_str</span><span class="o">-&gt;</span><span class="n">as</span><span class="p">.</span><span class="n">heap</span><span class="p">.</span><span class="n">aux</span><span class="p">.</span><span class="n">capa</span> <span class="o">=</span> <span class="n">len</span><span class="p">;</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">VALUE</span><span class="p">)</span><span class="n">fake_str</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">VALUE</span>
+<span class="nf">rb_interned_str</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span><span class="p">,</span> <span class="kt">long</span> <span class="n">len</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">struct</span> <span class="n">RString</span> <span class="n">fake_str</span><span class="p">;</span>
+    <span class="k">return</span> <span class="n">register_fstring</span><span class="p">(</span><span class="n">setup_fake_str</span><span class="p">(</span><span class="o">&amp;</span><span class="n">fake_str</span><span class="p">,</span> <span class="n">ptr</span><span class="p">,</span> <span class="n">len</span><span class="p">,</span> <span class="n">ENCINDEX_US_ASCII</span><span class="p">),</span> <span class="nb">true</span><span class="p">,</span> <span class="nb">false</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>You can notice I didn’t make the “fake string” name up, it’s right there in the <code class="language-plaintext highlighter-rouge">STR_FAKESTR</code> flag.</p>
+
+<p>Given all the above, if you expect a hash key to appear multiple times, it can be a good idea to pre-intern it yourself,
+and to keep it handy, so that you save on further hash lookups.</p>
+
+<p>That’s something <code class="language-plaintext highlighter-rouge">Oj::Parser</code> can more easily do, because its API is stateful, you allocate a parser object, and use it multiple
+times, which allows it to keep state around, cache immutable objects and re-use them. It’s not all rainbows and unicorns though, if you have some
+mutable state, you have to worry about concurrent access. Generally, that means you have to synchronize a mutex whenever you access
+that state, which isn’t good for performance, or simply state the API isn’t thread safe and each thread should have its own parser
+object. It also means you have to concern yourself with cache eviction, as the parser may be used to parse radically different
+documents, so you need to keep track of how often keys are used and get rid of the cold ones. That’s a lot of extra logic so it’s
+not guaranteed at all to pay off.</p>
+
+<p>In <code class="language-plaintext highlighter-rouge">ruby/json</code>’s case, I wanted to make the already existing <code class="language-plaintext highlighter-rouge">JSON.parse</code> API faster, not expose a new faster one, so this sort
+of persistent cache isn’t a great fit. But that doesn’t mean the general idea couldn’t be adapted.</p>
+
+<p>Having a persistent cache makes a huge difference on micro-benchmarks, so in a way, it would be nice, but it really isn’t as
+big of a deal on more real-world workloads, at least not most of them, unless you have lots of parser instances and you always
+re-use the same instance to parse the same JSON schemas.</p>
+
+<p>But if you look at the macro-benchmarks in <code class="language-plaintext highlighter-rouge">ruby/json</code>, a lot of them have a similar structure, it’s one big array of objects with
+all the same keys:</p>
+
+<figure class="highlight"><pre><code class="language-json" data-lang="json"><span class="p">[</span><span class="w">
+  </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"src"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://..."</span><span class="p">,</span><span class="w">
+    </span><span class="err">...</span><span class="w">
+  </span><span class="p">},</span><span class="w">
+  </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"src"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://..."</span><span class="p">,</span><span class="w">
+    </span><span class="err">...</span><span class="w">
+  </span><span class="p">},</span><span class="w">
+  </span><span class="err">...</span><span class="w">
+</span><span class="p">]</span></code></pre></figure>
+
+<p>And that shouldn’t be a surprise, because that’s one of the biggest use cases for parsing JSON documents, REST APIs, GraphQL, etc.</p>
+
+<p>With such a structure being expected to be common, even a cache that doesn’t escape the <code class="language-plaintext highlighter-rouge">JSON.parse</code> method could improve performance.
+And if we’re not sharing the cache between documents, we don’t need to bother with synchronization or concurrent accesses,
+don’t even really need to bother with evictions, and can probably afford it being relatively smaller. Small enough that it would
+safely fit on the stack?</p>
+
+<p>Since I liked the idea, I figured I might as well lean all the way into it. The kinda go-to data structure to use for caches
+is some form of hash table, or binary tree. But these structures have lots of references, they don’t make the best use of limited
+memory space.</p>
+
+<p>That’s where I started remembering Aaron’s work on Ruby’s object shapes lookup cache, for which he used a cool data
+structure: <a href="https://en.wikipedia.org/wiki/Red%E2%80%93black_tree">Red Black Trees</a>.
+I’m not going to go into too much detail about those, because Aaron did multiple talks on them recently,
+<a href="https://www.youtube.com/watch?v=Sav8S_7iWJc">for instance his keynote at Tropical.rb</a>, and he explains them extrmely well.</p>
+
+<p>But in short, it’s a tree structure that offers a good <code class="language-plaintext highlighter-rouge">O(log n)</code> search and insertion performance and doesn’t require that much
+overhead on top of the useful payload. Each tree node needs one bit to store the color and two references to child nodes on top
+of holding one entry. By packing structs efficiently, this could be done with just 16B per entry, so pretty good.</p>
+
+<p>But as I was implementing it, I realized it was a lot of complexity for a cache I intended to be very small, a few dozen,
+certainly less than a hundred entries.
+And when dealing with a very small amount of data, algorithm complexity isn’t always the best predictor of performance.</p>
+
+<p>So I figured I’d first try with what’s probably part of Computer Science 101<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>: a good old binary search.</p>
+
+<p>If you think about it, doing a binary search in a sorted array has the same <code class="language-plaintext highlighter-rouge">O(log n)</code> complexity, but it’s also much more compact.
+The one big downside is that during insertion you might need to move some elements, so it’s potentially <code class="language-plaintext highlighter-rouge">O(n)</code>,
+but since we know we’ll be using a small array, it means not a lot of data to move, and since we’re not considering evictions,
+we’ll fairly quickly stop inserting.</p>
+
+<p>So most of the downsides of that solution don’t fully apply here, and being more compact is good given we want to use the stack
+to store it, and it plays well with CPU caches and such, no pointer chasing or anything. In the worst case, if it didn’t perform well, I could easily swap it for
+another data structure, and the interface would remain the same.</p>
+
+<p>You can have a look at <a href="https://github.com/ruby/json/commit/f8887b9beba24464f0ec020e023e2b88afc4d8f4">the full patch</a>, there’s not
+a whole lot I feel I can explain about it.</p>
+
+<p>The only few key details are that I settled for a cache size of <code class="language-plaintext highlighter-rouge">55</code> entries and that strings longer than <code class="language-plaintext highlighter-rouge">63B</code> aren’t considered
+for caching. Both of those are somewhat eye-balled heuristics of when it’s no longer worth trying to use the cache:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define JSON_RSTRING_CACHE_CAPA 63
+#define JSON_RSTRING_CACHE_MAX_ENTRY_LENGTH 55
+</span><span class="k">typedef</span> <span class="k">struct</span> <span class="n">rstring_cache_struct</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">length</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">entries</span><span class="p">[</span><span class="n">JSON_RSTRING_CACHE_CAPA</span><span class="p">];</span>
+<span class="p">}</span> <span class="n">rstring_cache</span><span class="p">;</span></code></pre></figure>
+
+<p>This immediately yielded a nice <code class="language-plaintext highlighter-rouge">15%</code> improvement on the <code class="language-plaintext highlighter-rouge">activitypub.json</code> and <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmarks:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    70.000 i/100ms
+Calculating -------------------------------------
+               after    708.951 (± 0.6%) i/s    (1.41 ms/i) -      3.570k in   5.035785s
+
+Comparison:
+              before:      617.3 i/s
+               after:      709.0 i/s - 1.15x  faster
+</code></pre></div></div>
+
+<p>But they’re exactly the kind of documents I had in mind, so somewhat expected.
+What was less good, however, is that another macro-benchmark was impacted, but negatively:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing citm_catalog.json (1727030 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    30.000 i/100ms
+Calculating -------------------------------------
+               after    303.890 (± 0.3%) i/s    (3.29 ms/i) -      1.530k in   5.034746s
+
+Comparison:
+              before:      323.8 i/s
+               after:      303.9 i/s - 1.07x  slower
+</code></pre></div></div>
+
+<p>That I didn’t like, so I started to investigate.</p>
+
+<p>It turned out that <code class="language-plaintext highlighter-rouge">citm_catalog.json</code> was the key cache’s worst nightmare:</p>
+
+<figure class="highlight"><pre><code class="language-json" data-lang="json"><span class="p">{</span><span class="w">
+    </span><span class="nl">"areaNames"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+        </span><span class="nl">"205705993"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Arrière-scène central"</span><span class="p">,</span><span class="w">
+        </span><span class="err">//</span><span class="w"> </span><span class="mi">15</span><span class="w"> </span><span class="err">more</span><span class="w"> </span><span class="err">unique</span><span class="w"> </span><span class="err">keys</span><span class="w">
+        </span><span class="nl">"342752287"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Zone physique secrète"</span><span class="w">
+    </span><span class="p">},</span><span class="w">
+    </span><span class="nl">"audienceSubCategoryNames"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+        </span><span class="nl">"337100890"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Abonné"</span><span class="w">
+    </span><span class="p">},</span><span class="w">
+    </span><span class="nl">"blockNames"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span><span class="w">
+    </span><span class="nl">"events"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+        </span><span class="nl">"138586341"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+            </span><span class="nl">"description"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">138586341</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"logo"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"30th Anniversary Tour"</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"subTopicIds"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+                </span><span class="mi">337184269</span><span class="p">,</span><span class="w">
+                </span><span class="mi">337184283</span><span class="w">
+            </span><span class="p">],</span><span class="w">
+            </span><span class="nl">"subjectCode"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"subtitle"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"topicIds"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+                </span><span class="mi">324846099</span><span class="p">,</span><span class="w">
+                </span><span class="mi">107888604</span><span class="w">
+            </span><span class="p">]</span><span class="w">
+        </span><span class="p">},</span><span class="w">
+        </span><span class="nl">"138586345"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+            </span><span class="nl">"description"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">138586345</span><span class="p">,</span><span class="w">
+            </span><span class="err">//</span><span class="w"> </span><span class="err">snipp</span></code></pre></figure>
+
+<p>It does have a lot of repeated keys like we expect many JSON documents to have, however, it happens to also
+have many numeric keys, likely internal database IDs, and since JSON only supports strings as object keys, they’re
+all represented as strings, and these aren’t repeated much and fill the cache with junk almost immediately.</p>
+
+<p>Even though the gain on <code class="language-plaintext highlighter-rouge">twitter.json</code> and <code class="language-plaintext highlighter-rouge">activitypub.json</code> was much bigger than the loss on <code class="language-plaintext highlighter-rouge">citm_catalog.json</code>,
+that didn’t feel great, and that annoyed me a lot.</p>
+
+<p>After some reflection, I figured the idea behind this optimization was to help with JSON objects that are essentially
+tables rows, <code class="language-plaintext highlighter-rouge">citm_catalog.json</code> was mostly one, but mixed with some references.
+Based on this, It seemed fair game to all keys that don’t look like a “column” name, such as the one starting with a digit,
+so I added one little check:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">isalpha</span><span class="p">(</span><span class="n">str</span><span class="p">[</span><span class="mi">0</span><span class="p">])))</span> <span class="p">{</span>
+    <span class="c1">// Simple heuristic, if the first character isn't a letter,</span>
+    <span class="c1">// we're much less likely to see this string again.</span>
+    <span class="c1">// We mostly want to cache strings that are likely to be repeated.</span>
+    <span class="k">return</span> <span class="n">rb_str_freeze</span><span class="p">(</span><span class="n">rb_utf8_str_new</span><span class="p">(</span><span class="n">str</span><span class="p">,</span> <span class="n">length</span><span class="p">));</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>With that extra little check, the <code class="language-plaintext highlighter-rouge">7%</code> loss turned into a <code class="language-plaintext highlighter-rouge">15%</code> gain:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing citm_catalog.json (1727030 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    36.000 i/100ms
+Calculating -------------------------------------
+               after    369.793 (± 0.3%) i/s    (2.70 ms/i) -      1.872k in   5.062369s
+
+Comparison:
+              before:      321.7 i/s
+               after:      369.8 i/s - 1.15x  faster
+</code></pre></div></div>
+
+<p>I know it might sound like benchmark gaming, but this whole optimization is based on heuristics that I really think holds
+true for a very large number of documents parsed with <code class="language-plaintext highlighter-rouge">ruby/json</code>, and it’s not that different from the cap on <code class="language-plaintext highlighter-rouge">63B</code> strings.</p>
+
+<p>Later on, I went further with heuristics for when the cache should and shouldn’t be used, notably by skipping it if we’re
+not currently parsing an array:</p>
+
+<figure class="highlight"><pre><code class="language-json" data-lang="json"><span class="p">{</span><span class="w">
+  </span><span class="nl">"not_worth_caching"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+    </span><span class="p">{</span><span class="w">
+      </span><span class="nl">"worth_caching"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+        </span><span class="nl">"also_worth_caching"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="w">
+      </span><span class="p">}</span><span class="w">
+    </span><span class="p">}</span><span class="w">
+  </span><span class="p">]</span><span class="w">
+</span><span class="p">}</span></code></pre></figure>
+
+<p>You can see <a href="https://github.com/ruby/json/pull/705">the followup patch here</a>.</p>
+
+<h2 id="to-be-continued">To Be Continued</h2>
+
+<p>I have about three more parser optimizations to talk about, and after that, I think this series will be finally done,
+unless I talk about other things JSON, like my ideas for the future, or some thoughts on what I think isn’t good in its
+current API, but we’ll see.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Actually I have no idea what’s in Computer Science 101. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[After wrapping up about the encoder optimizations in the previous post, we can now start talking about the parser side.]]></summary></entry><entry><title type="html">Optimizing Ruby’s JSON, Part 5</title><link href="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 5" /><published>2025-01-04T19:28:51+00:00</published><updated>2025-01-04T19:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html"><![CDATA[<p><a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">In the previous post</a>, we showed how we eliminated two <code class="language-plaintext highlighter-rouge">malloc/free</code> pairs of calls
 when generating small JSON documents, and how that put us ahead of Oj when reusing the <code class="language-plaintext highlighter-rouge">JSON::State</code> object.</p>
 
 <p>But that API isn’t the one people use, so if we wanted to come out ahead in the micro-benchmarks users might perform themselves, we had to
