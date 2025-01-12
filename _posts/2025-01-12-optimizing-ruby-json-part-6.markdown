@@ -953,7 +953,7 @@ another data structure, and the interface would remain the same.
 You can have a look at [the full patch](https://github.com/ruby/json/commit/f8887b9beba24464f0ec020e023e2b88afc4d8f4), there's not
 a whole lot I feel I can explain about it.
 
-The only few key details are that I settled for a cache size of `55` entries and that strings longer than `63B` aren't considered
+The only few key details are that I settled for a cache size of `63` entries and that strings longer than `55B` aren't considered
 for caching. Both of those are somewhat eye-balled heuristics of when it's no longer worth trying to use the cache:
 
 {% highlight c %}
@@ -1072,7 +1072,7 @@ Comparison:
 ```
 
 I know it might sound like benchmark gaming, but this whole optimization is based on heuristics that I really think holds
-true for a very large number of documents parsed with `ruby/json`, and it's not that different from the cap on `63B` strings.
+true for a very large number of documents parsed with `ruby/json`, and it's not that different from the cap on `55B` strings.
 
 Later on, I went further with heuristics for when the cache should and shouldn't be used, notably by skipping it if we're
 not currently parsing an array:
