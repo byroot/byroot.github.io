@@ -929,7 +929,7 @@ memory space.
 That's where I started remembering Aaron's work on Ruby's object shapes lookup cache, for which he used a cool data
 structure: [Red Black Trees](https://en.wikipedia.org/wiki/Red%E2%80%93black_tree).
 I'm not going to go into too much detail about those, because Aaron did multiple talks on them recently,
-[for instance his keynote at Tropical.rb](https://www.youtube.com/watch?v=Sav8S_7iWJc), and he explains them extrmely well.
+[for instance his keynote at Tropical.rb](https://www.youtube.com/watch?v=Sav8S_7iWJc), and he explains them extremely well.
 
 But in short, it's a tree structure that offers a good `O(log n)` search and insertion performance and doesn't require that much
 overhead on top of the useful payload. Each tree node needs one bit to store the color and two references to child nodes on top
