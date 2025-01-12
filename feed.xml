@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-12T23:21:23+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 6</title><link href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 6" /><published>2025-01-12T16:28:51+00:00</published><updated>2025-01-12T16:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html"><![CDATA[<p>After wrapping up about the encoder optimizations <a href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html">in the previous post</a>,
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-12T23:24:44+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 6</title><link href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 6" /><published>2025-01-12T16:28:51+00:00</published><updated>2025-01-12T16:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html"><![CDATA[<p>After wrapping up about the encoder optimizations <a href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html">in the previous post</a>,
 we can now start talking about the parser side.</p>
 
 <p>It certainly won’t be as long, because the parser didn’t need as much work, but also because some optimizations, particularly
@@ -890,7 +890,7 @@ another data structure, and the interface would remain the same.</p>
 <p>You can have a look at <a href="https://github.com/ruby/json/commit/f8887b9beba24464f0ec020e023e2b88afc4d8f4">the full patch</a>, there’s not
 a whole lot I feel I can explain about it.</p>
 
-<p>The only few key details are that I settled for a cache size of <code class="language-plaintext highlighter-rouge">55</code> entries and that strings longer than <code class="language-plaintext highlighter-rouge">63B</code> aren’t considered
+<p>The only few key details are that I settled for a cache size of <code class="language-plaintext highlighter-rouge">63</code> entries and that strings longer than <code class="language-plaintext highlighter-rouge">55B</code> aren’t considered
 for caching. Both of those are somewhat eye-balled heuristics of when it’s no longer worth trying to use the cache:</p>
 
 <figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define JSON_RSTRING_CACHE_CAPA 63
@@ -999,7 +999,7 @@ Comparison:
 </code></pre></div></div>
 
 <p>I know it might sound like benchmark gaming, but this whole optimization is based on heuristics that I really think holds
-true for a very large number of documents parsed with <code class="language-plaintext highlighter-rouge">ruby/json</code>, and it’s not that different from the cap on <code class="language-plaintext highlighter-rouge">63B</code> strings.</p>
+true for a very large number of documents parsed with <code class="language-plaintext highlighter-rouge">ruby/json</code>, and it’s not that different from the cap on <code class="language-plaintext highlighter-rouge">55B</code> strings.</p>
 
 <p>Later on, I went further with heuristics for when the cache should and shouldn’t be used, notably by skipping it if we’re
 not currently parsing an array:</p>
