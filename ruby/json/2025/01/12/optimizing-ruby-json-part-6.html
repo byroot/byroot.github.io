@@ -400,7 +400,7 @@ It also saved a useless <code class="language-plaintext highlighter-rouge">Strin
 
 <h2 id="more-stack-allocation">More Stack Allocation</h2>
 
-<p>Similarly, another optimization I directly ported from the encoding code, was to stack allocate from structures.</p>
+<p>Similarly, another optimization I directly ported from the encoding code, was to allocate some structures on the stack.</p>
 
 <p>The <code class="language-plaintext highlighter-rouge">ruby/json</code> parser uses a small buffer for some operations, such as parsing numbers.</p>
 
