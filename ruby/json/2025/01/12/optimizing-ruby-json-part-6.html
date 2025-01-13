@@ -65,7 +65,7 @@ were present:</p>
 
 <figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define option_given_p(opts, key) RTEST(rb_funcall(opts, i_key_p, 1, key))</span></code></pre></figure>
 
-<p>I beleive at one point using <code class="language-plaintext highlighter-rouge">rb_funcall</code> may have been necessary because <code class="language-plaintext highlighter-rouge">opts</code>, wasn’t always a real Hash,
+<p>I believe at one point using <code class="language-plaintext highlighter-rouge">rb_funcall</code> may have been necessary because <code class="language-plaintext highlighter-rouge">opts</code>, wasn’t always a real Hash,
 but these days were long gone, so Luke was able to replace it with a much more efficient version:</p>
 
 <figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">hash_has_key</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">key</span><span class="p">)</span>
