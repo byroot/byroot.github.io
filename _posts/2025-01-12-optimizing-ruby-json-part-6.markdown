@@ -24,7 +24,7 @@ were present:
 #define option_given_p(opts, key) RTEST(rb_funcall(opts, i_key_p, 1, key))
 {% endhighlight %}
 
-I beleive at one point using `rb_funcall` may have been necessary because `opts`, wasn't always a real Hash,
+I believe at one point using `rb_funcall` may have been necessary because `opts`, wasn't always a real Hash,
 but these days were long gone, so Luke was able to replace it with a much more efficient version:
 
 {% highlight c %}
