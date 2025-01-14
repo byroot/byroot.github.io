@@ -333,7 +333,7 @@ I was a bit sad, but as we say here, sometimes you need to take a step back in o
 <span class="k">end</span></code></pre></figure>
 
 <p>By calling into a class method, we don’t require the allocation.
-For the pure-Ruby version of the generator, it didn’t change much, as there would be now way to elide the allocation, so I implemented
+For the pure-Ruby version of the generator, it didn’t change much, as there would be no way to elide the allocation, so I implemented
 <code class="language-plaintext highlighter-rouge">JSON::Pure::State.generate</code> in a fairly obvious way:</p>
 
 <figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">module</span> <span class="nn">JSON</span>
