@@ -445,7 +445,7 @@ Comparison:
 
 ## Avoid Duplicated Work
 
-The final parser optimization that shipped with `json 1.9.0`, was submitted by [Aaron Patterson](https://github.com/tenderlove).
+The final parser optimization that shipped with `json 2.9.0`, was submitted by [Aaron Patterson](https://github.com/tenderlove).
 I'm not too sure how he got to work on it, perhaps he was attracted by the smell of blood when he saw me cursing
 against Ragel in our company Slack, who knows?
 
@@ -503,7 +503,7 @@ Comparison:
 
 ## Fin?
 
-And that's it, that was the final optimization performed before I released `json 1.9.0`, so I will conclude this series.
+And that's it, that was the final optimization performed before I released `json 2.9.0`, so I will conclude this series.
 
 If you wonder how fast it now is, here's a final `twitter.json` benchmark against the competition:
 
