@@ -1098,4 +1098,6 @@ I have about three more parser optimizations to talk about, and after that, I th
 unless I talk about other things JSON, like my ideas for the future, or some thoughts on what I think isn't good in its
 current API, but we'll see.
 
+Edit: [Part 7 is here](/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html).
+
 [^1]: Actually I have no idea what's in Computer Science 101.
