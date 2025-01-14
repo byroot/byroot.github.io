@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-14T21:48:06+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 7</title><link href="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 7" /><published>2025-01-14T21:28:51+00:00</published><updated>2025-01-14T21:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html"><![CDATA[<p>In <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html">the previous post</a>, we started covering some parser optimizations.
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-14T22:49:50+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 7</title><link href="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 7" /><published>2025-01-14T21:28:51+00:00</published><updated>2025-01-14T21:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html"><![CDATA[<p>In <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html">the previous post</a>, we started covering some parser optimizations.
 There’s just a handful more to cover until we reached what’s the state of the currently released version of <code class="language-plaintext highlighter-rouge">ruby/json</code>.</p>
 
 <h2 id="batch-apis">Batch APIs</h2>
@@ -412,7 +412,7 @@ Comparison:
 
 <h2 id="avoid-duplicated-work">Avoid Duplicated Work</h2>
 
-<p>The final parser optimization that shipped with <code class="language-plaintext highlighter-rouge">json 1.9.0</code>, was submitted by <a href="https://github.com/tenderlove">Aaron Patterson</a>.
+<p>The final parser optimization that shipped with <code class="language-plaintext highlighter-rouge">json 2.9.0</code>, was submitted by <a href="https://github.com/tenderlove">Aaron Patterson</a>.
 I’m not too sure how he got to work on it, perhaps he was attracted by the smell of blood when he saw me cursing
 against Ragel in our company Slack, who knows?</p>
 
@@ -465,7 +465,7 @@ Comparison:
 
 <h2 id="fin">Fin?</h2>
 
-<p>And that’s it, that was the final optimization performed before I released <code class="language-plaintext highlighter-rouge">json 1.9.0</code>, so I will conclude this series.</p>
+<p>And that’s it, that was the final optimization performed before I released <code class="language-plaintext highlighter-rouge">json 2.9.0</code>, so I will conclude this series.</p>
 
 <p>If you wonder how fast it now is, here’s a final <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark against the competition:</p>
 
