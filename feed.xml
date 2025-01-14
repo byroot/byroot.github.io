@@ -1,4 +1,506 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-14T20:32:20+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 6</title><link href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 6" /><published>2025-01-12T16:28:51+00:00</published><updated>2025-01-12T16:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html"><![CDATA[<p>After wrapping up about the encoder optimizations <a href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html">in the previous post</a>,
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-14T21:48:06+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Optimizing Ruby’s JSON, Part 7</title><link href="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 7" /><published>2025-01-14T21:28:51+00:00</published><updated>2025-01-14T21:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html"><![CDATA[<p>In <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html">the previous post</a>, we started covering some parser optimizations.
+There’s just a handful more to cover until we reached what’s the state of the currently released version of <code class="language-plaintext highlighter-rouge">ruby/json</code>.</p>
+
+<h2 id="batch-apis">Batch APIs</h2>
+
+<p>But as always, let’s start with a flame graph of <code class="language-plaintext highlighter-rouge">twitter.json</code>, to see what was left to optimize:</p>
+
+<p><img src="/assets/articles/json-7/flamegraph-twitter.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4gRJXjb">Full profile</a>.</p>
+
+<p>Something that was bothering me in that profile, was the whopping <code class="language-plaintext highlighter-rouge">26.6%</code> of time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code>,
+which is the C API for <code class="language-plaintext highlighter-rouge">Hash#[]=</code>.</p>
+
+<p>It wasn’t really surprising to me though. I’m sure you’ve heard about some super fast JSON parsers like <code class="language-plaintext highlighter-rouge">simdjson</code>, <code class="language-plaintext highlighter-rouge">rapidJSON</code> etc,
+Some of you may have wondered why I didn’t just do a binding of one of these to make <code class="language-plaintext highlighter-rouge">ruby/json</code> faster.
+Aside from many technical and legal restrictions, a big reason is that actually parsing JSON isn’t that much of a bottleneck,
+even the fairly naive Ragel parser in <code class="language-plaintext highlighter-rouge">ruby/json</code> isn’t that slow (It could be way better though, but more on that later).</p>
+
+<p>No, the really expansive part is building the Ruby objects tree, as evidenced by the time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> on that
+flame graph, but also in <code class="language-plaintext highlighter-rouge">rb_ary_push</code> on benchmarks that use a lot of arrays. So a custom parser can potentially end up faster
+overall by being better tailored to make efficient use of Ruby APIs, such as how we do unescaping inside Ruby strings to avoid
+extra copies and cache string keys.</p>
+
+<p>But let’s focus on that part of the flame graph to see why <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> is slow, and what we could do about it:</p>
+
+<p><img src="/assets/articles/json-7/flamegraph-hash-aset.png" alt="" /></p>
+
+<p>I want to draw your attention to two things in this flame graph.</p>
+
+<p>The first is <code class="language-plaintext highlighter-rouge">ar_force_convert_table</code> on the left. You may have noticed that many functions in the graphs are prefixed with
+<code class="language-plaintext highlighter-rouge">st_</code> or <code class="language-plaintext highlighter-rouge">rb_st</code> and a few with <code class="language-plaintext highlighter-rouge">ar_</code>.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">st_</code> ones are referring to <a href="https://github.com/ruby/ruby/blob/23fc0fc22d0f066938387f3397fb8ee9358744e5/st.c"><code class="language-plaintext highlighter-rouge">st.c</code>, Ruby’s internal Hash Table implementation</a>.
+What the <code class="language-plaintext highlighter-rouge">st</code> name stands for however I don’t know. <code class="language-plaintext highlighter-rouge">st.c</code> is a relatively well-optimized hash table that evolved over the years,
+which is to be expected given how much Ruby relies on hash tables, even a modest performance gain in that data structure can have a
+big impact overall. You can read its preamble if you want more details.</p>
+
+<p>As for <code class="language-plaintext highlighter-rouge">ar_</code>, which I believe stands for “array”, refers to an optimization Ruby hashes do under the hood.
+Hash tables are great, and offer a good access performance when the dataset is large, but when it’s very small they use quite a
+lot of memory and aren’t really any better than a linear search. And Ruby code uses a lot of very small hash tables.</p>
+
+<p>So Ruby hashes have an internal limit, <a href="https://github.com/ruby/ruby/blob/23fc0fc22d0f066938387f3397fb8ee9358744e5/internal/hash.h#L17C9-L17C32"><code class="language-plaintext highlighter-rouge">RHASH_AR_TABLE_MAX_SIZE</code></a>,
+which on 64-bit platforms is <code class="language-plaintext highlighter-rouge">8</code>. Any Ruby Hash that contains <code class="language-plaintext highlighter-rouge">8</code> or fewer entries is actually lying to you, and is just an array
+in a trenchcoat. That’s what <code class="language-plaintext highlighter-rouge">ar_table</code> is, a simple array of key and value pairs being used as an associative array.
+And yes, its algorithmic complexity is technically <code class="language-plaintext highlighter-rouge">O(n)</code>, but with such a small <code class="language-plaintext highlighter-rouge">n</code>, it often is faster than doing all the hashing.</p>
+
+<p>And if you add enough items in a Hash backed by an <code class="language-plaintext highlighter-rouge">ar_table</code>, it will be converted automatically to a <code class="language-plaintext highlighter-rouge">st_table</code>. That’s what
+the <code class="language-plaintext highlighter-rouge">ar_force_convert_table</code> function does.</p>
+
+<p>You can somewhat see this using one of my favorite APIs, <code class="language-plaintext highlighter-rouge">ObjectSpace.dump</code>:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">require</span> <span class="s2">"objspace"</span>
+<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="mi">8</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">to_h</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">})</span>
+<span class="p">{</span><span class="s2">"address"</span><span class="ss">:"0xf3d8"</span><span class="p">,</span> <span class="s2">"type"</span><span class="ss">:"HASH"</span><span class="p">,</span> <span class="s2">"slot_size"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="s2">"size"</span><span class="p">:</span><span class="mi">8</span><span class="p">,</span> <span class="s2">"memsize"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="o">...</span><span class="p">}</span></code></pre></figure>
+
+<p>This tells us a Hash with 8 keys fits neatly in a 160B object slot. Each object reference is 8B, 2 references per entry,
+<code class="language-plaintext highlighter-rouge">16 * 8 =&gt; 128</code>, so with a few extra metadata and perhaps a bit of wasted space, it checks out.</p>
+
+<p>But if we do the same with a Hash with <code class="language-plaintext highlighter-rouge">9</code> items, the result is very different:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="mi">9</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">to_h</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">})</span>
+<span class="p">{</span><span class="s2">"address"</span><span class="ss">:"0x1230"</span><span class="p">,</span> <span class="s2">"type"</span><span class="ss">:"HASH"</span><span class="p">,</span> <span class="s2">"slot_size"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="s2">"size"</span><span class="p">:</span><span class="mi">9</span><span class="p">,</span> <span class="s2">"memsize"</span><span class="p">:</span><span class="mi">544</span><span class="p">,</span> <span class="o">...</span><span class="p">}</span></code></pre></figure>
+
+<p><code class="language-plaintext highlighter-rouge">544B</code>, that’s a big jump, but not so surprising. Hash tables almost by definition need to be somewhat large to not collide too much.</p>
+
+<p>The other function on the flame graph I’d like to point out is <code class="language-plaintext highlighter-rouge">rebuild_table_if_necessary</code>, which stems from the same concern,
+when you append to a Hash table, and it starts to get a bit too full, you have to increase its size, and contrary to an array,
+it’s not just a matter of calling <code class="language-plaintext highlighter-rouge">realloc</code>, you have to essentially allocate a larger table, and then re-insert all the pairs
+which means hashing the keys again, and that’s costly.</p>
+
+<p>The problem though, is that exactly what we’re doing. When we encounter the start of a JSON object (<code class="language-plaintext highlighter-rouge">{</code>), we allocate a Ruby
+Hash with <code class="language-plaintext highlighter-rouge">rb_hash_new</code>, and then every time we’re done parsing a key-value pair, we call <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> to append to the hash.</p>
+
+<p>So if a JSON document contains an object with 30 keys, we first allocate an <code class="language-plaintext highlighter-rouge">ar_table</code> with a capacity of <code class="language-plaintext highlighter-rouge">8</code> pairs, get it rebuilt
+as a <code class="language-plaintext highlighter-rouge">st_table</code> that can hold <code class="language-plaintext highlighter-rouge">16</code> entries, and finally a third time with <code class="language-plaintext highlighter-rouge">32</code> entries. Meaning we’re hashing every key 3 times,
+and wasting time in <code class="language-plaintext highlighter-rouge">malloc</code> and <code class="language-plaintext highlighter-rouge">free</code>.</p>
+
+<p>When parsing a format like <code class="language-plaintext highlighter-rouge">msgpack</code>, or Ruby’s Marshal, the byte that signals the start of a Hash is followed by the expected
+size of the Hash, allowing you to pre-allocate it with the right size, which helps a lot.
+But JSON doesn’t have that, we have no choice but to parse as we go, and we’ll only know how big the Hash is once we’re done
+parsing it.</p>
+
+<p>The problem is the same with large arrays, they start embedded, and then double in size every time they run out of space, it’s just
+not quite as bad because at least we don’t hash to re-hash the keys.</p>
+
+<p>But looking at the flame graph above, we can see that all this resizing is a majority of the time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code>, and
+<code class="language-plaintext highlighter-rouge">rb_hash_aset</code> over a quarter of the overall time, so there was really a big opportunity here.</p>
+
+<p>If it’s a bad idea to directly append to a Hash before we know how large it will be, why don’t we just wait to be done parsing it
+before we build it? Basic.</p>
+
+<p>But that means we need to store its content somewhere else in the meantime, and the ideal structure for that is a stack, which 
+is just a fancy name for an array.</p>
+
+<p>You can look at <a href="https://github.com/ruby/json/pull/678">the full patch in C</a>, but I’ll try to explain the key concept with some
+Ruby code here.</p>
+
+<p>Before the parsing code was something like this:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse_object</span>
+  <span class="nb">hash</span> <span class="o">=</span> <span class="p">{}</span>
+  <span class="k">until</span> <span class="n">object_done?</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="n">parse_object_key</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="n">parse_json</span>
+    <span class="nb">hash</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+  <span class="k">end</span>
+  <span class="nb">hash</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>We simply parse until we find the object terminator, and until then we append to the Hash whenever we get a complete pair,
+and each parsing function simply returns the parsed object.</p>
+
+<p>After the change it now looks more something like this:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse_object</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
+  <span class="n">previous_size</span> <span class="o">=</span> <span class="n">stack</span><span class="p">.</span><span class="nf">size</span>
+  <span class="k">until</span> <span class="n">object_done?</span>
+    <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="n">parse_object_key</span>
+    <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="n">parse_json</span>
+  <span class="k">end</span>
+  <span class="nb">hash</span> <span class="o">=</span> <span class="n">stack</span><span class="p">.</span><span class="nf">pop</span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="nf">size</span> <span class="o">-</span> <span class="n">previous_size</span><span class="p">).</span><span class="nf">to_h</span>
+  <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="nb">hash</span>
+  <span class="nb">hash</span>
+<span class="k">end</span></code></pre></figure>
+
+<p>Every parse function now receives an array to use as the parsing stack, whatever they parse, they push on the stack.
+The <code class="language-plaintext highlighter-rouge">parse_object</code> function is no exception, it first records how large the stack is, then it parses keys and values
+and push them both on the stack.
+Once the end of the object is found, all the pairs are popped from the back of the stack, and a hash is immediately created with
+the right size, ensuring each key is only hashed once.</p>
+
+<p>In C, it looks like this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c">    <span class="kt">long</span> <span class="n">count</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="o">-&gt;</span><span class="n">head</span> <span class="o">-</span> <span class="n">stack_head</span><span class="p">;</span>
+
+    <span class="n">VALUE</span> <span class="n">hash</span><span class="p">;</span>
+<span class="cp">#ifdef HAVE_RB_HASH_NEW_CAPA
+</span>    <span class="n">hash</span> <span class="o">=</span> <span class="n">rb_hash_new_capa</span><span class="p">(</span><span class="n">count</span> <span class="o">&gt;&gt;</span> <span class="mi">1</span><span class="p">);</span>
+<span class="cp">#else
+</span>    <span class="n">hash</span> <span class="o">=</span> <span class="n">rb_hash_new</span><span class="p">();</span>
+<span class="cp">#endif
+</span>    <span class="n">rb_hash_bulk_insert</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">rvalue_stack_peek</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="p">,</span> <span class="n">count</span><span class="p">),</span> <span class="n">hash</span><span class="p">);</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">hash</span><span class="p">;</span>
+    <span class="n">rvalue_stack_pop</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="p">,</span> <span class="n">count</span><span class="p">);</span></code></pre></figure>
+
+<p>You should be able to recognize the pattern, we create a hash of the right size using the <code class="language-plaintext highlighter-rouge">rb_hash_new_capa</code> API,
+which unfortunately we have to test for its existence because unfortunately <a href="https://bugs.ruby-lang.org/issues/18683">I only exposed it to C extensions a few years ago</a>.
+Then we insert all pairs at once with <code class="language-plaintext highlighter-rouge">rb_hash_bulk_insert</code>.</p>
+
+<p>And that’s it, with just that change, the <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark was sped up by <code class="language-plaintext highlighter-rouge">22%</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    90.000 i/100ms
+Calculating -------------------------------------
+               after    897.170 (± 0.4%) i/s    (1.11 ms/i) -      4.500k in   5.015857s
+
+Comparison:
+              before:      737.1 i/s
+               after:      897.2 i/s - 1.22x  faster
+</code></pre></div></div>
+
+<h2 id="avoid-double-scaning">Avoid Double Scaning</h2>
+
+<p>After the value stack patch was so effective, <code class="language-plaintext highlighter-rouge">json_string_unescape</code> was back to being the biggest bottleneck at <code class="language-plaintext highlighter-rouge">22%</code> of total runtime:</p>
+
+<p><img src="/assets/articles/json-7/flamegraph-str-unescape.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4hfnvjD">Full profile</a>.</p>
+
+<p>I had recently optimized it by optimistically assuming most strings don’t contain any escape character, but something still<br />
+bothered me. The Ragel parser calls our <code class="language-plaintext highlighter-rouge">JSON_parse_string</code> callback with both the start and end pointer of the string, to do
+that it has to scan the string, so it’s a bit silly that the first thing we immediately do right after that is to scan it all over
+again.</p>
+
+<p>It would be way better if while it is looking for the end of the string, the Ragel parser would record if it had seen any
+backslash, and if not, we’d save on re-scanning it again.</p>
+
+<p>Here’s how the JSON strings grammar was defined:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="o">%%</span><span class="p">{</span>
+    <span class="n">machine</span> <span class="n">JSON_string</span><span class="p">;</span>
+    <span class="n">include</span> <span class="n">JSON_common</span><span class="p">;</span>
+
+    <span class="n">write</span> <span class="n">data</span><span class="p">;</span>
+
+    <span class="n">action</span> <span class="n">parse_string</span> <span class="p">{</span>
+        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_unescape</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">NIL_P</span><span class="p">(</span><span class="o">*</span><span class="n">result</span><span class="p">))</span> <span class="p">{</span>
+            <span class="n">fhold</span><span class="p">;</span>
+            <span class="n">fbreak</span><span class="p">;</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="n">action</span> <span class="n">exit</span> <span class="p">{</span> <span class="n">fhold</span><span class="p">;</span> <span class="n">fbreak</span><span class="p">;</span> <span class="p">}</span>
+
+    <span class="n">main</span> <span class="o">:=</span> <span class="sc">'"'</span> <span class="p">((</span><span class="o">^</span><span class="p">([</span><span class="err">\</span><span class="s">"</span><span class="se">\\</span><span class="s">] | 0..0x1f) | '</span><span class="se">\\</span><span class="s">'[</span><span class="se">\"\\</span><span class="s">/bfnrt] | '</span><span class="se">\\</span><span class="s">u'[0-9a-fA-F]{4} | '</span><span class="se">\\</span><span class="s">'^([</span><span class="se">\"\\</span><span class="s">/bfnrtu]|0..0x1f))* %parse_string) '"</span><span class="err">'</span> <span class="err">@</span><span class="n">exit</span><span class="p">;</span>
+<span class="p">}</span><span class="o">%%</span></code></pre></figure>
+
+<p>If you don’t understand it, don’t worry, me neither.</p>
+
+<p>That’s where I kinda need to confess that I don’t have a proper computer science education, more some sort of very applied
+software engineering curriculum, and not a particularly good one, so terms like “formal grammar” and parser generators like Ragel
+et al kind of fly over my head, hence I’m kinda struggling to improve the core parsing parts. And I also can’t rely on
+my usual tricks to work with things I don’t fully grasp because Ragel outputs absolutely disgusting code with lots of <code class="language-plaintext highlighter-rouge">goto</code>,
+which makes it super hard to learn by experimentation.</p>
+
+<p>Yet, even with my limited understanding, I can say something is really off here.
+We can see on the last line that we’re basically instructing Ragel about all the possible escape sequences inside a JSON string,
+which to me doesn’t make much sense. All we need the parser to do for us is to know enough to find the end of the string, 
+tell us it ran into the end of the stream without finding it, or if it ran into an invalid character (e.g. a newline).</p>
+
+<p>It absolutely doesn’t need to validate that <code class="language-plaintext highlighter-rouge">\u</code> is followed by 4 hexadecimal characters, we can do that during unescaping.</p>
+
+<p>But anyway, this is for strings with escape sequences, and we don’t have that many of those, I had to figure out a way
+to have a fast path for simple strings, and after a few hours of struggling and begging some properly educated people for help
+I managed to get this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="o">%%</span><span class="p">{</span>
+    <span class="n">machine</span> <span class="n">JSON_string</span><span class="p">;</span>
+    <span class="n">include</span> <span class="n">JSON_common</span><span class="p">;</span>
+
+    <span class="n">write</span> <span class="n">data</span><span class="p">;</span>
+
+    <span class="n">action</span> <span class="n">parse_complex_string</span> <span class="p">{</span>
+        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_unescape</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
+        <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="n">fhold</span><span class="p">;</span>
+        <span class="n">fbreak</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">action</span> <span class="n">parse_simple_string</span> <span class="p">{</span>
+        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_fastpath</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
+        <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="n">fhold</span><span class="p">;</span>
+        <span class="n">fbreak</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">double_quote</span> <span class="o">=</span> <span class="sc">'"'</span><span class="p">;</span>
+    <span class="n">escape</span> <span class="o">=</span> <span class="sc">'\\'</span><span class="p">;</span>
+    <span class="n">control</span> <span class="o">=</span> <span class="mi">0</span><span class="p">..</span><span class="mh">0x1f</span><span class="p">;</span>
+    <span class="n">simple</span> <span class="o">=</span> <span class="n">any</span> <span class="o">-</span> <span class="n">escape</span> <span class="o">-</span> <span class="n">double_quote</span> <span class="o">-</span> <span class="n">control</span><span class="p">;</span>
+
+    <span class="n">main</span> <span class="o">:=</span> <span class="n">double_quote</span> <span class="p">(</span>
+         <span class="p">(</span><span class="n">simple</span><span class="o">*</span><span class="p">)(</span>
+            <span class="p">(</span><span class="n">double_quote</span><span class="p">)</span> <span class="err">@</span><span class="n">parse_simple_string</span> <span class="o">|</span>
+            <span class="p">((</span><span class="o">^</span><span class="p">([</span><span class="err">\</span><span class="s">"</span><span class="se">\\</span><span class="s">] | control) | escape[</span><span class="se">\"\\</span><span class="s">/bfnrt] | '</span><span class="se">\\</span><span class="s">u'[0-9a-fA-F]{4} | escape^([</span><span class="se">\"\\</span><span class="s">/bfnrtu]|0..0x1f))* double_quote) @parse_complex_string</span><span class="err">
+</span><span class="s">         )</span><span class="err">
+</span><span class="s">    );</span><span class="err">
+</span><span class="s">}%%</span></code></pre></figure>
+
+<p>The idea is simple, start by only looking for a double quote not preceded by any backslash, that’s the optimistic path, and if it
+matches we enter <code class="language-plaintext highlighter-rouge">parse_simple_string</code>. If it doesn’t, we fall back to the previous pattern and end up in <code class="language-plaintext highlighter-rouge">parse_complex_string</code>.</p>
+
+<p>The fast path is a much simpler function:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">json_string_fastpath</span><span class="p">(</span><span class="n">JSON_Parser</span> <span class="o">*</span><span class="n">json</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">string</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">stringEnd</span><span class="p">,</span> <span class="n">bool</span> <span class="n">is_name</span><span class="p">,</span> <span class="n">bool</span> <span class="n">intern</span><span class="p">,</span> <span class="n">bool</span> <span class="n">symbolize</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">size_t</span> <span class="n">bufferSize</span> <span class="o">=</span> <span class="n">stringEnd</span> <span class="o">-</span> <span class="n">string</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">is_name</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">VALUE</span> <span class="n">cached_key</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">symbolize</span><span class="p">))</span> <span class="p">{</span>
+            <span class="n">cached_key</span> <span class="o">=</span> <span class="n">rsymbol_cache_fetch</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">name_cache</span><span class="p">,</span> <span class="n">string</span><span class="p">,</span> <span class="n">bufferSize</span><span class="p">);</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">cached_key</span> <span class="o">=</span> <span class="n">rstring_cache_fetch</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">name_cache</span><span class="p">,</span> <span class="n">string</span><span class="p">,</span> <span class="n">bufferSize</span><span class="p">);</span>
+        <span class="p">}</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="n">cached_key</span><span class="p">))</span> <span class="p">{</span>
+            <span class="k">return</span> <span class="n">cached_key</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">return</span> <span class="n">build_string</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="n">stringEnd</span><span class="p">,</span> <span class="n">intern</span><span class="p">,</span> <span class="n">symbolize</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Nothing particularly fancy. Unfortunately the impact on <code class="language-plaintext highlighter-rouge">twitter.json</code> wasn’t that big:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    91.000 i/100ms
+Calculating -------------------------------------
+               after    913.740 (± 0.3%) i/s    (1.09 ms/i) -      4.641k in   5.079191s
+
+Comparison:
+              before:      886.9 i/s
+               after:      913.7 i/s - 1.03x  faster
+</code></pre></div></div>
+
+<p>I was a bit disappointed, but still, I progressed a bit in my understanding of Ragel and knew there was
+lots of fishy things in <code class="language-plaintext highlighter-rouge">ruby/json</code>’s Ragel parser, so that would be useful.</p>
+
+<h2 id="avoid-useless-copies">Avoid Useless Copies</h2>
+
+<p>After that disappointment, I needed a bit of a break, so I went back to a function where I knew I could get better
+results on, integer parsing.</p>
+
+<p>I didn’t have a micro-benchmark dedicated to integers, but the small array one would do:</p>
+
+<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_parsing</span> <span class="s2">"small nested array"</span><span class="p">,</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">]]</span><span class="o">*</span><span class="mi">10</span><span class="p">)</span></code></pre></figure>
+
+<p>So 10 arrays, with 5 integers each, quite simple.</p>
+
+<p>And you know the drill, it started with some profiling.</p>
+
+<p><img src="/assets/articles/json-7/flamegraph-integer.png" alt="" /></p>
+
+<p><a href="https://share.firefox.dev/4jeyFXA">Full profile</a>.</p>
+
+<p>As <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html#more-stack-allocation">we mentioned in the previous part</a>,
+<code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>, the API Ruby gives us to turn a C string into a Ruby Integer, isn’t very efficient.</p>
+
+<p>First, because it expects a C string, it forces us to first copy the string into a buffer so we can append a <code class="language-plaintext highlighter-rouge">NULL</code> to it,
+but also because it has to deal with quite a lot of cases we don’t care about, such as a variable base. For instance <code class="language-plaintext highlighter-rouge">0xff</code> is a
+valid number for <code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>, but not for JSON. It also has to support arbitrary long integers, which slows it down, but the
+overwhelming majority of the numbers we parse fit in 64 bits.</p>
+
+<p>So we have an opportunity here for another fast path type of function, that would deal with the crux of integer parsing, and
+for the rare and complex cases, continue to rely on <code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>.</p>
+
+<p>The implementation is very straightforward, you can see <a href="https://github.com/ruby/json/pull/692">the full patch</a>,
+but I’ll detail the key parts:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kr">inline</span> <span class="n">VALUE</span> <span class="nf">fast_parse_integer</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="n">p</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">pe</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">bool</span> <span class="n">negative</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="n">p</span> <span class="o">==</span> <span class="sc">'-'</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">negative</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+        <span class="n">p</span><span class="o">++</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="kt">long</span> <span class="kt">long</span> <span class="n">memo</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="k">while</span> <span class="p">(</span><span class="n">p</span> <span class="o">&lt;</span> <span class="n">pe</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">memo</span> <span class="o">*=</span> <span class="mi">10</span><span class="p">;</span>
+        <span class="n">memo</span> <span class="o">+=</span> <span class="o">*</span><span class="n">p</span> <span class="o">-</span> <span class="sc">'0'</span><span class="p">;</span>
+        <span class="n">p</span><span class="o">++</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">negative</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">memo</span> <span class="o">=</span> <span class="o">-</span><span class="n">memo</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">LL2NUM</span><span class="p">(</span><span class="n">memo</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>We start by checking if the number is negative, then convert ASCII characters into the corresponding integer one by one.</p>
+
+<p>The limitation, however, is that this can only work for an integer that fits in a native integer type, as such we only enter
+this fast path if the number of digits is low enough:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define MAX_FAST_INTEGER_SIZE 18
+</span>
+<span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">p</span> <span class="o">-</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">;</span>
+<span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="n">len</span> <span class="o">&lt;</span> <span class="n">MAX_FAST_INTEGER_SIZE</span><span class="p">))</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">fast_parse_integer</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">,</span> <span class="n">p</span><span class="p">);</span>
+<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="n">fbuffer_clear</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">);</span>
+    <span class="n">fbuffer_append</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+    <span class="n">fbuffer_append_char</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="sc">'\0'</span><span class="p">);</span>
+    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_cstr2inum</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">10</span><span class="p">);</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Why 18? Because regardless of the CPU architecture, <a href="https://en.wikibooks.org/wiki/C_Programming/limits.h#Member_constants">in C a <code class="language-plaintext highlighter-rouge">long long</code> must support a maximum value of <code class="language-plaintext highlighter-rouge">9,223,372,036,854,775,807</code>
+and a minimum value of <code class="language-plaintext highlighter-rouge">−9,223,372,036,854,775,808</code></a>, in other words, it’s always a 64-bit integer.
+That’s 19 digits, but there are some 19-digit numbers that don’t fit in a <code class="language-plaintext highlighter-rouge">long long</code>, so 18.</p>
+
+<p>It would be possible to handle slightly bigger numbers by using an <code class="language-plaintext highlighter-rouge">unsigned long long</code>, but I didn’t think it was worth it.</p>
+
+<p>As for the impact on the micro-benchmark, it was pretty good:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing small nested array (121 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   124.666k i/100ms
+Calculating -------------------------------------
+               after      1.258M (± 2.3%) i/s  (794.63 ns/i) -      6.358M in   5.055135s
+
+Comparison:
+              before:   816626.3 i/s
+               after:  1258454.3 i/s - 1.54x  faster
+</code></pre></div></div>
+
+<p>But that’s a micro-benchmark of course, here’s the effect on more realistic ones:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    92.000 i/100ms
+Calculating -------------------------------------
+               after    939.320 (± 1.0%) i/s    (1.06 ms/i) -      4.784k in   5.093485s
+
+Comparison:
+              before:      875.5 i/s
+               after:      939.3 i/s - 1.07x  faster
+
+
+== Parsing citm_catalog.json (1727030 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    43.000 i/100ms
+Calculating -------------------------------------
+               after    430.366 (± 0.9%) i/s    (2.32 ms/i) -      2.193k in   5.096015s
+
+Comparison:
+              before:      388.8 i/s
+               after:      430.4 i/s - 1.11x  faster
+</code></pre></div></div>
+
+<h2 id="avoid-duplicated-work">Avoid Duplicated Work</h2>
+
+<p>The final parser optimization that shipped with <code class="language-plaintext highlighter-rouge">json 1.9.0</code>, was submitted by <a href="https://github.com/tenderlove">Aaron Patterson</a>.
+I’m not too sure how he got to work on it, perhaps he was attracted by the smell of blood when he saw me cursing
+against Ragel in our company Slack, who knows?</p>
+
+<p>The key element of Aaron’s patch is that he changed this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_float</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span>
+<span class="k">if</span> <span class="p">(</span><span class="n">np</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">fexec</span> <span class="n">np</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_integer</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span></code></pre></figure>
+
+<p>Into this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_number</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span></code></pre></figure>
+
+<p>If it’s not yet obvious, the previous version of the parser would first try to parse a float, and if it failed to do so,
+would try to parse an integer. This is quite wasteful, because all floats start with an integer, so whenever the next value to
+parse was an integer, it would first be fully scanned by <code class="language-plaintext highlighter-rouge">JSON_parse_float</code> to figure out it’s not an integer, and then the parser
+would backtrack and scan the same bytes again in <code class="language-plaintext highlighter-rouge">JSON_parse_integer</code>.</p>
+
+<p>You can look at <a href="https://github.com/ruby/json/pull/698/">the full patch</a>, which also contains some changes to the grammar and
+state machine to make the above change possible, but that really is the core of it.</p>
+
+<p>And you might think it’s indeed more efficient, but probably not that big of a deal in the grand scheme of things, but actually
+it did speedup <code class="language-plaintext highlighter-rouge">twitter.json</code> and <code class="language-plaintext highlighter-rouge">citm_catalog.json</code> by a nice <code class="language-plaintext highlighter-rouge">5%</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    95.000 i/100ms
+Calculating -------------------------------------
+               after    947.551 (± 0.9%) i/s    (1.06 ms/i) -      4.750k in   5.013354s
+
+Comparison:
+              before:      904.4 i/s
+               after:      947.6 i/s - 1.05x  faster
+
+
+== Parsing citm_catalog.json (1727030 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after    45.000 i/100ms
+Calculating -------------------------------------
+               after    458.244 (± 0.2%) i/s    (2.18 ms/i) -      2.295k in   5.008296s
+
+Comparison:
+              before:      432.7 i/s
+               after:      458.2 i/s - 1.06x  faster
+</code></pre></div></div>
+
+<h2 id="fin">Fin?</h2>
+
+<p>And that’s it, that was the final optimization performed before I released <code class="language-plaintext highlighter-rouge">json 1.9.0</code>, so I will conclude this series.</p>
+
+<p>If you wonder how fast it now is, here’s a final <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark against the competition:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+                json    93.000 i/100ms
+                  oj    66.000 i/100ms
+          Oj::Parser    80.000 i/100ms
+           rapidjson    58.000 i/100ms
+Calculating -------------------------------------
+                json    928.472 (± 0.3%) i/s    (1.08 ms/i) -      4.650k in   5.008282s
+                  oj    666.198 (± 0.8%) i/s    (1.50 ms/i) -      3.366k in   5.052899s
+          Oj::Parser    803.031 (± 0.2%) i/s    (1.25 ms/i) -      4.080k in   5.080788s
+           rapidjson    584.869 (± 0.2%) i/s    (1.71 ms/i) -      2.958k in   5.057565s
+
+Comparison:
+                json:      928.5 i/s
+          Oj::Parser:      803.0 i/s - 1.16x  slower
+                  oj:      666.2 i/s - 1.39x  slower
+           rapidjson:      584.9 i/s - 1.59x  slower
+</code></pre></div></div>
+
+<p>That isn’t to say I’m done optimizing, I have quite a few ideas for the future, but I wanted to stabilize the gem prior to the
+release of Ruby 3.4.0, and I feel it is now fast enough that there’s no urgency.</p>
+
+<p>But to give you an idea of what may happen in the future, I’d like to drop Ragel and replace it with a simpler recursive descent
+parser. The existing one could certainly be improved, but I find it much harder to work with generated parsers than to write them
+manually.</p>
+
+<p>I’m also currently pairing with <a href="https://github.com/etiennebarrie">Étienne Barrié</a> on <a href="https://github.com/ruby/json/pull/718">a better API for both the parser and the encoder</a>
+which would allow to reduce the setup cost even further, stop relying as much on global state, and would generally be more ergonomic.</p>
+
+<p>I hope you enjoyed this blog series, I’ll try to continue writing, next, I’d like to share some thoughts on <a href="https://github.com/Shopify/pitchfork">Pitchfork</a>,
+but I may need to set the stage for it with other posts to explain some key concepts.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, we started covering some parser optimizations. There’s just a handful more to cover until we reached what’s the state of the currently released version of ruby/json.]]></summary></entry><entry><title type="html">Optimizing Ruby’s JSON, Part 6</title><link href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 6" /><published>2025-01-12T16:28:51+00:00</published><updated>2025-01-12T16:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html"><![CDATA[<p>After wrapping up about the encoder optimizations <a href="/ruby/json/2025/01/04/optimizing-ruby-json-part-5.html">in the previous post</a>,
 we can now start talking about the parser side.</p>
 
 <p>It certainly won’t be as long, because the parser didn’t need as much work, but also because some optimizations, particularly
@@ -1022,6 +1524,8 @@ not currently parsing an array:</p>
 <p>I have about three more parser optimizations to talk about, and after that, I think this series will be finally done,
 unless I talk about other things JSON, like my ideas for the future, or some thoughts on what I think isn’t good in its
 current API, but we’ll see.</p>
+
+<p>Edit: <a href="/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html">Part 7 is here</a>.</p>
 
 <div class="footnotes" role="doc-endnotes">
   <ol>
