@@ -290,7 +290,7 @@ end
 {% endhighlight %}
 
 By calling into a class method, we don't require the allocation.
-For the pure-Ruby version of the generator, it didn't change much, as there would be now way to elide the allocation, so I implemented
+For the pure-Ruby version of the generator, it didn't change much, as there would be no way to elide the allocation, so I implemented
 `JSON::Pure::State.generate` in a fairly obvious way:
 
 {% highlight ruby %}
