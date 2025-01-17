@@ -180,7 +180,7 @@ Comparison:
                after:      897.2 i/s - 1.22x  faster
 ```
 
-## Avoid Double Scaning
+## Avoid Double Scanning
 
 After the value stack patch was so effective, `json_string_unescape` was back to being the biggest bottleneck at `22%` of total runtime:
 
