@@ -204,13 +204,14 @@ class Object
   def respond_to?(method)
     cc = self.class.call_cache[method]
     if method_entry = self.class.search_method_with_cache(method, cc)
-      true
-    else
-      respond_to_missing_cc = self.class.call_cache[method]
-      if respond_to_missing = self.class.search_method_with_cache(:respond_to_missing?, cc)
-        return respond_to_missing.bind_call(self, method)
-      end
+      return true
     end
+
+    respond_to_missing_cc = self.class.call_cache[method]
+    if respond_to_missing = self.class.search_method_with_cache(:respond_to_missing?, cc)
+      return respond_to_missing.bind_call(self, method)
+    end
+
     false
   end
 end
