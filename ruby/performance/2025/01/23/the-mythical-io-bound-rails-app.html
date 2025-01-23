@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>The Mythical IO-Bound Rails App | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="The Mythical IO-Bound Rails App" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn’t matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?" />
+<meta property="og:description" content="When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn’t matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?" />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-01-23T10:17:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="The Mythical IO-Bound Rails App" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-01-23T10:17:51+00:00","datePublished":"2025-01-23T10:17:51+00:00","description":"When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn’t matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?","headline":"The Mythical IO-Bound Rails App","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html"},"url":"https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">The Mythical IO-Bound Rails App</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-01-23T10:17:51+00:00" itemprop="datePublished">Jan 23, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to explain a few things.</p>
+
+<p>When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck,
+so Rails applications are <a href="https://en.wikipedia.org/wiki/I/O_bound">IO-bound</a> anyway, hence Ruby performance doesn’t
+matter that much, and all you need is a healthy dose of concurrency to make your service scale.</p>
+
+<p>But how true is this in general?</p>
+
+<h2 id="conflating-scale-and-performance">Conflating scale and performance</h2>
+
+<p>First, it is true that when scaling a Rails application, the first major bottleneck you will encounter will generally
+be the database.</p>
+
+<p>Rails, like the overwhelming majority of modern web frameworks, is stateless, hence it is trivial to scale it
+horizontally to handle as much load as you want.
+As long as you can keep adding server capacity, Rails will keep scaling. It might not be the cheapest stack to scale,
+but it will scale as well as any other stateless web framework.
+To handle 10x more traffic, you need roughly 10x more server capacity, that’s simple and not what teams who need to
+scale a Rails application will struggle with.</p>
+
+<p>Relational databases, however, are much harder to scale. By default, you can’t scale them horizontally unless you
+implement data sharding in some way, and depending on your
+data model, it can sometimes be very challenging, so generally relational databases are initially scaled vertically,
+meaning migrating to increasingly more powerful servers.
+Vertical scaling allows you to scale pretty far, much farther than most Rails users will ever need, but the cost
+increase won’t be linear, and if you are successful enough, it won’t be viable anymore and you’ll have to shard or use
+another type of data store.</p>
+
+<p>That’s what the database being the bottleneck means. Not that querying the database is slow, nor that it is the most significant factor in overall service latency, but that it’s the part of your infrastructure you’ll have to care about
+the most when your service witnesses increasingly more usage.</p>
+
+<p>That’s what a lot of public discourse gets wrong, they conflate scale and performance, or more precisely, throughput and latency.</p>
+
+<p>Being able to scale means maintaining some level of service while serving more users with close-to-linear costs.
+It doesn’t mean being particularly fast, cheap, or efficient, it simply means being able to grow without hitting a
+bottleneck, and without costing you exponentially more money.</p>
+
+<p>As such, the database being the bottleneck is true, but it doesn’t imply that the application is spending the majority
+of its time waiting on IO.</p>
+
+<h2 id="most-rails-performance-issues-are-database-issues">Most Rails performance issues are database issues</h2>
+
+<p>Another fact that is often stated to explain how Rails applications are IO-bound,
+is that the most common performance issues with Rails applications are missing database indexes, N+1 queries and other
+data access issues.</p>
+
+<p>From my personal observations, that definitely rings true, but these are bugs, not a given property of the system.
+They’re supposed to be identified and fixed, as such, it doesn’t really make sense to design your infrastructure to
+accomodate that characteristic.</p>
+
+<p>When properly indexed, and assuming the database isn’t overloaded, the vast majority of queries, especially the mundane
+lookups by primary key, take less than a couple of milliseconds, often just a fraction of a millisecond.
+If the application does any substantial amount of transformations on that data to render it in HTML or JSON, it will
+without a doubt spend as much or more time executing Ruby code than waiting for IOs.</p>
+
+<h2 id="evidence-yjit-effectiveness">Evidence: YJIT effectiveness</h2>
+
+<p>Now of course, every application is different, and I can only really speak with confidence about the ones I’ve worked on.</p>
+
+<p>However, over the last couple of years, many people reported how YJIT reduced their application latency by 15 to 30%.
+Like Discourse seeing a <a href="https://blog.discourse.org/2023/05/running-ruby-3-2s-yjit-in-production-at-discourse/">15.8-19.6% speedup with JIT 3.2</a>,
+<a href="https://lobste.rs/s/m9ivcf/we_turned_lobste_rs_into_rails_benchmark#c_fkud5w">Lobsters seeing a 26% speedup</a>,
+<a href="https://xcancel.com/dhh/status/1711422643256303867">Basecamp and Hey seeing a 26% speedup</a>
+or <a href="https://railsatscale.com/2025-01-10-yjit-3-4-even-faster-and-more-memory-efficient/">Shopify’s Storefront Renderer app seeing a 17% speedup</a>.</p>
+
+<p>If these applications were really spending the overwhelming majority of their time waiting on IO, it would be impossible
+for YJIT to perform this well overall.</p>
+
+<p>Even on very JIT-friendly benchmarks with no IO at all, YJIT <em>only</em> speeds up Ruby by 2 or 3x.
+On more realistic benchmarks like <code class="language-plaintext highlighter-rouge">lobsters</code>, it’s more around 1.7x.
+Based on this, we can assume with fairly good confidence that all these applications are certainly not spending 80%
+of their time waiting on IO.</p>
+
+<p>To me, that’s enough to consider that most Rails applications aren’t IO-bound.
+Some applications out there most definitely are IO-bound, and I spoke with a few people maintaining such applications.
+But just like flying fishes, they exist, yet they don’t constitute the majority of the genus.</p>
+
+<h2 id="cpu-starvation-looks-like-io-to-most-eyes">CPU starvation looks like IO to most eyes</h2>
+
+<p>One thing that can cause people to overestimate how much IO their app is doing is that, in most cases, CPU starvation
+will look like Ruby is waiting on IO.</p>
+
+<p>If you look at how the overwhelming majority of IO durations are measured, including in Rails logs and in all the
+most popular application performance managers, it’s generally done in a very simple, obvious way:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">start</span> <span class="o">=</span> <span class="no">Time</span><span class="p">.</span><span class="nf">now</span>
+<span class="n">database_connection</span><span class="p">.</span><span class="nf">execute</span><span class="p">(</span><span class="s2">"SELECT ..."</span><span class="p">)</span>
+<span class="n">query_duration</span> <span class="o">=</span> <span class="p">(</span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span> <span class="o">-</span> <span class="n">start</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1000.0</span>
+<span class="nb">puts</span> <span class="s2">"Query took: </span><span class="si">#{</span><span class="n">query_duration</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
+</code></pre></div></div>
+
+<p>Logically, if this code logs: <code class="language-plaintext highlighter-rouge">Query took: 20.0ms</code>, you might legitimately think it took 20 milliseconds to perform
+the SQL query, but that’s not necessarily true.</p>
+
+<p>It actually means that performing the query <strong>and</strong> getting the thread scheduled again took 20 milliseconds, and you
+cannot possibly tell how much each part took individually.</p>
+
+<p>So for all you know, the query might have been performed in under a millisecond, and all the remaining time was spent
+waiting to acquire the GVL, running GC, or waiting for the operating system scheduler to resume your process.</p>
+
+<p>Knowing which is which is crucial:</p>
+
+<ul>
+  <li>If all this time was spent performing the query, it suggests that your application is IO-heavy and that you may be
+able to use more concurrency (processes, threads, or fibers) to get some extra throughput.</li>
+  <li>If all this time was spent waiting on the scheduler, then you might want to do the absolute opposite and use
+less concurrency to reduce latency.</li>
+</ul>
+
+<p>This issue can often lead people to believe their application is more IO-heavy than it really is, and it’s
+particularly vicious because it’s a self-fulfilling prophecy.
+If you assume your application is IO-bound, given that it is commonplace to hear so, you’ll logically run it in
+production with a threaded or async server using a decent amount of concurrency,
+and production logs will confirm your assumption by showing large amounts of time waiting on IO.</p>
+
+<p>This problem is even more common on shared hosting platforms because they don’t always guarantee that you can use
+the “virtual CPU” at 100%. On these platforms, your application has to share the physical CPU cores with other
+applications, and depending on what these other applications are doing and how busy they are, you may be able to use
+substantially more or substantially less than the one “virtual CPU” you are paying for.</p>
+
+<p>This issue is not unique to Ruby, whenever you have a workload that mixes IO and CPU work, you have to arbitrate
+between allowing more concurrency and risk degrading latency, or reducing concurrency to ensure a low latency but
+decrease utilization.
+The more heterogeneous your workload is, as typical in a monolith, the harder it is to find the best compromise.
+That’s one of the benefits of micro-services, getting more homogenous workloads, making it easier to achieve
+higher server utilization without impacting latency too much.</p>
+
+<p>However, given that the default implementation of Ruby has a GVL, this problem is even more pronounced.
+Instead of all threads on the server having to share all CPU cores, you end up with multiple small buckets of threads
+that each have to share one CPU, hence you can end up with threads that can’t be resumed even though there are some
+free cores or the server.</p>
+
+<p>The thing to keep in mind is that, as a general rule that doesn’t only apply to Ruby, CPU-bound and IO-bound work
+loads don’t mix well, and should ideally be handled by distinct systems.
+For small projects, you can likely tolerate the latency impact of collocating all your workloads in a one-size-fits-all
+system, but as you scale you will increasingly need to segregate IO-intensive workloads from CPU-intensive ones.</p>
+
+<h2 id="job-queues-are-different">Job Queues Are Different</h2>
+
+<p>One important thing to note is that what I’m saying above is only aimed at the web server part of Rails applications.
+Most apps also use a background job runner, Sidekiq being the most popular, and background jobs often take care of
+lots of slow IO operations, such as sending e-mails, performing API calls, etc.</p>
+
+<p>As such job runners are generally much more IO intensive, and latency is generally a bit less important for them,
+so they usually can get away with higher concurrency than web servers.</p>
+
+<p>But even then, it’s common for users to crank their job runner concurrency too high and cause all IOs to appear much slower.
+A good example of that is how <a href="https://github.com/redis/hiredis-rb/issues/74">Sidekiq’s maintainer asked me to implement a way to measure the round trip delay in C
+so that it’s not skewed by GVL contention</a>.</p>
+
+<h2 id="why-does-it-matter">Why does it matter?</h2>
+
+<p>At that point, you might wonder why it matters how much time Rails applications spend waiting on IO.</p>
+
+<p>For the average Rails user, it is important to know this, because it is what defines which execution model is best
+suited to deploy their application:</p>
+
+<ul>
+  <li>If an application is truly IO-bound, as in spending more than 95% of its time waiting for IO, then using an
+asynchronous execution model is likely what will get you the best results.</li>
+  <li>If an application isn’t fully IO-bound, but still is quite IO-heavy, then using a threaded server, with a
+reasonable number of threads per process, is probably what will get you the best tradeoff between latency and
+throughput.</li>
+  <li>If an application doesn’t spend significantly more than half its time on IO, then it might be preferable to use a
+purely process-based solution.</li>
+</ul>
+
+<p>What the ratio of IO to CPU is likely to be like in an average Rails app is also what drove <a href="https://github.com/rails/rails/issues/50450">Rails to change the
+default generated Puma configuration from 5 threads to only 3</a>.</p>
+
+<p>But also for the Ruby community at large, I think it’s important not to disregard Ruby’s performance under the pretext
+that it doesn’t matter since it’s all about the database anyway.
+This isn’t to say that Ruby is slow, it is without a doubt more than fast enough for writing web applications that
+provide a good user experience.</p>
+
+<p>But it is also possible to write Ruby code in a way that doesn’t perform well at all, be it for the sake of usability
+or just because it’s fun to use meta-programing or that no one took the time to use a profiler to see if it is possible
+to do the same thing more efficiently.</p>
+
+<p>As someone who spends a considerable amount of time looking at production profiles of Rails applications, I can say
+with confidence, there are a number of things in Rails and other commonly used gems that could be significantly faster,
+but can’t because their public API prevents any further optimization.</p>
+
+<p>As Ruby developers, we naturally have the tendency to put developer happiness first, which is great, but we should also
+make sure not to disregard performance. Usability and performance don’t have to be mutually exclusive.
+APIs can be both very convenient and performant, but both have to be considered right from the start for it to happen.
+Once a public API has been defined and is widely used, there’s only so much you can do to make it perform faster
+unless you are willing to deprecate it in favor of a more performant one, but the community appetite for deprecations
+and breaking change is no longer what it used to be.</p>
+
+  </div><a class="u-url" href="/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
