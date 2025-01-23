@@ -105,7 +105,8 @@ Logically, if this code logs: `Query took: 20.0ms`, you might legitimately think
 the SQL query, but that's not necessarily true.
 
 It actually means that performing the query **and** getting the thread scheduled again took 20 milliseconds, and you
-cannot possibly tell how much each part took individually.
+cannot possibly tell how much each part took individually (Edit: At John Duff's request, I wrote [a very quick guide
+on how you can tell if your application is experiencing some form of CPU starvation](/ruby/performance/2025/01/23/io-instrumentation.html)).
 
 So for all you know, the query might have been performed in under a millisecond, and all the remaining time was spent
 waiting to acquire the GVL, running GC, or waiting for the operating system scheduler to resume your process.
