@@ -232,13 +232,14 @@ That’s essentially a Hash with method names as keys, and “call caches” as 
   <span class="k">def</span> <span class="nf">respond_to?</span><span class="p">(</span><span class="nb">method</span><span class="p">)</span>
     <span class="n">cc</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">call_cache</span><span class="p">[</span><span class="nb">method</span><span class="p">]</span>
     <span class="k">if</span> <span class="n">method_entry</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">search_method_with_cache</span><span class="p">(</span><span class="nb">method</span><span class="p">,</span> <span class="n">cc</span><span class="p">)</span>
-      <span class="kp">true</span>
-    <span class="k">else</span>
-      <span class="n">respond_to_missing_cc</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">call_cache</span><span class="p">[</span><span class="nb">method</span><span class="p">]</span>
-      <span class="k">if</span> <span class="n">respond_to_missing</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">search_method_with_cache</span><span class="p">(</span><span class="ss">:respond_to_missing?</span><span class="p">,</span> <span class="n">cc</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">respond_to_missing</span><span class="p">.</span><span class="nf">bind_call</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="nb">method</span><span class="p">)</span>
-      <span class="k">end</span>
+      <span class="k">return</span> <span class="kp">true</span>
     <span class="k">end</span>
+
+    <span class="n">respond_to_missing_cc</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">call_cache</span><span class="p">[</span><span class="nb">method</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">respond_to_missing</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">search_method_with_cache</span><span class="p">(</span><span class="ss">:respond_to_missing?</span><span class="p">,</span> <span class="n">cc</span><span class="p">)</span>
+      <span class="k">return</span> <span class="n">respond_to_missing</span><span class="p">.</span><span class="nf">bind_call</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="nb">method</span><span class="p">)</span>
+    <span class="k">end</span>
+
     <span class="kp">false</span>
   <span class="k">end</span>
 <span class="k">end</span></code></pre></figure>
