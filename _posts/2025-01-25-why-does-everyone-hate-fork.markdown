@@ -165,7 +165,7 @@ end
 ```
 
 Here the script establishes a connection to MySQL, using the `trilogy` client, then forks a child
-that queries `SELECT "nope"` indefinitely in a loop. Once the child is spawned, the parent issues 5 queries,
+that queries `SELECT "oops"` indefinitely in a loop. Once the child is spawned, the parent issues 5 queries,
 each one supposed to return a single number from 0 to 4, and print their result.
 
 If you run this script, you'll get a somewhat random output, similar to this:
