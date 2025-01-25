@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Why Does Everyone Hate fork(2)? | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Why Does Everyone Hate fork(2)?" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to explain a few things, namely why in many circles fork is seen as a relic of the past, if not outright the devil’s creation. And yet, it’s ubiquitous in the Ruby ecosystem." />
+<meta property="og:description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to explain a few things, namely why in many circles fork is seen as a relic of the past, if not outright the devil’s creation. And yet, it’s ubiquitous in the Ruby ecosystem." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-01-25T09:47:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Why Does Everyone Hate fork(2)?" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-01-25T09:47:51+00:00","datePublished":"2025-01-25T09:47:51+00:00","description":"I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to explain a few things, namely why in many circles fork is seen as a relic of the past, if not outright the devil’s creation. And yet, it’s ubiquitous in the Ruby ecosystem.","headline":"Why Does Everyone Hate fork(2)?","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html"},"url":"https://byroot.github.io/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Why Does Everyone Hate fork(2)?</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-01-25T09:47:51+00:00" itemprop="datePublished">Jan 25, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to explain a few things, namely why in many circles <code class="language-plaintext highlighter-rouge">fork</code> is seen as a
+relic of the past, if not outright the devil’s creation.
+And yet, it’s ubiquitous in the Ruby ecosystem.</p>
+
+<p>Note that if you have some system programming experience, you probably won’t learn much here.</p>
+
+<p>If you’ve ever deployed a Ruby application to production, it is almost certain you’ve interacted with
+<a href="https://man7.org/linux/man-pages/man2/fork.2.html"><code class="language-plaintext highlighter-rouge">fork(2)</code></a> whether you realize it or not.
+Have you configured Puma’s <code class="language-plaintext highlighter-rouge">worker</code> setting? Well, Puma uses <code class="language-plaintext highlighter-rouge">fork(2)</code> to spawn these workers, more accurately the Ruby
+<a href="https://docs.ruby-lang.org/en/3.4/Process.html#method-c-fork"><code class="language-plaintext highlighter-rouge">Process.fork</code></a> method, which is the Ruby API for
+the underlying <code class="language-plaintext highlighter-rouge">fork(2)</code> syscall.</p>
+
+<p>And even if you’re not a Rubyist, if you’ve used PHP, Nginx, Apache HTTPd, Redis, and many others you’ve used a system
+that is heavily relient on <code class="language-plaintext highlighter-rouge">fork(2)</code>, if not entirely architectured around it.</p>
+
+<p>Yet, <a href="https://www.microsoft.com/en-us/research/uploads/prod/2019/04/fork-hotos19.pdf">many people would argue that <code class="language-plaintext highlighter-rouge">fork(2)</code> is evil and shouldn’t be used</a>.
+Personally I kinda both agree and disagree with that point of view, and I’ll try to explain why.</p>
+
+<h2 id="a-bit-of-history">A Bit Of History</h2>
+
+<p>According to Wikipedia, the first occurrence of the fork concept dates all the way back to 1962 by the same guy who
+coined <a href="https://en.wikipedia.org/wiki/Conway%27s_law">Conway’s law</a>, and was later introduced in the first versions of UNIX.</p>
+
+<p>Initially, it was meant as a primitive to create a new process. You’d call <code class="language-plaintext highlighter-rouge">fork(2)</code> to make a copy of the current process
+and from there would mutate that new process into what you want it to be, quickly ending up with an <code class="language-plaintext highlighter-rouge">exec(2)</code>.
+You can still do this today in Ruby:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">if</span> <span class="p">(</span><span class="n">child_pid</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">fork</span><span class="p">)</span>
+  <span class="c1"># We're in the parent process, and we know the child process ID.</span>
+  <span class="c1"># We can wait for the child to exit or send signals etc.</span>
+  <span class="no">Process</span><span class="p">.</span><span class="nf">wait</span><span class="p">(</span><span class="n">child_pid</span><span class="p">)</span>
+<span class="k">else</span>
+  <span class="c1"># We're in the child process.</span>
+  <span class="c1"># We can change the current user and other attributes.</span>
+  <span class="no">Process</span><span class="p">.</span><span class="nf">uid</span> <span class="o">=</span> <span class="mi">1</span>
+  <span class="c1"># And then we can replace the current program with another.</span>
+  <span class="no">Process</span><span class="p">.</span><span class="nf">exec</span><span class="p">(</span><span class="s2">"echo"</span><span class="p">,</span> <span class="s2">"hello"</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>In a way that design was quite elegant. You have a handful of simple primitives you can compose together to get
+exactly the behavior you need, instead of one huge function that takes a myriad of arguments.</p>
+
+<p>But it is also very inefficient, as entirely duplicating a process to create a new one is generally overkill.
+In the example above, if you imagine that our parent program has gigabytes of addressable memory, it’s a huge waste
+to copy all of that just to throw it all out almost immediately to replace it with an extremely small program like <code class="language-plaintext highlighter-rouge">/bin/echo</code>.</p>
+
+<p>Of course, modern operating systems don’t actually copy all that, and instead use <a href="https://en.wikipedia.org/wiki/Copy-on-write#In_virtual_memory_management">Copy-on-Write</a>,
+but that’s still very costly, and can easily take hundreds of milliseconds if the parent process is big.</p>
+
+<p>That’s why this historical usage of <code class="language-plaintext highlighter-rouge">fork(2)</code> to spawn other programs is mostly considered deprecated today, and most
+newer software will use more modern APIs such as <code class="language-plaintext highlighter-rouge">posix_spawn(3)</code> or <code class="language-plaintext highlighter-rouge">vfork(2)+exec(2)</code>.</p>
+
+<p>But that’s not the only use of <code class="language-plaintext highlighter-rouge">fork(2)</code>. I have no idea if this was envisioned right from the start, or if it just became
+a thing, but all the software I listed in the introduction uses <code class="language-plaintext highlighter-rouge">fork(2)</code> without ever following it with an <code class="language-plaintext highlighter-rouge">exec(2)</code> call.</p>
+
+<h2 id="fork-as-a-parallelism-primitive">Fork as a Parallelism Primitive</h2>
+
+<p>Again, I wasn’t even born in the early seventies, so I’m not too sure when this practice really started but at some
+point <code class="language-plaintext highlighter-rouge">fork(2)</code> started being used as a parallelism primitive, particularly for servers.</p>
+
+<p>Let’s say you want to implement a simple “echo” server from scratch, in Ruby it might look like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'socket'</span>
+
+<span class="n">server</span> <span class="o">=</span> <span class="no">TCPServer</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="s1">'localhost'</span><span class="p">,</span> <span class="mi">8000</span><span class="p">)</span>
+
+<span class="k">while</span> <span class="n">socket</span> <span class="o">=</span> <span class="n">server</span><span class="p">.</span><span class="nf">accept</span>
+  <span class="k">while</span> <span class="n">line</span> <span class="o">=</span> <span class="n">socket</span><span class="p">.</span><span class="nf">gets</span>
+    <span class="n">socket</span><span class="p">.</span><span class="nf">write</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+  <span class="k">end</span>
+  <span class="n">socket</span><span class="p">.</span><span class="nf">close</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>This script first opens a listening socket on port <code class="language-plaintext highlighter-rouge">8000</code>, then blocks on the <code class="language-plaintext highlighter-rouge">accept(2)</code> syscall to wait for a client
+to connect. When that method returns, it gives us a bidirectional socket, from which we can read, in this case with <code class="language-plaintext highlighter-rouge">#gets</code>,
+and also write back to the client.</p>
+
+<p>While this is using modern Ruby, that’s very similar to how various servers would be written back then, but overly simplified.</p>
+
+<p>If you want to play with it, you can use <code class="language-plaintext highlighter-rouge">telnet localhost 8000</code> and start writing things.</p>
+
+<p>But there’s one big issue with that server: it only supports a single concurrent user.
+If you try to have two <code class="language-plaintext highlighter-rouge">telnet</code> sessions active, you’ll see the second one can’t connect.</p>
+
+<p>So what people started doing, was to leverage <code class="language-plaintext highlighter-rouge">fork(2)</code> to be able to support more users:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'socket'</span>
+
+<span class="n">server</span> <span class="o">=</span> <span class="no">TCPServer</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="s1">'localhost'</span><span class="p">,</span> <span class="mi">8000</span><span class="p">)</span>
+<span class="n">children</span> <span class="o">=</span> <span class="p">[]</span>
+
+<span class="k">while</span> <span class="n">socket</span> <span class="o">=</span> <span class="n">server</span><span class="p">.</span><span class="nf">accept</span>
+  <span class="c1"># prune exited children</span>
+  <span class="n">children</span><span class="p">.</span><span class="nf">reject!</span> <span class="p">{</span> <span class="o">|</span><span class="n">pid</span><span class="o">|</span> <span class="no">Process</span><span class="p">.</span><span class="nf">wait</span><span class="p">(</span><span class="n">pid</span><span class="p">,</span> <span class="no">Process</span><span class="o">::</span><span class="no">WNOHANG</span><span class="p">)}</span>
+
+  <span class="k">if</span> <span class="p">(</span><span class="n">child_pid</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">fork</span><span class="p">)</span>
+    <span class="n">children</span> <span class="o">&lt;&lt;</span> <span class="n">child_pid</span>
+    <span class="n">socket</span><span class="p">.</span><span class="nf">close</span>
+  <span class="k">else</span>
+    <span class="k">while</span> <span class="n">line</span> <span class="o">=</span> <span class="n">socket</span><span class="p">.</span><span class="nf">gets</span>
+      <span class="n">socket</span><span class="p">.</span><span class="nf">write</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+    <span class="k">end</span>
+    <span class="n">socket</span><span class="p">.</span><span class="nf">close</span>
+    <span class="no">Process</span><span class="p">.</span><span class="nf">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>The logic is the same as before, but now once <code class="language-plaintext highlighter-rouge">accept(2)</code> returns us a socket, instead of blocking on it,
+we <code class="language-plaintext highlighter-rouge">fork(2)</code> a new child process, and let that child do the blocking operations until the client closes the connection.</p>
+
+<p>If you are an astute reader (or simply already knowledgeable about <code class="language-plaintext highlighter-rouge">fork(2)</code> semantics), you may have noticed that after
+the call to <code class="language-plaintext highlighter-rouge">fork</code>, both the parent and the new children have access to the socket. That is because, in UNIX, sockets are
+“files”, hence represented by a “file descriptor”, and part of the <code class="language-plaintext highlighter-rouge">fork(2)</code> semantic is that all file descriptors are
+also inherited.</p>
+
+<p>That’s why it is important that the parent close the socket, otherwise, it will stay open forever in the parent process<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>,
+And this is one of the first reasons why many people hate <code class="language-plaintext highlighter-rouge">fork(2)</code>.</p>
+
+<h2 id="a-double-edged-sword">A Double-Edged Sword</h2>
+
+<p>As showcased above, the fact that child processes inherit all open file descriptors allows to implement some very useful things,
+but it can also cause catastrophic bugs if you forget to close a file descriptor you didn’t mean to share.</p>
+
+<p>For instance, if you are forking a process that has an active connection to a SQL database, and you keep using that
+connection in both processes, weird things will happen:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"bundler/inline"</span>
+<span class="n">gemfile</span> <span class="k">do</span>
+  <span class="n">gem</span> <span class="s2">"trilogy"</span>
+  <span class="n">gem</span> <span class="s2">"bigdecimal"</span> <span class="c1"># for trilogy</span>
+<span class="k">end</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="no">Trilogy</span><span class="p">.</span><span class="nf">new</span>
+<span class="n">client</span><span class="p">.</span><span class="nf">ping</span>
+
+<span class="k">if</span> <span class="n">child_pid</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">fork</span>
+  <span class="nb">sleep</span> <span class="mf">0.1</span> <span class="c1"># Give some time to the child</span>
+
+  <span class="mi">5</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span>
+    <span class="nb">p</span> <span class="n">client</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT </span><span class="si">#{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">).</span><span class="nf">first</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+  <span class="k">end</span>
+  <span class="no">Process</span><span class="p">.</span><span class="nf">kill</span><span class="p">(</span><span class="ss">:KILL</span><span class="p">,</span> <span class="n">child_pid</span><span class="p">)</span>
+  <span class="no">Process</span><span class="p">.</span><span class="nf">wait</span><span class="p">(</span><span class="n">child_pid</span><span class="p">)</span>
+<span class="k">else</span>
+  <span class="kp">loop</span> <span class="k">do</span>
+    <span class="n">client</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s1">'SELECT "oops"'</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Here the script establishes a connection to MySQL, using the <code class="language-plaintext highlighter-rouge">trilogy</code> client, then forks a child
+that queries <code class="language-plaintext highlighter-rouge">SELECT "nope"</code> indefinitely in a loop. Once the child is spawned, the parent issues 5 queries,
+each one supposed to return a single number from 0 to 4, and print their result.</p>
+
+<p>If you run this script, you’ll get a somewhat random output, similar to this:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>"oops"
+1
+"oops"
+"oops"
+3
+</code></pre></div></div>
+
+<p>What’s happening here is that both processes are writing inside the same socket. For the MySQL server, it’s not a big
+deal because our queries are small, so they’re somewhat “atomically” written into the socket if we were to issue larger
+queries, two queries might end up interleaved, which would cause the server to close the connection with some form of
+protocol error.</p>
+
+<p>But for the client, it’s really bad. Because the responses of both processes are sent back in the same socket, and
+each client is issuing <code class="language-plaintext highlighter-rouge">read(2)</code> and might be getting the response to the query it just issued, but the response of
+another unrelated query issued by the other process.</p>
+
+<p>When two processes try to <code class="language-plaintext highlighter-rouge">read(2)</code> on the same socket, they each get part of the data, but you don’t have proper control
+over which process gets what, and it’s unrealistic to try to synchronize the two processes so they each get the response
+they expect.</p>
+
+<p>With this in mind, you can imagine how much of a hassle it can be to properly close all the sockets and other open files
+of an application before you call <code class="language-plaintext highlighter-rouge">fork(2)</code>. Perhaps you can be diligent in your own code, but you likely are using some
+libraries that may not expect <code class="language-plaintext highlighter-rouge">fork(2)</code> to be called and don’t allow you to close their file descriptors.</p>
+
+<p>For the <code class="language-plaintext highlighter-rouge">fork+exec</code> use case, there’s a nice feature that makes this much easier, you can mark a file descriptor as needing
+to be closed when <code class="language-plaintext highlighter-rouge">exec</code> is called, and the operating system takes care of that for you, <code class="language-plaintext highlighter-rouge">O_CLOEXEC</code> (for close on exec),
+which in Ruby is conveniently exposed as a method on the <code class="language-plaintext highlighter-rouge">IO</code> class:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">STDIN</span><span class="p">.</span><span class="nf">close_on_exec</span> <span class="o">=</span> <span class="kp">true</span>
+</code></pre></div></div>
+
+<p>But there’s no such flag for the <code class="language-plaintext highlighter-rouge">fork</code> system call when it’s not followed by an <code class="language-plaintext highlighter-rouge">exec</code>. Or more accurately
+there is one, <code class="language-plaintext highlighter-rouge">O_CLOFORK</code>, which has existed on a few UNIX systems, mostly IBM ones, and <a href="https://austingroupbugs.net/view.php?id=1318">was added to the POSIX spec in 2020</a>.
+But it isn’t widely supported today, most importantly Linux doesn’t support it.
+<a href="https://lore.kernel.org/all/1304749754.2821.712.camel@edumazet-laptop/T/#m2a7dbb0f0f6106b3d9ecc8c485a683ea6b2e02ee">Someone submitted a patch to add it to Linux in 2011</a>,
+but it seems there wasn’t much appetite for it, and <a href="https://lore.kernel.org/lkml/20200525081626.GA16796@amd/T/#m4ef81228aba3f9524329f83a124d0322ed53f834">someone else made another attempt in 2020</a>,
+but it encountered some strong opposition, which is a shame, because it would be tremendously useful.</p>
+
+<p>Instead, what most code that wants to be fork-safe does, it either trying to detect a fork happened by continuously checking
+the current process ID:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">query</span>
+  <span class="k">if</span> <span class="no">Process</span><span class="p">.</span><span class="nf">pid</span> <span class="o">!=</span> <span class="vi">@old_pid</span>
+    <span class="vi">@connection</span><span class="p">.</span><span class="nf">close</span>
+    <span class="vi">@connection</span> <span class="o">=</span> <span class="kp">nil</span>
+    <span class="vi">@old_pid</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">pid</span>
+  <span class="k">end</span>
+
+  <span class="vi">@connection</span> <span class="o">||=</span> <span class="n">connect</span>
+  <span class="vi">@connection</span><span class="p">.</span><span class="nf">query</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Or alternatively rely on some <code class="language-plaintext highlighter-rouge">at_fork</code> callback, in C land usually it is <a href="https://man7.org/linux/man-pages/man3/pthread_atfork.3.html"><code class="language-plaintext highlighter-rouge">pthread_atfork</code></a>,
+and <a href="https://bugs.ruby-lang.org/issues/17795">since Ruby since 3.1, you can decorate <code class="language-plaintext highlighter-rouge">Process._fork</code></a> (note the <code class="language-plaintext highlighter-rouge">_</code>):</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">MyLibraryAtFork</span>
+  <span class="k">def</span> <span class="nf">_fork</span>
+    <span class="n">pid</span> <span class="o">=</span> <span class="k">super</span>
+    <span class="k">if</span> <span class="n">pid</span> <span class="o">==</span> <span class="mi">0</span>
+      <span class="c1"># in child</span>
+    <span class="k">else</span>
+      <span class="c1"># in parent</span>
+      <span class="no">MyLibrary</span><span class="p">.</span><span class="nf">close_all_ios</span>
+    <span class="k">end</span>
+    <span class="n">pid</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+<span class="no">Process</span><span class="p">.</span><span class="nf">singleton_class</span><span class="p">.</span><span class="nf">prepend</span><span class="p">(</span><span class="no">MyLibraryAtFork</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>Since <code class="language-plaintext highlighter-rouge">fork(2)</code> is quite ubiquitous in Ruby, many popular libraries that deal with sockets, such as Active Record, or
+the <code class="language-plaintext highlighter-rouge">redis</code> gem, do their best to take care of this transparently, so you don’t have to think about it.
+Hence in most Ruby programs it just works.</p>
+
+<p>But with native languages, it can be quite tedious and that’s one of the reasons why many people absolutely hate <code class="language-plaintext highlighter-rouge">fork(2)</code>.
+Any code that makes use of files or sockets might be utterly broken after <code class="language-plaintext highlighter-rouge">fork(2)</code> has been called, unless special attention
+was paid to fork safety, which is rarely the case.</p>
+
+<h2 id="some-of-your-threads-may-die">Some of Your Threads May Die</h2>
+
+<p>Going back to our small echo server, you may wonder why one would use <code class="language-plaintext highlighter-rouge">fork(2)</code> instead of a thread here.
+Again, I wasn’t there at the time, but my understanding is that threads became a thing much later (late eighties?),
+and even once they existed, they took quite a while to be standardized and ironed out, hence usable across platforms.</p>
+
+<p>There is also probably an argument that multi-processing with <code class="language-plaintext highlighter-rouge">fork(2)</code> is easier to reason about. Each process has its
+own memory space, so you don’t have to concern yourself as much with race conditions and other thread pitfalls, so I can
+see why even when threads became an option, some may have preferred to stick with <code class="language-plaintext highlighter-rouge">fork(2)</code>.</p>
+
+<p>But since threads became a thing long after <code class="language-plaintext highlighter-rouge">fork(2)</code>, it seems that the people in charge of implementing and
+standardizing them ran into a bit of a pickle, and didn’t find a way to make them both play well together.</p>
+
+<p>Here’s what <a href="https://pubs.opengroup.org/onlinepubs/009696799/functions/fork.html">the POSIX standard fork entry</a> says about that:</p>
+
+<blockquote>
+  <p>A process shall be created with a single thread.
+If a multi-threaded process calls fork(), the new process shall contain a replica of the calling thread and its entire
+address space, possibly including the states of mutexes and other resources.
+Consequently, to avoid errors, the child process may only execute async-signal-safe operations until such time as one
+of the exec functions is called.</p>
+</blockquote>
+
+<p>In other words, the standard acknowledges that the classic <code class="language-plaintext highlighter-rouge">fork+exec</code> dance can be done from a multi-threaded process,
+but kind of wash its hands about the use of <code class="language-plaintext highlighter-rouge">fork</code> not followed by <code class="language-plaintext highlighter-rouge">exec</code>. They recommend only using async-signal-safe
+operations, which is really just a very small subset of things. So really, according to the standard, if you call
+<code class="language-plaintext highlighter-rouge">fork(2)</code> after some threads have been spawned, without the intention to call <code class="language-plaintext highlighter-rouge">exec</code> quickly, then here be dragons.</p>
+
+<p>The reason is that only the thread which called <code class="language-plaintext highlighter-rouge">fork(2)</code> remains alive in the children, all the other threads
+are present but dead. If another thread had locked a mutex or something like that, it would stay locked forever,
+which might lead to a deadlock if a new thread tries to acquire it.</p>
+
+<p>The standard also includes a rationale section about why it is this way, which is a bit long but interesting:</p>
+
+<blockquote>
+  <p>The general problem with making fork() work in a multi-threaded world is what to do with all of the threads.
+There are two alternatives. 
+One is to copy all of the threads into the new process.
+This causes the programmer or implementation to deal with threads that are suspended on system calls or that might be
+about to execute system calls that should not be executed in the new process.
+The other alternative is to copy only the thread that calls fork().
+This creates the difficulty that the state of process-local resources is usually held in process memory.
+If a thread that is not calling fork() holds a resource, that resource is never released in the child process because
+the thread whose job it is to release the resource does not exist in the child process.</p>
+
+  <p>When a programmer is writing a multi-threaded program, […]
+<strong>The fork() function is thus used only to run new programs</strong>, and the effects of calling functions that require certain
+resources between the call to fork() and the call to an exec function are undefined.</p>
+
+  <p>The addition of the forkall() function to the standard was considered and rejected.</p>
+</blockquote>
+
+<p>So they did consider the possibility of having another version of <code class="language-plaintext highlighter-rouge">fork(2)</code>, called <code class="language-plaintext highlighter-rouge">forkall()</code> which would also have
+copied other threads, but they couldn’t come up with a clear semantic on what happens in some cases.</p>
+
+<p>Instead, they gave users a way to have a callback invoked around <code class="language-plaintext highlighter-rouge">fork</code> to restore state, for instance, re-initialize mutexes.
+However, if you go look at <a href="https://man7.org/linux/man-pages/man3/pthread_atfork.3.html">that callback man page <code class="language-plaintext highlighter-rouge">pthread_atfork(3)</code></a>,
+you can read:</p>
+
+<blockquote>
+  <p>The original intention of pthread_atfork() was to allow the child process to be returned to a consistent state. […]
+In practice, this task is generally too difficult to be practicable.</p>
+</blockquote>
+
+<p>So while <code class="language-plaintext highlighter-rouge">pthread_atfork</code> is still there and you can use it, the standard acknowledges that it is very hard to use correctly.</p>
+
+<p>That’s why many system programmers will tell you to never mix <code class="language-plaintext highlighter-rouge">fork(2)</code> with multi-threaded programs, or at least never
+to call <code class="language-plaintext highlighter-rouge">fork(2)</code> ever after a thread was spawned, because then, all bets are off. Hence, you somewhat had to choose your
+camp, and it seems threads clearly won.</p>
+
+<p>But that’s for C or C++ programmers.</p>
+
+<p>In the case of today’s Ruby programmers, however, the reason to use <code class="language-plaintext highlighter-rouge">fork(2)</code> over threads, is that it’s the only way
+to get true parallelism <sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>. Because of the infamous GVL, Ruby threads only really allow to parallelize IO operations,
+and can’t parallelize Ruby code execution, hence pretty much all Ruby application servers integrate with <code class="language-plaintext highlighter-rouge">fork(2)</code> in
+some way so they can exploit more than a single CPU core.</p>
+
+<p>Luckily, some of the pitfalls of mixing threads with <code class="language-plaintext highlighter-rouge">fork(2)</code> are alleviated by Ruby.
+For instance, Ruby mutexes are automatically released when their owner dies, due to how they are implemented.
+In pseudo Ruby code they’d look like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Mutex</span>
+  <span class="k">def</span> <span class="nf">lock</span>
+    <span class="k">if</span> <span class="vi">@owner</span> <span class="o">==</span> <span class="no">Fiber</span><span class="p">.</span><span class="nf">current</span>
+      <span class="k">raise</span> <span class="no">ThreadError</span><span class="p">,</span> <span class="s2">"deadlock; recursive locking"</span>
+    <span class="k">end</span>
+
+    <span class="k">while</span> <span class="vi">@owner</span><span class="o">&amp;</span><span class="p">.</span><span class="nf">alive?</span>
+      <span class="nb">sleep</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">end</span>
+
+    <span class="vi">@owner</span> <span class="o">=</span> <span class="no">Fiber</span><span class="p">.</span><span class="nf">current</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Of course in reality they’re not sleeping in a loop to wait, they use a much more efficient way to block, but it’s to
+give you the general idea.
+The important point is that Ruby mutexes keep a reference to the fiber (hence thread) that acquired the lock,
+and automatically ignore it if it’s dead.
+Hence upon fork, all mutexes held by the background thread are immediately released, which avoids most
+deadlock scenarios.</p>
+
+<p>It’s not perfect of course, if a thread died while holding a mutex, it’s very possible that it left the resource that was protected
+by the mutex in an inconsistent state, in practice however I’ve never experienced something like that, granted it’s likely
+because the existence of the GVL somewhat reduces the need for mutexes.</p>
+
+<p>Now, Ruby threads aren’t fully exempt from these pitfalls, because ultimately on MRI, Ruby threads are backed by native threads,
+so you can end up with a nasty deadlock after forking if another thread released the GVL and called a C API that locks a mutex.</p>
+
+<p>While I never got hard proof of it, I suspect this was happening to some Ruby users because from my understanding,
+glibc’s <a href="https://man7.org/linux/man-pages/man3/getaddrinfo.3.html"><code class="language-plaintext highlighter-rouge">getaddrinfo(3)</code></a>,
+which Ruby uses to resolve host names, does use a global mutex, and Ruby calls it with the GVL released, allowing for a
+fork to happen concurrently.</p>
+
+<p>To prevent this, <a href="https://bugs.ruby-lang.org/issues/20590">I added another lock inside MRI</a>, to prevent <code class="language-plaintext highlighter-rouge">Process.fork</code>
+from happening while a <code class="language-plaintext highlighter-rouge">getaddrinfo(3)</code> call is ongoing.
+This is far from perfect, but given how much Ruby relies on <code class="language-plaintext highlighter-rouge">Process.fork</code>, that seemed like a sensible thing to do.</p>
+
+<p>It’s also not rare for Ruby programs that rely on fork to run into crashes on macOS, because numerous macOS system APIs
+do implicitly spawn threads or lock mutexes, and <a href="https://github.com/rails/rails/issues/38560">macOS chose to consistenty crash when it happens</a>.</p>
+
+<p>So even with pure Ruby code, you occasionally run into <code class="language-plaintext highlighter-rouge">fork(2)</code>’s pitfalls, you can’t just use it willy-nilly.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>So to answer the question in the title, the reason <code class="language-plaintext highlighter-rouge">fork(2)</code> is hated is because it doesn’t compose well, particularly
+in native code.
+If you wish to use it, you have to be extremely careful about the code you are writing and linking to.
+Whenever you use a library you have to make sure it won’t spawn some threads, or hold onto file descriptors,
+and given the choice between <code class="language-plaintext highlighter-rouge">fork(2)</code> and threads, most systems programmers will choose threads. They have their own
+pitfalls, but they compose better, and it is likely that you are calling into APIs that are using threads under the
+hoods, so the choice is somewhat already made for you.</p>
+
+<p>But the situation isn’t nearly as bad for Ruby code, as it makes it much easier to write fork-safe code, and the Ruby
+philosophy makes it so libraries like Active Record take it upon themselves to deal with these gnarly details for you.
+So problems mostly come up when you want to bind to some native libraries that spawn threads, like <code class="language-plaintext highlighter-rouge">grpc</code> or <code class="language-plaintext highlighter-rouge">libvips</code>,
+as they generally don’t expect <code class="language-plaintext highlighter-rouge">fork(2)</code> to happen and aren’t generally kin in accepting it as a constraint.</p>
+
+<p>Especially since fork is mostly used at the end of the application initialization, even libraries
+that are technically not fork-safe, will work because they generally initialize their threads and file descriptors
+lazily upon the first request.</p>
+
+<p>Anyway, even if you still think <code class="language-plaintext highlighter-rouge">fork(2)</code> is evil, until Ruby offers another usable primitive for true parallelism
+(which should be the subject of the next post), it will remain a necessary evil.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Technically, Ruby will automatically close it once the object is garbage collected, but you get the idea. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>Yes, there are also Ractors to some extent, but that will be the subject of the next post. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
