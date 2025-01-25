@@ -168,4 +168,4 @@ So while it's very hard to measure exactly how long a particular IO operation to
 that can help you have a better pitcture of how much "thread stalling" your application is experiencing.
 
 Also, I don't keep a close eye on the various application performance monitoring services out there, but my hope when
-adding these new APIs was that they wouldl eventually integrate it in their offering. Not sure if some did already.
+adding these new APIs was that they would eventually integrate it in their offering. Not sure if some did already.
