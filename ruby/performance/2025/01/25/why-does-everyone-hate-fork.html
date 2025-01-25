@@ -204,7 +204,7 @@ connection in both processes, weird things will happen:</p>
 </code></pre></div></div>
 
 <p>Here the script establishes a connection to MySQL, using the <code class="language-plaintext highlighter-rouge">trilogy</code> client, then forks a child
-that queries <code class="language-plaintext highlighter-rouge">SELECT "nope"</code> indefinitely in a loop. Once the child is spawned, the parent issues 5 queries,
+that queries <code class="language-plaintext highlighter-rouge">SELECT "oops"</code> indefinitely in a loop. Once the child is spawned, the parent issues 5 queries,
 each one supposed to return a single number from 0 to 4, and print their result.</p>
 
 <p>If you run this script, you’ll get a somewhat random output, similar to this:</p>
