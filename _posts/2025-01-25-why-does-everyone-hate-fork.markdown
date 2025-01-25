@@ -320,7 +320,8 @@ camp, and it seems threads clearly won.
 But that's for C or C++ programmers.
 
 In the case of today's Ruby programmers, however, the reason to use `fork(2)` over threads, is that it's the only way
-to get true parallelism [^2]. Because of the infamous GVL, Ruby threads only really allow to parallelize IO operations,
+to get true parallelism [^2] on MRI, the default and most commonly used implementation of Ruby.
+Because of the infamous GVL, Ruby threads only really allow to parallelize IO operations,
 and can't parallelize Ruby code execution, hence pretty much all Ruby application servers integrate with `fork(2)` in
 some way so they can exploit more than a single CPU core.
 
