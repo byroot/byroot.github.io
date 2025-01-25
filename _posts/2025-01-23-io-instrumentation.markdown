@@ -69,7 +69,7 @@ long delays for a thread to resume after finishing some IOs.
 That's why [in Ruby 3.2 I added a new C API to allow instrumenting the GVL](https://bugs.ruby-lang.org/issues/18339).
 
 This is quite a low-level API, and you need a C extension to integrate with it, but I wrote
-[`gvltools`](https://github.com/Shopify/gvltools for that, and John Hawthorn wrote the
+[`gvltools`](https://github.com/Shopify/gvltools) for that, and John Hawthorn wrote the
 [`gvl_timing` gem](https://github.com/jhawthorn/gvl_timing), and there's
 also [`gvl-tracing`](https://github.com/ivoanjo/gvl-tracing) from Ivo Anjo.
 
