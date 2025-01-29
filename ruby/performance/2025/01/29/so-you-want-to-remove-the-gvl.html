@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>So You Want To Remove The GVL? | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="So You Want To Remove The GVL?" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL." />
+<meta property="og:description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-01-29T09:47:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="So You Want To Remove The GVL?" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-01-29T09:47:51+00:00","datePublished":"2025-01-29T09:47:51+00:00","description":"I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL.","headline":"So You Want To Remove The GVL?","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"},"url":"https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">So You Want To Remove The GVL?</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-01-29T09:47:51+00:00" itemprop="datePublished">Jan 29, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL.</p>
+
+<p>For quite a long time, it has been said that Rails applications are mostly IO-bound, hence Ruby’s GVL isn’t that big of
+a deal and that has influenced the design of some cornerstone pieces of Ruby infrastructure like Puma and Sidekiq.
+As <a href="/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html">I explained in a previous post, I don’t think it’s quite true for most Rails applications</a>.
+Regardless, <a href="/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html">the existence of the GVL still requires these threaded systems to use <code class="language-plaintext highlighter-rouge">fork(2)</code></a> in order to exploit all the cores of a server: one process per core.
+To avoid all this, some people have been calling for the GVL to simply be removed.</p>
+
+<p>But is it that simple?</p>
+
+<h2 id="gvl-and-thread-safety">GVL and Thread Safety</h2>
+
+<p>If you read posts about the GVL, you may have heard that it’s not there to protect your code from race conditions, but
+to protect the Ruby VM from your code.
+Put another way, GVL or not, your code can be subject to race conditions, and this is absolutely true.</p>
+
+<p><strong>But that doesn’t mean the GVL isn’t an important component of the thread safety of the Ruby code in your applications</strong>.
+Let’s use a simple code sample to illustrate:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">QUOTED_COLUMN_NAMES</span> <span class="o">=</span> <span class="p">{}</span>
+
+<span class="k">def</span> <span class="nf">quote_column_name</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
+  <span class="no">QUOTED_COLUMN_NAMES</span><span class="p">[</span><span class="nb">name</span><span class="p">]</span> <span class="o">||=</span> <span class="n">quote</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Would you say this code is thread-safe? Or not?</p>
+
+<p>Well, if you answered “It’s thread-safe”, you’re not quite correct.
+But if you answered “It’s not thread safe”, you’re not quite correct either.</p>
+
+<p>The actual answer is: “It depends”.</p>
+
+<p>First, it depends on how strict of a definition of thread-safe you are thinking of,
+then it depends on whether that <code class="language-plaintext highlighter-rouge">quote</code> method is idempotent and finally, it depends on which implementation of Ruby you are using.</p>
+
+<p>Let me explain.</p>
+
+<p>First <code class="language-plaintext highlighter-rouge">||=</code> is syntax sugar that is hiding a bit how this code actually works, so let’s desugar it:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">QUOTED_COLUMN_NAMES</span> <span class="o">=</span> <span class="p">{}</span>
+
+<span class="k">def</span> <span class="nf">quote_column_name</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
+  <span class="n">quoted</span> <span class="o">=</span> <span class="no">QUOTED_COLUMN_NAMES</span><span class="p">[</span><span class="nb">name</span><span class="p">]</span>
+
+  <span class="c1"># Ruby could switch threads here</span>
+
+  <span class="k">if</span> <span class="n">quoted</span>
+    <span class="n">quoted</span>
+  <span class="k">else</span>
+    <span class="no">QUOTED_COLUMN_NAMES</span><span class="p">[</span><span class="nb">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">quote</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>In this form it’s easier to see that <code class="language-plaintext highlighter-rouge">||=</code> isn’t a single operation but multiple, so even on MRI<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>, with a GVL, it’s
+technically possible that Ruby would preempt a thread after evaluating <code class="language-plaintext highlighter-rouge">if quoted =</code>, and resume another thread that will
+enter the same method with the same argument.</p>
+
+<p>In other words, this code is subject to race conditions, even with a GVL.
+To be even more precise, it’s subject to a <em>check-then-act</em> condition.</p>
+
+<p>If it’s subject to race conditions, you can logically deduce that it’s not thread-safe.
+But here again, it depends.
+If <code class="language-plaintext highlighter-rouge">quote(name)</code> is idempotent, then yes there’s technically a race-condition, but it has no real negative impact.
+The <code class="language-plaintext highlighter-rouge">name</code> will be quoted twice instead of once, and one of the resulting strings will be discarded, who cares?
+That is why in my opinion the above code is effectively thread-safe regardless.</p>
+
+<p>And we can verify this experimentally by using a few threads:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">QUOTED_COLUMN_NAMES</span> <span class="o">=</span> <span class="mi">20</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">to_h</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">}</span>
+
+<span class="k">def</span> <span class="nf">quote_column_name</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
+  <span class="no">QUOTED_COLUMN_NAMES</span><span class="p">[</span><span class="nb">name</span><span class="p">]</span> <span class="o">||=</span> <span class="s2">"`</span><span class="si">#{</span><span class="nb">name</span><span class="p">.</span><span class="nf">to_s</span><span class="p">.</span><span class="nf">gsub</span><span class="p">(</span><span class="s1">'`'</span><span class="p">,</span> <span class="s1">'``'</span><span class="p">)</span><span class="si">}</span><span class="s2">`"</span><span class="p">.</span><span class="nf">freeze</span>
+<span class="k">end</span>
+
+<span class="n">threads</span> <span class="o">=</span> <span class="mi">4</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+  <span class="no">Thread</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+    <span class="mi">10_000</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
+      <span class="k">if</span> <span class="n">quote_column_name</span><span class="p">(</span><span class="s2">"foo"</span><span class="p">)</span> <span class="o">!=</span> <span class="s2">"`foo`"</span>
+        <span class="k">raise</span> <span class="s2">"There was a bug"</span>
+      <span class="k">end</span>
+      <span class="no">QUOTED_COLUMN_NAMES</span><span class="p">.</span><span class="nf">delete</span><span class="p">(</span><span class="s2">"foo"</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="n">threads</span><span class="p">.</span><span class="nf">each</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:join</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>If you run this script with MRI, it will work fine, it won’t crash, and <code class="language-plaintext highlighter-rouge">quote_column_name</code> will always return what
+you expect.</p>
+
+<p>However, if you try to run it with either TruffleRuby or JRuby, which are alternative
+implementations of Ruby that don’t have a GVL, you’ll get <a href="https://gist.github.com/byroot/1470a8fc71c2712a1f3ae875a9a40710">about 300 lines of errors</a>:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>ruby <span class="nt">-v</span> /tmp/quoted.rb 
+truffleruby 24.1.2, like ruby 3.2.4, Oracle GraalVM Native <span class="o">[</span>arm64-darwin20]
+java.lang.RuntimeException: Ruby Thread <span class="nb">id</span><span class="o">=</span>51 from /tmp/quoted.rb:20 terminated with internal error:
+    at org.truffleruby.core.thread.ThreadManager.printInternalError<span class="o">(</span>ThreadManager.java:316<span class="o">)</span>
+    ... 20 more
+Caused by: java.lang.NullPointerException
+    at org.truffleruby.core.hash.library.PackedHashStoreLibrary.getHashed<span class="o">(</span>PackedHashStoreLibrary.java:78<span class="o">)</span>
+    ... 120 more
+java.lang.RuntimeException: Ruby Thread <span class="nb">id</span><span class="o">=</span>52 from /tmp/quoted.rb:20 terminated with internal error:
+    at org.truffleruby.core.thread.ThreadManager.printInternalError<span class="o">(</span>ThreadManager.java:316<span class="o">)</span>
+    ... 20 more
+... etc
+</code></pre></div></div>
+
+<p>The error isn’t always exactly the same, and sometimes it seems worse than others.
+But in general, it crashes deep inside the TruffleRuby or JRuby interpreters because the concurrent access to the same
+hash causes them to hit a <code class="language-plaintext highlighter-rouge">NullPointerException</code>.</p>
+
+<p>So we can say this code is thread-safe on the reference implementation of Ruby, but not on all implementations of Ruby.</p>
+
+<p>The reason it is that way is that on MRI, the thread scheduler can only switch the running thread when executing pure.
+Ruby code.
+Whenever you call into a builtin method that is implemented in C, you are implicitly protected by the GVL.
+Hence all methods implemented in C are essentially “atomic” unless they explicitly release the GVL.
+But generally speaking, only IO methods will release it.</p>
+
+<p>That’s why the real version of this code, that <a href="https://github.com/rails/rails/blob/0643592211dec558f93e57451a34393941144c8e/activerecord/lib/active_record/connection_adapters/sqlite3/quoting.rb#L9">I took from Active Record</a>,
+doesn’t use a <code class="language-plaintext highlighter-rouge">Hash</code>, but a <code class="language-plaintext highlighter-rouge">Concurrent::Map</code>.
+On MRI that class is pretty much just an alias for <code class="language-plaintext highlighter-rouge">Hash</code>, but on JRuby and TruffleRuby it’s defined as a hash table
+with a mutex.
+Officially Rails doesn’t support TruffleRuby or JRuby, but in practice, we tend to accommodate them with this sort of
+small changes.</p>
+
+<h2 id="just-remove-it-already">Just Remove It Already</h2>
+
+<p>That’s why there’s “removing the GVL” and “removing the GVL”.</p>
+
+<p>The <em>simple</em> way would be to do what TruffleRuby and JRuby do: nothing. Or close to nothing.</p>
+
+<p>Since these alternative implementations are based on the Java Virtual Machine, which is memory-safe, they delegate to
+the JVM runtime the hard part job of failing but not hard crashing in such cases.
+Given MRI is implemented in C, which is famously not memory-safe, just removing the GVL would cause the virtual machine
+to run into a segmentation fault (or worse) when your code triggers this sort of race condition, so it wouldn’t be as simple.</p>
+
+<p>Ruby would need to do something similar to what the JVM does, having some sort of atomic counter on every object that
+could be subject to race conditions. Whenever you access an object you increment it and check it is set to <code class="language-plaintext highlighter-rouge">1</code> to ensure
+nobody else is currently using it.</p>
+
+<p>This in itself is quite a challenging task, as it means going over all the methods implemented in C (in Ruby itself but
+also popular C extensions), to insert all these atomic increments and decrements.</p>
+
+<p>It would also require some extra space in most Ruby objects for that new counter, likely 4 or 8 bytes, because atomic
+operations aren’t easily done on smaller integer types. Unless of course there’s some smart trick I’m not privy of.</p>
+
+<p>It would also result in a slow-down of the virtual machine, as all these atomic increments and decrements likely would
+have a noticeable overhead, because atomic operations mean that the CPU has to ensure all cores see the operation at
+the same time, so it essentially locks that part of the CPU cache.
+I won’t try to guess how much that overhead would be in practice, but it certainly isn’t free.</p>
+
+<p>And then the result would be that a lot of existing pure Ruby code, that used to be effectively thread safe, would not longer be.
+So beyond the work ruby-core would have to do, Ruby users would also likely need to debug a bunch of thread safety issues
+in their code, gems, etc.</p>
+
+<p>That’s why despite the impressive efforts of JRuby and TruffleRuby teams to be as compatible as possible with MRI,
+the absence of a GVL, which is a feature, makes it so that most non-trivial codebases likely need at least some debugging
+before they can run properly on either of them. It’s not necessarily a ton of effort, it depends, but it’s more work
+than your average yearly Ruby upgrade.</p>
+
+<h2 id="replace-it-by-something">Replace It By Something</h2>
+
+<p>But that’s not the only way to remove the GVL, another way that is often envisioned is to replace the one global lock,
+by a myriad of small locks, one per every mutable object.</p>
+
+<p>In terms of work needed, it’s fairly similar to the previous approach, you’d need to go over all the C code and insert
+explicitly lock and unlock statements whenever you touch a mutable object.
+It would also require some space on every object, likely a bit more than just a counter though.</p>
+
+<p>With such approach, C extensions would still likely need some work, but pure Ruby code would remain fully compatible.</p>
+
+<p>If you’ve heard about the semi-recent effort to remove Python’s GIL (that’s what they call their GVL), that’s the approach
+they’re using. So let’s look at the sort of changes they made, starting with <a href="https://github.com/python/cpython/blob/180ee43bde99b8ce4c4f1d5237ab191e26118061/Include/object.h#L109-L162">their base object layout that is defined
+in <code class="language-plaintext highlighter-rouge">object.h</code></a></p>
+
+<p>It has lots of ceremonial code, so here’s a stripped-down and simplified version:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* Nothing is actually declared to be a PyObject, but every pointer to
+ * a Python object can be cast to a PyObject*.  This is inheritance built by hand.
+ */</span>
+<span class="cp">#ifndef Py_GIL_DISABLED
+</span><span class="k">struct</span> <span class="n">_object</span> <span class="p">{</span>
+    <span class="n">Py_ssize_t</span> <span class="n">ob_refcnt</span>
+    <span class="n">PyTypeObject</span> <span class="o">*</span><span class="n">ob_type</span><span class="p">;</span>
+<span class="p">};</span>
+<span class="cp">#else
+</span><span class="c1">// Objects that are not owned by any thread use a thread id (tid) of zero.</span>
+<span class="c1">// This includes both immortal objects and objects whose reference count</span>
+<span class="c1">// fields have been merged.</span>
+<span class="cp">#define _Py_UNOWNED_TID             0
+</span>
+<span class="k">struct</span> <span class="n">_object</span> <span class="p">{</span>
+    <span class="c1">// ob_tid stores the thread id (or zero). It is also used by the GC and the</span>
+    <span class="c1">// trashcan mechanism as a linked list pointer and by the GC to store the</span>
+    <span class="c1">// computed "gc_refs" refcount.</span>
+    <span class="kt">uintptr_t</span> <span class="n">ob_tid</span><span class="p">;</span>
+    <span class="kt">uint16_t</span> <span class="n">ob_flags</span><span class="p">;</span>
+    <span class="n">PyMutex</span> <span class="n">ob_mutex</span><span class="p">;</span>           <span class="c1">// per-object lock</span>
+    <span class="kt">uint8_t</span> <span class="n">ob_gc_bits</span><span class="p">;</span>         <span class="c1">// gc-related state</span>
+    <span class="kt">uint32_t</span> <span class="n">ob_ref_local</span><span class="p">;</span>      <span class="c1">// local reference count</span>
+    <span class="n">Py_ssize_t</span> <span class="n">ob_ref_shared</span><span class="p">;</span>   <span class="c1">// shared (atomic) reference count</span>
+    <span class="n">PyTypeObject</span> <span class="o">*</span><span class="n">ob_type</span><span class="p">;</span>
+<span class="p">};</span>
+<span class="cp">#endif
+</span></code></pre></div></div>
+
+<p>There’s quite a lot in there, so let me describe it all. My entire explanation will assume a 64-bit architecture, to make things simpler.</p>
+
+<p>Also note that while I used to be a Pythonista, that was 15 years ago, and nowadays I’m just spectating Python’s
+development from afar. All this to say, I’ll do my best to correctly describe what they are doing, but it’s entirely
+possible I get some of it wrong.</p>
+
+<p>Anyway, when the GIL isn’t disabled as part of compilation, every single Python object starts with a header of <code class="language-plaintext highlighter-rouge">16B</code>,
+the first <code class="language-plaintext highlighter-rouge">8B</code> called <code class="language-plaintext highlighter-rouge">ob_refcnt</code> is used for reference counting as the name implies, but actually only <code class="language-plaintext highlighter-rouge">4B</code> is used as a
+counter, the other <code class="language-plaintext highlighter-rouge">4B</code> is used as a bitmap to set flags on the object, just like in Ruby.
+Then the remaining <code class="language-plaintext highlighter-rouge">8B</code> is simply a pointer to the object’s class.</p>
+
+<p>For comparison, Ruby’s object header, called <code class="language-plaintext highlighter-rouge">struct RBasic</code> is also <code class="language-plaintext highlighter-rouge">16B</code>. Similarly, it has one pointer to the class,
+and the other <code class="language-plaintext highlighter-rouge">8B</code> is used as a big bitmap that stores many different things.</p>
+
+<p>However, when the GIL is disabled during compilation, the object header is now <code class="language-plaintext highlighter-rouge">32B</code>, double the size.
+It starts with an <code class="language-plaintext highlighter-rouge">8B</code> <code class="language-plaintext highlighter-rouge">ob_tid</code>, for thread ID, which stores which thread owns that particular object.
+Then <code class="language-plaintext highlighter-rouge">ob_flags</code> is explicitly laid out, but has been reduced to <code class="language-plaintext highlighter-rouge">2B</code> instead of <code class="language-plaintext highlighter-rouge">4B</code>, to make space for a <code class="language-plaintext highlighter-rouge">1B</code> <code class="language-plaintext highlighter-rouge">ob_mutex</code>,
+and another <code class="language-plaintext highlighter-rouge">1B</code> for some GC state I don’t know much about.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">4B</code> <code class="language-plaintext highlighter-rouge">ob_refcnt</code> field is still there, but this time named <code class="language-plaintext highlighter-rouge">ob_ref_local</code>, and there is another <code class="language-plaintext highlighter-rouge">8B</code> <code class="language-plaintext highlighter-rouge">ob_ref_shared</code>,
+and finally, the pointer to the object class.</p>
+
+<p>Just with the change in the object layout, you can already have a sense of the extra complexity, as well as the memory
+overhead. Sixteen extra bytes per object isn’t negligible.</p>
+
+<p>Now, as you may have guessed from the <code class="language-plaintext highlighter-rouge">refcnt</code> field, Python’s memory is mainly managed via reference counting.
+They also have a mark and sweep collector, but it’s only there to deal with circular references.
+In that way, it’s quite different from Ruby, but looking at what they had to do to make this thread safe is interesting
+regardless.</p>
+
+<p>Let’s look at <a href="https://github.com/python/cpython/blob/180ee43bde99b8ce4c4f1d5237ab191e26118061/Include/refcount.h#L245-L294"><code class="language-plaintext highlighter-rouge">Py_INCREF</code>, defined in <code class="language-plaintext highlighter-rouge">refcount.h</code></a>.
+Here again, it’s full of <code class="language-plaintext highlighter-rouge">ifdef</code> for various architecture and such, so here’s a stripped-down version, with only the code
+executed when the GIL is active, and some debug code removed:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#define _Py_IMMORTAL_MINIMUM_REFCNT ((Py_ssize_t)(1L &lt;&lt; 30))
+</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">Py_ALWAYS_INLINE</span> <span class="kt">int</span> <span class="nf">_Py_IsImmortal</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">op</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_refcnt</span> <span class="o">&gt;=</span> <span class="n">_Py_IMMORTAL_MINIMUM_REFCNT</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">Py_ALWAYS_INLINE</span> <span class="kt">void</span> <span class="nf">Py_INCREF</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">op</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">_Py_IsImmortal</span><span class="p">(</span><span class="n">op</span><span class="p">))</span> <span class="p">{</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_refcnt</span><span class="o">++</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>It’s extremely simple, even if you are unfamiliar with C you should be able to read it. But basically, it checks
+if the refcount is set to a magical value that marks immortal objects, and if it isn’t immortal, it simply does a regular,
+non-atomic, hence very cheap, increment of the counter.</p>
+
+<p>A sidenote on immortal objects, it’s <a href="https://instagram-engineering.com/copy-on-write-friendly-python-garbage-collection-ad6ed5233ddf">a very cool concept introduced by Instagram engineers</a>)
+which I’ve been meaning to introduce in Ruby too. It’s well worth a read if you are interested in things like Copy-on-Write
+and memory savings.</p>
+
+<p>Now let’s look at that same <code class="language-plaintext highlighter-rouge">Py_INCREF</code> function, with the GIL removed:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#define _Py_IMMORTAL_REFCNT_LOCAL UINT32_MAX
+# define _Py_REF_SHARED_SHIFT        2
+</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">Py_ALWAYS_INLINE</span> <span class="kt">int</span> <span class="nf">_Py_IsImmortal</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">op</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">_Py_atomic_load_uint32_relaxed</span><span class="p">(</span><span class="o">&amp;</span><span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_ref_local</span><span class="p">)</span> <span class="o">==</span>
+            <span class="n">_Py_IMMORTAL_REFCNT_LOCAL</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">Py_ALWAYS_INLINE</span> <span class="kt">int</span>
+<span class="nf">_Py_IsOwnedByCurrentThread</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">ob</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="n">ob</span><span class="o">-&gt;</span><span class="n">ob_tid</span> <span class="o">==</span> <span class="n">_Py_ThreadId</span><span class="p">();</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">Py_ALWAYS_INLINE</span> <span class="kt">void</span> <span class="nf">Py_INCREF</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">op</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint32_t</span> <span class="n">local</span> <span class="o">=</span> <span class="n">_Py_atomic_load_uint32_relaxed</span><span class="p">(</span><span class="o">&amp;</span><span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_ref_local</span><span class="p">);</span>
+    <span class="kt">uint32_t</span> <span class="n">new_local</span> <span class="o">=</span> <span class="n">local</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">new_local</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+        <span class="c1">// local is equal to _Py_IMMORTAL_REFCNT_LOCAL: do nothing</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">_Py_IsOwnedByCurrentThread</span><span class="p">(</span><span class="n">op</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">_Py_atomic_store_uint32_relaxed</span><span class="p">(</span><span class="o">&amp;</span><span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_ref_local</span><span class="p">,</span> <span class="n">new_local</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+        <span class="n">_Py_atomic_add_ssize</span><span class="p">(</span><span class="o">&amp;</span><span class="n">op</span><span class="o">-&gt;</span><span class="n">ob_ref_shared</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">_Py_REF_SHARED_SHIFT</span><span class="p">));</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>This is now way more involved.
+First the <code class="language-plaintext highlighter-rouge">ob_ref_local</code> needs to be loaded atomically, which as mentioned previously is more costly than loading it
+normally as it requires CPU cache synchronization.
+Then we still have the check for immortal objects, nothing new.</p>
+
+<p>The interesting part is the final <code class="language-plaintext highlighter-rouge">if</code>, as there are two different cases, the case where the object is owned by the
+current thread and the case where it isn’t. Hence the first step is to compare the <code class="language-plaintext highlighter-rouge">ob_tid</code> with <code class="language-plaintext highlighter-rouge">_Py_ThreadId()</code>.
+That function is way too big to include here, but you can check <a href="https://github.com/python/cpython/blob/180ee43bde99b8ce4c4f1d5237ab191e26118061/Include/object.h#L183-L246">its implementation in <code class="language-plaintext highlighter-rouge">object.h</code></a>,
+on most platform it’s essentially free because the thread ID is always stored in a CPU register.</p>
+
+<p>When the object is owned by the current thread, Python can get away with a non-atomic increment followed
+by an atomic store.
+Whereas in the opposite case, the entire increment has to be atomic, which is way more expensive as
+it involves <a href="https://en.wikipedia.org/wiki/Compare-and-swap">compare and swap</a> operations.
+Meaning that in case of a race condition, the CPU will retry the incrementation until it happens without a race condition.</p>
+
+<p>In pseudo-Ruby it could look like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">atomic_compare_and_swap</span><span class="p">(</span><span class="n">was</span><span class="p">,</span> <span class="n">now</span><span class="p">)</span>
+  <span class="c1"># assume this method is a single atomic CPU operation</span>
+  <span class="k">if</span> <span class="vi">@memory</span> <span class="o">==</span> <span class="n">was</span>
+    <span class="vi">@memory</span> <span class="o">=</span> <span class="n">now</span>
+    <span class="k">return</span> <span class="kp">true</span>
+  <span class="k">else</span>
+    <span class="k">return</span> <span class="kp">false</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">atomic_increment</span><span class="p">(</span><span class="n">add</span><span class="p">)</span>
+  <span class="kp">loop</span> <span class="k">do</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="n">atomic_load</span><span class="p">(</span><span class="vi">@memory</span><span class="p">)</span>
+    <span class="k">break</span> <span class="k">if</span> <span class="n">atomic_compare_and_swap</span><span class="p">(</span><span class="n">value</span> <span class="o">+</span> <span class="n">add</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So you can see how what used to be a very mundane operation, that is a major Python hotspot,
+became something noticeably more complex.
+Ruby doesn’t use reference counting, so this particular case wouldn’t immediately translate to Ruby if there was an
+attempt to remove the GVL, but Ruby still has a bunch of similar routines that are very frequently called and would
+be similarly impacted.</p>
+
+<p>For instance, because Ruby’s GC is generational and incremental, whenever a new reference is created between two objects,
+say <code class="language-plaintext highlighter-rouge">A</code> towards <code class="language-plaintext highlighter-rouge">B</code>, Ruby might need to mark <code class="language-plaintext highlighter-rouge">A</code> as needing to be rescanned, and it is done by flipping one bit in a bitmap.
+That’s one example of something that would need to be changed to use atomic operations.</p>
+
+<p>But we still haven’t got to talk about the actual locking.
+When I first heard about Python’s renewed attempt to remove their GIL, I expected they’d leverage the existing reference counting API to shove the locking in it, but clearly, they didn’t.
+I’m not certain why, but I suppose the semantics don’t fully match.</p>
+
+<p>Instead, they had to do what I mentioned earlier, go over all the methods implemented in C to add explicit lock and unlock
+calls. To illustrate, we can look at the <code class="language-plaintext highlighter-rouge">list.clear()</code> method, which is the Python equivalent to <code class="language-plaintext highlighter-rouge">Array#clear</code>.</p>
+
+<p>Prior to the GIL removal effort, it looked like this:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span>
+<span class="nf">PyList_Clear</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">self</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">PyList_Check</span><span class="p">(</span><span class="n">self</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">PyErr_BadInternalCall</span><span class="p">();</span>
+        <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">list_clear</span><span class="p">((</span><span class="n">PyListObject</span><span class="o">*</span><span class="p">)</span><span class="n">self</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>It looks simpler than it actually is because most of the complexity is in the <code class="language-plaintext highlighter-rouge">list_clear</code> routine, but regardless,
+it’s fairly straightforward.</p>
+
+<p>Quite a while after the project started, <a href="https://github.com/python/cpython/issues/127536">Python developers noticed they forgot to add some locks to <code class="language-plaintext highlighter-rouge">list.clear</code> and
+a few other methods</a>, so they changed it for:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span>
+<span class="nf">PyList_Clear</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">self</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">PyList_Check</span><span class="p">(</span><span class="n">self</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">PyErr_BadInternalCall</span><span class="p">();</span>
+        <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">Py_BEGIN_CRITICAL_SECTION</span><span class="p">(</span><span class="n">self</span><span class="p">);</span>
+    <span class="n">list_clear</span><span class="p">((</span><span class="n">PyListObject</span><span class="o">*</span><span class="p">)</span><span class="n">self</span><span class="p">);</span>
+    <span class="n">Py_END_CRITICAL_SECTION</span><span class="p">();</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Not that much worse, they managed to encapsulate it all in two macros that are just noops when Python is built with the GIL enabled.</p>
+
+<p>I’m not going to explain everything happening in <code class="language-plaintext highlighter-rouge">Py_BEGIN_CRITICAL_SECTION</code>, some of it flies over my head anyway, but long story short it ends up in <code class="language-plaintext highlighter-rouge">_PyCriticalSection_BeginMutex</code>, which has a fast path and a slow path:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">_PyCriticalSection_BeginMutex</span><span class="p">(</span><span class="n">PyCriticalSection</span> <span class="o">*</span><span class="n">c</span><span class="p">,</span> <span class="n">PyMutex</span> <span class="o">*</span><span class="n">m</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">PyMutex_LockFast</span><span class="p">(</span><span class="n">m</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">PyThreadState</span> <span class="o">*</span><span class="n">tstate</span> <span class="o">=</span> <span class="n">_PyThreadState_GET</span><span class="p">();</span>
+        <span class="n">c</span><span class="o">-&gt;</span><span class="n">_cs_mutex</span> <span class="o">=</span> <span class="n">m</span><span class="p">;</span>
+        <span class="n">c</span><span class="o">-&gt;</span><span class="n">_cs_prev</span> <span class="o">=</span> <span class="n">tstate</span><span class="o">-&gt;</span><span class="n">critical_section</span><span class="p">;</span>
+        <span class="n">tstate</span><span class="o">-&gt;</span><span class="n">critical_section</span> <span class="o">=</span> <span class="p">(</span><span class="kt">uintptr_t</span><span class="p">)</span><span class="n">c</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+        <span class="n">_PyCriticalSection_BeginSlow</span><span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">m</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>What the fast path does, is that it assumes the object’s <code class="language-plaintext highlighter-rouge">ob_mutex</code> field is set to <code class="language-plaintext highlighter-rouge">0</code>, and tries
+to set it to <code class="language-plaintext highlighter-rouge">1</code> with an atomic compare and swap:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">//_Py_UNLOCKED is defined as 0 and _Py_LOCKED as 1 in Include/cpython/lock.h</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="kt">int</span>
+<span class="nf">PyMutex_LockFast</span><span class="p">(</span><span class="n">PyMutex</span> <span class="o">*</span><span class="n">m</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint8_t</span> <span class="n">expected</span> <span class="o">=</span> <span class="n">_Py_UNLOCKED</span><span class="p">;</span>
+    <span class="kt">uint8_t</span> <span class="o">*</span><span class="n">lock_bits</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">m</span><span class="o">-&gt;</span><span class="n">_bits</span><span class="p">;</span>
+    <span class="k">return</span> <span class="n">_Py_atomic_compare_exchange_uint8</span><span class="p">(</span><span class="n">lock_bits</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">expected</span><span class="p">,</span> <span class="n">_Py_LOCKED</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>If that works, it knows the object was unlocked so it can just to a little bit of book keeping.</p>
+
+<p>If that doesn’t work, however, it enters the slow path, and there it starts to become quite complicated but to describe it quickly, it first uses a spin-lock with 40 iterations. So in a way, it does the same compare and swap logic 40 times in a raw with the hope that it might work eventually.
+And if that still doesn’t work, it then “parks” the thread and will wait for a signal to resume.
+If you are interested in knowing more you can look at <a href="https://github.com/python/cpython/blob/7dd0a7e52ee832559b89d5ccba732c8e91260df8/Python/lock.c#L50-L135"><code class="language-plaintext highlighter-rouge">_PyMutex_LockTimed</code> in <code class="language-plaintext highlighter-rouge">Python/lock.c</code></a>
+and follow the code from there. Ultimately the mutex code isn’t that interesting for our current topic,
+because the assumption is that most objects are only ever accessed by a single thread, so the fast path is what matters
+the most.</p>
+
+<p>But beyond the cost of that fast path, what is also important is how to integrate the lock and unlock statements
+in an existing codebase. If you forget one <code class="language-plaintext highlighter-rouge">lock()</code>, you might cause a VM crash, and if you forget one <code class="language-plaintext highlighter-rouge">unlock()</code>, you
+might cause a VM dead-lock, which is arguably even worse.</p>
+
+<p>So let’s go back to that <code class="language-plaintext highlighter-rouge">list.clear()</code> example:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span>
+<span class="nf">PyList_Clear</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">self</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">PyList_Check</span><span class="p">(</span><span class="n">self</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">PyErr_BadInternalCall</span><span class="p">();</span>
+        <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">Py_BEGIN_CRITICAL_SECTION</span><span class="p">(</span><span class="n">self</span><span class="p">);</span>
+    <span class="n">list_clear</span><span class="p">((</span><span class="n">PyListObject</span><span class="o">*</span><span class="p">)</span><span class="n">self</span><span class="p">);</span>
+    <span class="n">Py_END_CRITICAL_SECTION</span><span class="p">();</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>You may have noticed how Python does error checking. When a bad precondition is found, it generates an exception
+with a <code class="language-plaintext highlighter-rouge">PyErr_*</code> function and returns <code class="language-plaintext highlighter-rouge">-1</code>. That’s because <code class="language-plaintext highlighter-rouge">list.clear()</code> always returns <code class="language-plaintext highlighter-rouge">None</code> (Python’s <code class="language-plaintext highlighter-rouge">nil</code>),
+so the return type of its C implementation is just an <code class="language-plaintext highlighter-rouge">int</code>.
+For a method that returns a Ruby object, on an error condition it would return a <code class="language-plaintext highlighter-rouge">NULL</code> pointer.</p>
+
+<p>For instance <code class="language-plaintext highlighter-rouge">list.__getitem__</code>, which is Python’s equivalent to <code class="language-plaintext highlighter-rouge">Array#fetch</code> is defined as:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">PyObject</span> <span class="o">*</span>
+<span class="nf">PyList_GetItem</span><span class="p">(</span><span class="n">PyObject</span> <span class="o">*</span><span class="n">op</span><span class="p">,</span> <span class="n">Py_ssize_t</span> <span class="n">i</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">PyList_Check</span><span class="p">(</span><span class="n">op</span><span class="p">))</span> <span class="p">{</span>
+        <span class="n">PyErr_BadInternalCall</span><span class="p">();</span>
+        <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">valid_index</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">Py_SIZE</span><span class="p">(</span><span class="n">op</span><span class="p">)))</span> <span class="p">{</span>
+        <span class="n">_Py_DECLARE_STR</span><span class="p">(</span><span class="n">list_err</span><span class="p">,</span> <span class="s">"list index out of range"</span><span class="p">);</span>
+        <span class="n">PyErr_SetObject</span><span class="p">(</span><span class="n">PyExc_IndexError</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">_Py_STR</span><span class="p">(</span><span class="n">list_err</span><span class="p">));</span>
+        <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="p">((</span><span class="n">PyListObject</span> <span class="o">*</span><span class="p">)</span><span class="n">op</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ob_item</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>You can see that error if you try accessing a Python list with an out-of-bound index:</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;&gt;</span> <span class="n">a</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">a</span><span class="p">[</span><span class="mi">12</span><span class="p">]</span>
+<span class="nc">Traceback </span><span class="p">(</span><span class="n">most</span> <span class="n">recent</span> <span class="n">call</span> <span class="n">last</span><span class="p">):</span>
+  <span class="n">File</span> <span class="sh">"</span><span class="s">&lt;stdin&gt;</span><span class="sh">"</span><span class="p">,</span> <span class="n">line</span> <span class="mi">1</span><span class="p">,</span> <span class="ow">in</span> <span class="o">&lt;</span><span class="n">module</span><span class="o">&gt;</span>
+<span class="nb">IndexError</span><span class="p">:</span> <span class="nb">list</span> <span class="n">index</span> <span class="n">out</span> <span class="n">of</span> <span class="nb">range</span>
+</code></pre></div></div>
+
+<p>You can recognize the same <code class="language-plaintext highlighter-rouge">IndexError</code> and the same <code class="language-plaintext highlighter-rouge">list index out of range</code> message.</p>
+
+<p>So in both cases, when the Python methods implemented in C need to raise an exception, they build the exception object, store it in some thread local state, and then return a specific value to let the interpreter know that an exception happened.
+When the interpreter notices the return value of the function is one of these special values, it starts unwinding the stack.
+In a way, Python exceptions are syntactic sugar for the classic <code class="language-plaintext highlighter-rouge">if (error) { return error }</code> pattern.</p>
+
+<p>Now let’s look at Ruby’s <code class="language-plaintext highlighter-rouge">Array#fetch</code>, and see if you notice any difference in how the out-of-bound case is handled:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="n">VALUE</span>
+<span class="nf">rb_ary_fetch</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="n">VALUE</span> <span class="o">*</span><span class="n">argv</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">ary</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// snip...</span>
+    <span class="kt">long</span> <span class="n">idx</span> <span class="o">=</span> <span class="n">NUM2LONG</span><span class="p">(</span><span class="n">pos</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">idx</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="o">||</span> <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="n">idx</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">block_given</span><span class="p">)</span> <span class="k">return</span> <span class="n">rb_yield</span><span class="p">(</span><span class="n">pos</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">argc</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">rb_raise</span><span class="p">(</span>
+              <span class="n">rb_eIndexError</span><span class="p">,</span>
+              <span class="s">"index %ld outside of array bounds: %ld...%ld"</span><span class="p">,</span>
+              <span class="n">idx</span> <span class="o">-</span> <span class="p">(</span><span class="n">idx</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="o">?</span> <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span> <span class="o">:</span> <span class="mi">0</span><span class="p">),</span>
+              <span class="o">-</span><span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">),</span>
+              <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span>
+            <span class="p">);</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="n">ifnone</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">RARRAY_AREF</span><span class="p">(</span><span class="n">ary</span><span class="p">,</span> <span class="n">idx</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Did you notice how there is no explicit <code class="language-plaintext highlighter-rouge">return</code> after <code class="language-plaintext highlighter-rouge">rb_raise</code>?</p>
+
+<p>That’s because Ruby exceptions are very different from Python exceptions, as they rely on <a href="https://man7.org/linux/man-pages/man3/setjmp.3.html"><code class="language-plaintext highlighter-rouge">setjmp(3)</code></a>
+and <a href="https://man7.org/linux/man-pages/man3/longjmp.3p.html"><code class="language-plaintext highlighter-rouge">longjmp(3)</code></a>.</p>
+
+<p>Without going into too much detail, these two functions essentially allow you to make some sort of “savepoint” of the stack
+and jump back to it. When they are used, it’s a bit like a non-local <code class="language-plaintext highlighter-rouge">goto</code>, you directly jump back to a parent function
+and all the intermediate functions never return.</p>
+
+<p>As a consequence, a Ruby equivalent of <code class="language-plaintext highlighter-rouge">Py_BEGIN_CRITICAL_SECTION</code> would need to call <code class="language-plaintext highlighter-rouge">setjmp</code>, and push the associated
+checkpoint on the execution context (essentially the current fiber) using <a href="https://github.com/ruby/ruby/blob/4a06ef98bfd480a3d724b16c2d7da071e373a69c/eval_intern.h#L98-L110">the <code class="language-plaintext highlighter-rouge">EC_PUSH_TAG</code> macro</a>,
+so essentially every core method would now need a <code class="language-plaintext highlighter-rouge">rescue</code> clause, and that’s not free.
+It’s doable, but likely more costly than <code class="language-plaintext highlighter-rouge">Py_BEGIN_CRITICAL_SECTION</code>.</p>
+
+<h2 id="shall-we">Shall We?</h2>
+
+<p>But we were so preoccupied with whether or not we could remove the GVL, we didn’t stop to think if we should.</p>
+
+<p>In the case of Python, from my understanding, the driving force behind the effort to remove the GIL is mostly the machine learning community, in big part, because feeding graphic cards efficiently requires a fairly high level of
+parallelism, and <code class="language-plaintext highlighter-rouge">fork(2)</code> isn’t very suitable for it.</p>
+
+<p>But, again from my understanding, the Python Web community, such as Django users, seem to be content with <code class="language-plaintext highlighter-rouge">fork(2)</code>,
+even though Python is at a major disadvantage over Ruby in terms of Copy-on-Write effectiveness, because as we saw previously, its reference counting implementation means most objects are constantly written to, so CoW pages are very quickly invalidated.</p>
+
+<p>On the other hand, Ruby’s mark-and-sweep GC is much more Copy-On-Write friendly, as almost all the GC tracking data
+isn’t stored in the objects themselves but inside external bitmaps.
+Hence, one of the main arguments for GVL free threading, which is to reduce memory usage, is much less important in the
+case of Ruby.</p>
+
+<p>Given that Ruby (for better or for worse) is predominantly used for the Web use case, it can at least partially explain why the pressure to remove the GVL isn’t as strong as it has been with Python.
+Similarly, Node.js and PHP don’t have free threading either, but as far as I know their respective communities
+aren’t complaining much about it, unless I missed it.</p>
+
+<p>Also if Ruby were to adopt some form of free threading, it would probably need to add some form of lock in all objects,
+and would frequently mutate it, likely severely reducing Copy-on-Write efficiency.
+So it wouldn’t be purely an additive feature.</p>
+
+<p>Similarly, one of the main blocker for removing Python’s GIL has always been the negative impact on single-thread performance.
+When you are dealing with easily parallelizable algorithms, even if single-thread performance is degraded, you can
+probably come out on top by using more parallelism.
+But if the sort of thing you use Python for isn’t easily parallelizable, free-threading may not be particularly appealing to you.</p>
+
+<p>Historically, Guido van Rossum’s stance on removing the GIL was that he’d welcome it as long as it had no impact on
+single-thread performance, hence why it never happened.
+Now that Guido is no longer Python’s benevolent dictator, it seems that the Python steering council is willing to accept
+some regression on single-thread performance, but it isn’t yet clear how much it will actually be.
+There are some numbers flying around, but mostly from synthetic benchmarks and such.
+Personally, I’d be interested to see the impact on Web applications before I’d be enthusiastic about such change happening to Ruby.
+It is also important to note that <a href="https://peps.python.org/pep-0703/">the removal has been accepted but with some proviso</a>,
+so it isn’t yet done and it’s not impossible that they might decide to backtrack at one point.</p>
+
+<p>Another thing to consider is that the performance impact on Ruby might be worse than for Python,
+because the objects that need the extra overhead are the mutable ones, and contrary to Python, in Ruby that includes strings.
+Think of how many string operations the average web application is doing.</p>
+
+<p>On the other side, one argument I can think of in favor of removing the GVL though, would be YJIT.
+Given the native code YJIT generates, and the associated metadata it keeps are scoped to the process, no longer
+relying on <code class="language-plaintext highlighter-rouge">fork(2)</code> for parallelism would save quite a lot of memory, just by sharing all this memory, that being said,
+removing the GVL would also make YJIT’s life much harder, so it may just as much hinder its progress.</p>
+
+<p>Another argument in favor of free threading is that forked processes can’t easily share connections.
+So when you start scaling Rails application to a large number of CPU cores, you end up with a lot more connections
+to your datastore than with stacks that have free threading, and this can be a big bottleneck, particularly with
+some databases with costly connections like PostgreSQL.
+Currently, this is largely solved by using external connection poolers, like PgBouncer or ProxySQL, which I understand
+aren’t perfect. It’s one more moving piece that can go wrong, but I think it’s much less trouble than free threading.</p>
+
+<p>And finally, I’d like to note that the GVL isn’t the whole picture.
+If the goal is to replace <code class="language-plaintext highlighter-rouge">fork(2)</code> by free-threading, even once the GVL is removed, we might still not quite be
+there because Ruby’s GC is “stop the world”, so with much more code execution happening in a single process,
+hence much more allocations, we may find out that it would become the new contention point.
+So personally, I’d rather aim for a fully concurrent GC before wishing the GVL removed.</p>
+
+<h2 id="so-it-is-urgent-to-do-nothing">So It Is Urgent To Do Nothing?</h2>
+
+<p>At this point, some of you may feel like I’m trying to gaslight people into thinking that the GVL is never a problem,
+but that’s not exactly my opinion.</p>
+
+<p>I do absolutely think the GVL is currently causing some very real problems in real world applications, namely contention.
+But this is very different from wanting the GVL removed and could be noticeably improved in other ways.</p>
+
+<p>If you’ve read <a href="/ruby/performance/2025/01/23/io-instrumentation.html">my short article on how to properly measure IO time in Ruby</a>,
+you may be familiar with the GVL contention problem, but let me include the same test script here:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"bundler/inline"</span>
+
+<span class="n">gemfile</span> <span class="k">do</span>
+  <span class="n">gem</span> <span class="s2">"bigdecimal"</span> <span class="c1"># for trilogy</span>
+  <span class="n">gem</span> <span class="s2">"trilogy"</span>
+  <span class="n">gem</span> <span class="s2">"gvltools"</span>
+<span class="k">end</span>
+
+<span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">enable</span>
+
+<span class="k">def</span> <span class="nf">measure_time</span>
+  <span class="n">realtime_start</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">clock_gettime</span><span class="p">(</span><span class="no">Process</span><span class="o">::</span><span class="no">CLOCK_MONOTONIC</span><span class="p">,</span> <span class="ss">:float_millisecond</span><span class="p">)</span>
+  <span class="n">gvl_time_start</span> <span class="o">=</span> <span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">monotonic_time</span>
+  <span class="k">yield</span>
+
+  <span class="n">realtime</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">clock_gettime</span><span class="p">(</span><span class="no">Process</span><span class="o">::</span><span class="no">CLOCK_MONOTONIC</span><span class="p">,</span> <span class="ss">:float_millisecond</span><span class="p">)</span> <span class="o">-</span> <span class="n">realtime_start</span>
+  <span class="n">gvl_time</span> <span class="o">=</span> <span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">monotonic_time</span> <span class="o">-</span> <span class="n">gvl_time_start</span>
+  <span class="n">gvl_time_ms</span> <span class="o">=</span> <span class="n">gvl_time</span> <span class="o">/</span> <span class="mf">1_000_000.0</span>
+  <span class="n">io_time</span> <span class="o">=</span> <span class="n">realtime</span> <span class="o">-</span> <span class="n">gvl_time_ms</span>
+  <span class="nb">puts</span> <span class="s2">"io: </span><span class="si">#{</span><span class="n">io_time</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="si">}</span><span class="s2">ms, gvl_wait: </span><span class="si">#{</span><span class="n">gvl_time_ms</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
+<span class="k">end</span>
+
+<span class="n">trilogy</span> <span class="o">=</span> <span class="no">Trilogy</span><span class="p">.</span><span class="nf">new</span>
+
+<span class="c1"># Measure a first time with just the main thread</span>
+<span class="n">measure_time</span> <span class="k">do</span>
+  <span class="n">trilogy</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="p">)</span>
+  <span class="k">return</span>  <span class="n">n</span>  <span class="k">if</span> <span class="p">(</span> <span class="mi">0</span><span class="o">..</span><span class="mi">1</span> <span class="p">).</span><span class="nf">include?</span> <span class="n">n</span>
+  <span class="p">(</span> <span class="n">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">1</span> <span class="p">)</span> <span class="o">+</span> <span class="n">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">2</span> <span class="p">)</span> <span class="p">)</span>
+<span class="k">end</span>
+
+<span class="c1"># Spawn 5 CPU-heavy threads</span>
+<span class="n">threads</span> <span class="o">=</span> <span class="mi">5</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+  <span class="no">Thread</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+    <span class="kp">loop</span> <span class="k">do</span>
+      <span class="n">fibonacci</span><span class="p">(</span><span class="mi">25</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="c1"># Measure again with the background threads</span>
+<span class="n">measure_time</span> <span class="k">do</span>
+  <span class="n">trilogy</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>If you run it, you should get something like:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>realtime: 0.22ms, gvl_wait: 0.0ms, io: 0.2ms
+realtime: 549.29ms, gvl_wait: 549.22ms, io: 0.1ms
+</code></pre></div></div>
+
+<p>This script demonstrates how GVL contention can cause havoc on your application latency.
+And even if you use a single-threaded server like Unicorn or Pitchfork, it doesn’t mean the applications only use
+a single thread.
+It’s incredibly common to have various background threads to perform some service tasks, such as monitoring.
+One example of that is <a href="https://github.com/Shopify/statsd-instrument/blob/6fd8c49d50803bbccfcc11b195f9e334a6e835e9/lib/statsd/instrument/batched_sink.rb#L163">the <code class="language-plaintext highlighter-rouge">statsd-instrument</code> gem</a>.
+When you emit a metric, it’s collected in memory, and then a background thread takes care of serializing and sending these metrics
+in batch. It’s supposed to be largely IO work, hence shouldn’t have too much impact on the main threads, but in practice,
+it can happen that these sorts of background threads hold the GVL for much longer than you’d like.</p>
+
+<p>So like my demo script is extreme, you can absolutely experience some level of GVL contention in production,
+regardless of the server you use.</p>
+
+<p>But I don’t think trying to remove the GVL is necessarily the best way to tame that problem, as it would take years of
+tears and sweat before you’d rip any benefits.</p>
+
+<p>Prior to something like 2006, multi-core CPUs were basically non-existent, and yet, you were perfectly able to multi-task
+on your computer in a relatively smooth way, crunching numbers in Excel while playing some music in Winamp, and this without any parallelism.</p>
+
+<p>That’s because even Widows 95 had a somewhat decent thread scheduler, but Ruby still doesn’t.
+What Ruby does when a thread is ready to execute and has to wait for the GVL, is that it puts it in a FIFO queue,
+and whenever the running thread releases the GVL, either because it did some IO or because it ran for its allocated 100ms,
+Ruby’s thread scheduler pops the next one.</p>
+
+<p>There is no notion of priority or anything. A semi-decent scheduler should be able to notice that a thread is mostly IO and that interrupting the current thread to schedule the IO-heavy thread faster is likely worth it.</p>
+
+<p>So before trying to remove the GVL, it would be worth trying to implement a proper thread scheduler.
+Credit goes to <a href="https://github.com/jhawthorn/">John Hawthorn</a> for that idea.</p>
+
+<p>In the meantime, <a href="https://github.com/tenderlove">Aaron Patterson</a> shipped <a href="https://bugs.ruby-lang.org/issues/20861">a change in Ruby 3.4 to allow reducing the
+100ms quantum via an environment variable</a>. It doesn’t solve everything, but
+it can probably already help in some cases, so it’s a start.</p>
+
+<p>Another idea John shared in one of our conversations<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>, would be to allow more CPU operations with the GVL released.
+Currently, most database clients only really release the GVL around the IO, think of it like it:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">query</span><span class="p">(</span><span class="n">sql</span><span class="p">)</span>
+  <span class="n">response</span> <span class="o">=</span> <span class="kp">nil</span>
+  <span class="n">request</span> <span class="o">=</span> <span class="n">build_network_packet</span><span class="p">(</span><span class="n">sql</span><span class="p">)</span>
+
+  <span class="n">release_gvl</span> <span class="k">do</span>
+    <span class="n">socket</span><span class="p">.</span><span class="nf">write</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+    <span class="n">response</span> <span class="o">=</span> <span class="n">socket</span><span class="p">.</span><span class="nf">read</span>
+  <span class="k">end</span>
+
+  <span class="n">parse_db_response</span><span class="p">(</span><span class="n">response</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>For simple queries that return a non-trivial amount of data, it is likely that you are actually spending much more time
+building the Ruby objects with the GVL acquired, than waiting on the DB response with the GVL released.</p>
+
+<p>This is because very very few of the Ruby C API can be used with the GVL released, notably, anything that allocates
+and object, or could potentially raise an exception MUST acquire the GVL.</p>
+
+<p>If this constraint was removed, such that you could create basic Ruby objects such as String, Array, and Hashes with
+the GVL released, it would likely allow the GVL to be released much longer and significantly reduce contention.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>I’m personally not really in favor of removing the GVL, I don’t think the tradeoff is quite worth it, at least not yet,
+nor do I think it would be as much of a game-changer as some may imagine.</p>
+
+<p>If it didn’t have any impact on the classic (mostly) single-threaded performance, I wouldn’t mind it,
+but it is almost guaranteed to degrade single-threaded performance significantly, hence this feels a bit like
+“a bird in the hand is worth two in the bush” kind of proposition.</p>
+
+<p>Instead, I believe there are some much easier and smaller changes we could make to Ruby that would improve the situation
+on a much shorter timeline and with much less effort both for Ruby-core and for Ruby users.</p>
+
+<p>But of course that is just the perspective of a single Ruby user with mostly my own use case in mind,
+and ultimately this is for Matz to decide, based on what he thinks the community wants and needs.</p>
+
+<p>For now, Matz doesn’t want to remove the GVL and He instead accepted the Ractor proposal<sup id="fnref:3"><a href="#fn:3" class="footnote" rel="footnote" role="doc-noteref">3</a></sup>. 
+Perhaps his opinion may change one day, we’ll see.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>MRI: Matz’s Ruby Interpreter, the reference implementation of Ruby, sometimes referred to as CRuby. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>If you didn’t notice, John is incredibly clever. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:3">
+      <p>Ractors which I also wanted to discuss in this post, but it’s already too long, so maybe another time. <a href="#fnref:3" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
