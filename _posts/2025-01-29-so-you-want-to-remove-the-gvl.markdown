@@ -127,7 +127,7 @@ hash causes them to hit a `NullPointerException`.
 
 So we can say this code is thread-safe on the reference implementation of Ruby, but not on all implementations of Ruby.
 
-The reason it is that way is that on MRI, the thread scheduler can only switch the running thread when executing pure.
+The reason it is that way is that on MRI, the thread scheduler can only switch the running thread when executing pure
 Ruby code.
 Whenever you call into a builtin method that is implemented in C, you are implicitly protected by the GVL.
 Hence all methods implemented in C are essentially "atomic" unless they explicitly release the GVL.
