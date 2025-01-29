@@ -548,13 +548,7 @@ In a way, Python exceptions are syntactic sugar for the classic <code class="lan
     <span class="k">if</span> <span class="p">(</span><span class="n">idx</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="o">||</span> <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="n">idx</span><span class="p">)</span> <span class="p">{</span>
         <span class="k">if</span> <span class="p">(</span><span class="n">block_given</span><span class="p">)</span> <span class="k">return</span> <span class="n">rb_yield</span><span class="p">(</span><span class="n">pos</span><span class="p">);</span>
         <span class="k">if</span> <span class="p">(</span><span class="n">argc</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
-            <span class="n">rb_raise</span><span class="p">(</span>
-              <span class="n">rb_eIndexError</span><span class="p">,</span>
-              <span class="s">"index %ld outside of array bounds: %ld...%ld"</span><span class="p">,</span>
-              <span class="n">idx</span> <span class="o">-</span> <span class="p">(</span><span class="n">idx</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="o">?</span> <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span> <span class="o">:</span> <span class="mi">0</span><span class="p">),</span>
-              <span class="o">-</span><span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">),</span>
-              <span class="n">RARRAY_LEN</span><span class="p">(</span><span class="n">ary</span><span class="p">)</span>
-            <span class="p">);</span>
+            <span class="n">rb_raise</span><span class="p">(</span><span class="n">rb_eIndexError</span><span class="p">,</span> <span class="s">"index %ld outside of..."</span><span class="p">,</span> <span class="cm">/* snip... */</span><span class="p">);</span>
         <span class="p">}</span>
         <span class="k">return</span> <span class="n">ifnone</span><span class="p">;</span>
     <span class="p">}</span>
