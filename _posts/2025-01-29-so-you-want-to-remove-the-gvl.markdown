@@ -608,7 +608,7 @@ At this point, some of you may feel like I'm trying to gaslight people into thin
 but that's not exactly my opinion.
 
 I do absolutely think the GVL is currently causing some very real problems in real world applications, namely contention.
-But this is very different from wanting the GVL removed and could be noticeably improved in other ways.
+But this is very different from wanting the GVL removed and I beleive the situation could be noticeably improved in other ways.
 
 If you've read [my short article on how to properly measure IO time in Ruby](/ruby/performance/2025/01/23/io-instrumentation.html),
 you may be familiar with the GVL contention problem, but let me include the same test script here:
@@ -679,7 +679,7 @@ When you emit a metric, it's collected in memory, and then a background thread t
 in batch. It's supposed to be largely IO work, hence shouldn't have too much impact on the main threads, but in practice,
 it can happen that these sorts of background threads hold the GVL for much longer than you'd like.
 
-So like my demo script is extreme, you can absolutely experience some level of GVL contention in production,
+So while my demo script is extreme, you can absolutely experience some level of GVL contention in production,
 regardless of the server you use.
 
 But I don't think trying to remove the GVL is necessarily the best way to tame that problem, as it would take years of
