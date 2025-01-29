@@ -65,7 +65,7 @@ end
 ```
 
 In this form it's easier to see that `||=` isn't a single operation but multiple, so even on MRI[^1], with a GVL, it's
-technically possible that Ruby would preempt a thread after evaluating `if quoted =`, and resume another thread that will
+technically possible that Ruby would preempt a thread after evaluating `quoted = ...`, and resume another thread that will
 enter the same method with the same argument.
 
 In other words, this code is subject to race conditions, even with a GVL.
