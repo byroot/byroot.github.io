@@ -521,13 +521,7 @@ rb_ary_fetch(int argc, VALUE *argv, VALUE ary)
     if (idx < 0 || RARRAY_LEN(ary) <= idx) {
         if (block_given) return rb_yield(pos);
         if (argc == 1) {
-            rb_raise(
-              rb_eIndexError,
-              "index %ld outside of array bounds: %ld...%ld",
-              idx - (idx < 0 ? RARRAY_LEN(ary) : 0),
-              -RARRAY_LEN(ary),
-              RARRAY_LEN(ary)
-            );
+            rb_raise(rb_eIndexError, "index %ld outside of...", /* snip... */);
         }
         return ifnone;
     }
