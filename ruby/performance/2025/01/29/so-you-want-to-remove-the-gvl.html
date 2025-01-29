@@ -106,7 +106,7 @@ then it depends on whether that <code class="language-plaintext highlighter-roug
 </code></pre></div></div>
 
 <p>In this form it’s easier to see that <code class="language-plaintext highlighter-rouge">||=</code> isn’t a single operation but multiple, so even on MRI<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>, with a GVL, it’s
-technically possible that Ruby would preempt a thread after evaluating <code class="language-plaintext highlighter-rouge">if quoted =</code>, and resume another thread that will
+technically possible that Ruby would preempt a thread after evaluating <code class="language-plaintext highlighter-rouge">quoted = ...</code>, and resume another thread that will
 enter the same method with the same argument.</p>
 
 <p>In other words, this code is subject to race conditions, even with a GVL.
