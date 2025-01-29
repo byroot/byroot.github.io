@@ -205,7 +205,7 @@ have a noticeable overhead, because atomic operations mean that the CPU has to e
 the same time, so it essentially locks that part of the CPU cache.
 I won’t try to guess how much that overhead would be in practice, but it certainly isn’t free.</p>
 
-<p>And then the result would be that a lot of existing pure Ruby code, that used to be effectively thread safe, would not longer be.
+<p>And then the result would be that a lot of existing pure Ruby code, that used to be effectively thread safe, would no longer be.
 So beyond the work ruby-core would have to do, Ruby users would also likely need to debug a bunch of thread safety issues
 in their code, gems, etc.</p>
 
