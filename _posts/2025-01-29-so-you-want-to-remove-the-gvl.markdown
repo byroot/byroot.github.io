@@ -147,7 +147,7 @@ That's why there's "removing the GVL" and "removing the GVL".
 The *simple* way would be to do what TruffleRuby and JRuby do: nothing. Or close to nothing.
 
 Since these alternative implementations are based on the Java Virtual Machine, which is memory-safe, they delegate to
-the JVM runtime the hard part job of failing but not hard crashing in such cases.
+the JVM runtime the hard job of failing but not hard crashing in such cases.
 Given MRI is implemented in C, which is famously not memory-safe, just removing the GVL would cause the virtual machine
 to run into a segmentation fault (or worse) when your code triggers this sort of race condition, so it wouldn't be as simple.
 
@@ -166,7 +166,7 @@ have a noticeable overhead, because atomic operations mean that the CPU has to e
 the same time, so it essentially locks that part of the CPU cache.
 I won't try to guess how much that overhead would be in practice, but it certainly isn't free.
 
-And then the result would be that a lot of existing pure Ruby code, that used to be effectively thread safe, would not longer be.
+And then the result would be that a lot of existing pure Ruby code, that used to be effectively thread safe, would no longer be.
 So beyond the work ruby-core would have to do, Ruby users would also likely need to debug a bunch of thread safety issues
 in their code, gems, etc.
 
@@ -277,7 +277,7 @@ It's extremely simple, even if you are unfamiliar with C you should be able to r
 if the refcount is set to a magical value that marks immortal objects, and if it isn't immortal, it simply does a regular,
 non-atomic, hence very cheap, increment of the counter.
 
-A sidenote on immortal objects, it's [a very cool concept introduced by Instagram engineers](https://instagram-engineering.com/copy-on-write-friendly-python-garbage-collection-ad6ed5233ddf))
+A sidenote on immortal objects, it's [a very cool concept introduced by Instagram engineers](https://instagram-engineering.com/copy-on-write-friendly-python-garbage-collection-ad6ed5233ddf)
 which I've been meaning to introduce in Ruby too. It's well worth a read if you are interested in things like Copy-on-Write
 and memory savings.
 
