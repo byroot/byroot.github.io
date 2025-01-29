@@ -186,7 +186,7 @@ small changes.</p>
 <p>The <em>simple</em> way would be to do what TruffleRuby and JRuby do: nothing. Or close to nothing.</p>
 
 <p>Since these alternative implementations are based on the Java Virtual Machine, which is memory-safe, they delegate to
-the JVM runtime the hard part job of failing but not hard crashing in such cases.
+the JVM runtime the hard job of failing but not hard crashing in such cases.
 Given MRI is implemented in C, which is famously not memory-safe, just removing the GVL would cause the virtual machine
 to run into a segmentation fault (or worse) when your code triggers this sort of race condition, so it wouldn’t be as simple.</p>
 
