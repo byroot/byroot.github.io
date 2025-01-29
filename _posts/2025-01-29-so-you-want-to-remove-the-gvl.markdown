@@ -69,7 +69,7 @@ technically possible that Ruby would preempt a thread after evaluating `quoted =
 enter the same method with the same argument.
 
 In other words, this code is subject to race conditions, even with a GVL.
-To be even more precise, it's subject to a *check-then-act* condition.
+To be even more precise, it's subject to a *check-then-act* race condition.
 
 If it's subject to race conditions, you can logically deduce that it's not thread-safe.
 But here again, it depends.
