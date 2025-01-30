@@ -683,12 +683,12 @@ So while my demo script is extreme, you can absolutely experience some level of 
 regardless of the server you use.
 
 But I don't think trying to remove the GVL is necessarily the best way to tame that problem, as it would take years of
-tears and sweat before you'd rip any benefits.
+tears and sweat before you'd reap any benefits.
 
 Prior to something like 2006, multi-core CPUs were basically non-existent, and yet, you were perfectly able to multi-task
 on your computer in a relatively smooth way, crunching numbers in Excel while playing some music in Winamp, and this without any parallelism.
 
-That's because even Widows 95 had a somewhat decent thread scheduler, but Ruby still doesn't.
+That's because even Windows 95 had a somewhat decent thread scheduler, but Ruby still doesn't.
 What Ruby does when a thread is ready to execute and has to wait for the GVL, is that it puts it in a FIFO queue,
 and whenever the running thread releases the GVL, either because it did some IO or because it ran for its allocated 100ms,
 Ruby's thread scheduler pops the next one.
