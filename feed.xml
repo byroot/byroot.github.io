@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-29T16:07:51+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">So You Want To Remove The GVL?</title><link href="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" rel="alternate" type="text/html" title="So You Want To Remove The GVL?" /><published>2025-01-29T09:47:51+00:00</published><updated>2025-01-29T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-30T07:41:15+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">So You Want To Remove The GVL?</title><link href="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" rel="alternate" type="text/html" title="So You Want To Remove The GVL?" /><published>2025-01-29T09:47:51+00:00</published><updated>2025-01-29T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
 is like it is, and how I see its future.
 But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL.</p>
 
@@ -658,12 +658,12 @@ it can happen that these sorts of background threads hold the GVL for much longe
 regardless of the server you use.</p>
 
 <p>But I don’t think trying to remove the GVL is necessarily the best way to tame that problem, as it would take years of
-tears and sweat before you’d rip any benefits.</p>
+tears and sweat before you’d reap any benefits.</p>
 
 <p>Prior to something like 2006, multi-core CPUs were basically non-existent, and yet, you were perfectly able to multi-task
 on your computer in a relatively smooth way, crunching numbers in Excel while playing some music in Winamp, and this without any parallelism.</p>
 
-<p>That’s because even Widows 95 had a somewhat decent thread scheduler, but Ruby still doesn’t.
+<p>That’s because even Windows 95 had a somewhat decent thread scheduler, but Ruby still doesn’t.
 What Ruby does when a thread is ready to execute and has to wait for the GVL, is that it puts it in a FIFO queue,
 and whenever the running thread releases the GVL, either because it did some IO or because it ran for its allocated 100ms,
 Ruby’s thread scheduler pops the next one.</p>
