@@ -1,4 +1,165 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-01-30T07:41:15+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">So You Want To Remove The GVL?</title><link href="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" rel="alternate" type="text/html" title="So You Want To Remove The GVL?" /><published>2025-01-29T09:47:51+00:00</published><updated>2025-01-29T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-02-09T12:56:18+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Guardrails Are Not Code Smells</title><link href="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" rel="alternate" type="text/html" title="Guardrails Are Not Code Smells" /><published>2025-02-09T09:47:51+00:00</published><updated>2025-02-09T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.</p>
+
+<p>A few years ago, I read a tweet calling out <a href="https://github.com/kzk/unicorn-worker-killer"><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code></a> as a
+major code smell.
+I don’t quite remember who or when it was, it doesn’t matter anyway, but I think it is an interesting topic because,
+depending on how that gem is used, I can either strongly agree with or vehemently oppose this tweet.</p>
+
+<h2 id="what-does-it-do">What Does It Do?</h2>
+
+<p><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code> provides two optional features for <a href="https://yhbt.net/unicorn/README.html">Unicorn</a>.</p>
+
+<p>The first one allows to set a number of requests after which a Unicorn worker should be recycled, as in shutdown and
+replaced by a fresh one, and the second allows to set the memory usage threshold after which a worker should be recycled.</p>
+
+<p>In my opinion, the first setting is indeed a terrible code smell and there’s absolutely no valid reason to use it.
+However the second one is absolutely essential, and in my opinion, it’s borderline irresponsible to deploy code to
+production without something akin to it.</p>
+
+<p>Both features are meant as ways to deal with memory leaks or bloat, so you may wonder why I have such radically different
+opinions on what seem to be two fairly similar features.
+It is because the former sweeps memory leaks under the rug, while the latter gracefully handles them.</p>
+
+<h2 id="why-maxrequests-is-bad">Why MaxRequests is Bad</h2>
+
+<p>One of the reasons why memory leaks are such a painful bug to deal with in Ruby applications is that unless they
+are really bad, they’ll often take hours or days to bloat your process enough for the system OOM killer to trigger.
+So contrary to most bugs, they’re not easy to correlate with an application deployment.
+Assuming you deploy several times a day, you may only notice something went wrong over the weekend after you haven’t
+deployed for a day or two. In some cases, you may even only notice it months later when most of the team is away for summer
+or winter vacations and no deployment happens for a week.</p>
+
+<p><code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> “solves” that by essentially continuously restarting your application on a regular
+schedule, making it impossible to even know you are suffering from a memory leak.</p>
+
+<p>And not only is it sweeping issues under the rug, but it also negatively impacts the performance of your application.
+While restarting a Unicorn worker is a relatively cheap operation, Ruby processes need some warmup time.
+Even if we ignore JIT warmup, the regular interpreter has lots of inline caches, so the first time a code path is
+executed it needs to do some extra work, and that work tends to cause Copy-on-Write invalidations, further impacting latency.
+And beyond the VM itself, while it’s a bad pattern, it’s very common for Ruby application to have some lazily initialized state.</p>
+
+<p>That is why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> is a major code smell.
+It is an indication that it was acknowledged that a memory leak exists, but that the team has given up on trying to fix it.</p>
+
+<p>Even if you are aware of this, you may think it’s an acceptable tradeoff for your use case, but it may only be a matter
+of time until you don’t have one but two or ten memory leaks and then need to face the problem or keep lowering the
+<code class="language-plaintext highlighter-rouge">max_requests</code> setting.</p>
+
+<h2 id="why-maxmemory-is-good">Why MaxMemory is Good</h2>
+
+<p>On the other hand, having a <code class="language-plaintext highlighter-rouge">max_memory</code> setting that gracefully restarts workers when they reach a given memory threshold
+is an essential resiliency feature.</p>
+
+<p>If your application doesn’t enforce a max memory policy by itself, the operating system will do it for you, and it won’t
+be pretty.
+What happens when there is no more available memory depends on the operating system and how it is configured but in the
+context of Ruby programs, the most likely case is that you’ll run into the Linux OOM Killer.
+In short, when Linux can no longer hand memory to a program, it looks at all the running processes on the machine, and
+use a few heuristics to find a process to kill to free some memory.
+Nothing guarantees that the process that will be killed is the one leaking, and the process will receive a <code class="language-plaintext highlighter-rouge">SIGKILL</code> so
+it won’t be able to shut down cleanly and may cause huge problems.</p>
+
+<p>For the anecdote, over a decade ago, I worked for a startup that had a PHP and Backbone.js application.
+All of it, including the MySQL server, was running on a single machine.
+One day there was a spike of traffic and the number of PHP processes caused the Linux OOM Killer to trigger, and its
+heuristics thought that the big <code class="language-plaintext highlighter-rouge">mysqld</code> process was a much more attractive target than the hundreds of 30 MB PHP processes,
+hence it decided to SIGKILL <code class="language-plaintext highlighter-rouge">mysqld</code> bringing the entire website to the ground.</p>
+
+<p>That’s why if you don’t enforce a max memory policy yourself, you will be subject to the overall system memory limits
+and if you ever reach them it won’t be pretty.</p>
+
+<p>That’s why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::Oom</code> is an essential resiliency feature, even though it needs to be used
+correctly.
+It is crucial that every OOM event is reported somewhere and that there is alerting in place if it becomes
+a frequent occurrence. If no one notices that suddenly OOM events are through the roof, then it’s no better than <code class="language-plaintext highlighter-rouge">max_request</code>.</p>
+
+<p>You can even go farther than that.
+Something I implemented in Shopify’s monolith, is that for a sample of OOM events before the worker is recycled,
+the heap is first dumped using <a href="https://docs.ruby-lang.org/en/3.4/ObjectSpace.html#method-i-dump_all"><code class="language-plaintext highlighter-rouge">ObjectSpace.dump_all</code></a>
+and uploaded in an object store, allowing us to investigate the root cause and identify leaks if any.</p>
+
+<p>This is the best of both worlds.
+OOM events are gracefully handled, any significant increase in such events is reported, and debugging is facilitated.</p>
+
+<p>It might be that your application legitimately started using more memory and you just need to increase the threshold,
+but it is preferable to have to review the policy once in a while than to be paged at night because a hard-to-diagnose
+memory leak was introduced and started causing havoc.</p>
+
+<p>On another note, I’m not a big fan of the exact implementation provided by <code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code>, because it uses
+<a href="https://en.wikipedia.org/wiki/Resident_set_size">RSS</a> as its memory metric, and I believe
+<a href="https://en.wikipedia.org/wiki/Proportional_set_size">PSS</a> is a much better memory metrics for preforking applications<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.</p>
+
+<p>In any case, cleanly shutting down workers on your own terms outside of the request cycle is much preferable to letting
+the operating system sends <code class="language-plaintext highlighter-rouge">SIGKILL</code> to somewhat random processes.</p>
+
+<h2 id="accept-it-bugs-will-happen">Accept It: Bugs Will Happen</h2>
+
+<p>Here I used memory as an example because I think it’s a good illustration of where to draw the line.
+But the point I’m trying to make is much more general.</p>
+
+<p>Another example could be Unicorn’s built-in request timeout setting.
+Whenever a worker is assigned a request, it is allotted a fixed amount of time to complete, if not, the worker will be
+shut down and replaced.</p>
+
+<p>You may think this is bad design and is working around a bug, but that’s the key to building resilient systems.
+You must accept that bugs and other catastrophic events will happen eventually, hence systems should be designed in a
+way that limits the blast radius of such events.</p>
+
+<p>This isn’t to say bugs are acceptable.
+You absolutely should strive to prevent as many bugs as reasonably possible upfront through testing, code reviews and what not.
+Having a resilient system is in no way a license to be complacent and ship crap software.</p>
+
+<p>But it is fanciful to believe you can prevent all bugs via sheer competency or process.</p>
+
+<p>If you are telling me your car doesn’t have seatbelts because you are such a good driver that you don’t need them,
+I will run in the opposite direction as fast as I can.</p>
+
+<p>This attitude can function for a while at a small scale but is untenable whenever a project grows to have
+a larger team, hence a faster rate of change.</p>
+
+<h2 id="the-resilient-nature-of-share-nothing-architecture">The Resilient Nature of Share-Nothing Architecture</h2>
+
+<p>This is why as an infrastructure engineer, I’m quite a fan of “share-nothing” architecture: it has inherent resiliency benefits.</p>
+
+<p>Take PHP for instance.
+As much as I dislike it as a programming language, I have to admit its classic execution model is really nice.
+Every request starts with a fresh new process, making it close to impossible to leak state between requests.</p>
+
+<p>That model wouldn’t perform well with Ruby though, because of the necessary warmup I mentioned previously,
+but Unicorn’s model is somewhat halfway through.
+Workers do process more than one request, but never concurrently, hence you still benefit from quite a high level of
+isolation, and if something goes really wrong, killing the worker is always an option and the operating system will take
+care of reclaiming the resources.</p>
+
+<p>Whereas cleanly interrupting a thread is basically impossible.
+You probably heard how <a href="https://jvns.ca/blog/2015/11/27/why-rubys-timeout-is-dangerous-and-thread-dot-raise-is-terrifying/">Ruby’s <code class="language-plaintext highlighter-rouge">Timeout</code> module should be avoided like the plague</a>,
+well that’s because it is trying to interrupt a thread, and that can go really wrong.</p>
+
+<p>If you look at <a href="https://github.com/zombocom/rack-timeout"><code class="language-plaintext highlighter-rouge">rack-timeout</code></a>, which is the Puma equivalent to Unicorn’s
+request timeout.
+You’ll see that whenever it has to timeout a request, it shutdowns the entire Puma worker because there’s no way to
+cleanly shut down a single thread.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>As I tried to explain here, even if <a href="/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html">Ruby didn’t have a GVL</a>,
+and even considering <a href="/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html">fork has its share of problems</a>,
+I strongly believe that this execution model has some very attractive properties that aren’t easily replaced.</p>
+
+<p>As with everything, it’s of course a tradeoff, you gain some and lose some, but it shouldn’t be lazily discarded as some
+sort of deprecated model for badly written applications.</p>
+
+<p>It also has its benefits, and resiliency is just one of them.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>I wrote about the difference between RSS and PSS in <a href="https://shopify.engineering/ruby-execution-models">a post on Shopify’s engineering blog</a>. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.]]></summary></entry><entry><title type="html">So You Want To Remove The GVL?</title><link href="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html" rel="alternate" type="text/html" title="So You Want To Remove The GVL?" /><published>2025-01-29T09:47:51+00:00</published><updated>2025-01-29T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
 is like it is, and how I see its future.
 But before I can get to that, I think I need to share my mental model on a few things, in this case, Ruby’s GVL.</p>
 
@@ -4675,607 +4836,4 @@ reducing the setup cost even further. But that’s a story for the next post.</p
 <p>In the next post, we’ll dive into how the setup cost was optimized further, and then at some point, we’ll have to
 start talking about optimizing the parser.</p>
 
-<p>Edit: <a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">Part four is here</a>.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, I covered how I reimplemented JSON::Generator::State#configure in Ruby and some other changes. Unfortunately, it didn’t go as well as I initially thought.]]></summary></entry><entry><title type="html">Optimizing Ruby’s JSON, Part 2</title><link href="https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 2" /><published>2024-12-18T16:05:51+00:00</published><updated>2024-12-18T16:05:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html"><![CDATA[<p><a href="/ruby/json/2024/12/15/optimizing-ruby-json-part-1.html">In the previous post</a>, I covered my motivations for improving <code class="language-plaintext highlighter-rouge">ruby/json</code>’s performance,
-and detailed the first 4 notable optimizations applied to speed up JSON generation.</p>
-
-<p>If I was to cover every single optimization applied, at this rate I’d end up with a dozen parts, so I’ll try to only focus on the one that made a
-significant difference or used an interesting pattern.</p>
-
-<h2 id="reducing-setup-cost---argument-parsing-edition">Reducing Setup Cost - Argument Parsing Edition</h2>
-
-<p>As mentioned in Part 1, When your benchmark only serializes a few dozen bytes of JSON, you end up measuring the baseline overhead of 
-operations needed before you get to the actual work you’re here to perform, what I call “setup cost”.</p>
-
-<p>The very high setup cost of <code class="language-plaintext highlighter-rouge">ruby/json</code> made it perform poorly on micro-benchmarks compared to alternatives.</p>
-
-<p>If you look at <a href="https://share.firefox.dev/3BAhuPi">the native profile</a> of <code class="language-plaintext highlighter-rouge">JSON.dump([1, "string", { a: 1, b: 2 }, [3, 4, 5]])</code>,
-you can see that we only spend <code class="language-plaintext highlighter-rouge">39%</code> of the time in <code class="language-plaintext highlighter-rouge">cState_generate</code> which is where we’re actually generating JSON, everything else is the setup cost.</p>
-
-<p><img src="/assets/articles/json-2/micro-bench-flamegraph.png" alt="" /></p>
-
-<p>So if we want to make <code class="language-plaintext highlighter-rouge">ruby/json</code> look good on micro-benchmarks, the setup cost is what need to be reduced.</p>
-
-<p>And a big part of that was how <code class="language-plaintext highlighter-rouge">JSON.dump</code> parses the arguments it receives, because <code class="language-plaintext highlighter-rouge">JSON.dump</code> is one of these cursed methods that can be used in
-way too many different ways. Aside from the first argument which is the object to serialize, <code class="language-plaintext highlighter-rouge">dump</code> accepts 3 positional arguments that are all optional.</p>
-
-<p>In RDoc style, the signature would be <code class="language-plaintext highlighter-rouge">dump(obj, [anIo], [depth_limit], [options])</code>. This sort of signature is quite common in old gems that predate the
-introduction of keyword arguments back in Ruby 2.0, and often cause an explosion of call patterns.</p>
-
-<p>Here are 7 different ways the method can be called.</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({})</span> <span class="c1"># =&gt; "{}"</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="mi">12</span><span class="p">)</span> <span class="c1"># =&gt; "{}"</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="mi">12</span><span class="p">,</span> <span class="ss">strict: </span><span class="kp">true</span><span class="p">)</span> <span class="c1"># =&gt; "{}"</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="no">File</span><span class="p">.</span><span class="nf">open</span><span class="p">(</span><span class="s2">"/tmp/foo.json"</span><span class="p">,</span> <span class="s2">"w+"</span><span class="p">))</span> <span class="c1"># =&gt; #&lt;File:/tmp/foo.json&gt;</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="no">File</span><span class="p">.</span><span class="nf">open</span><span class="p">(</span><span class="s2">"/tmp/foo.json"</span><span class="p">,</span> <span class="s2">"w+"</span><span class="p">),</span> <span class="mi">12</span><span class="p">)</span> <span class="c1"># =&gt; #&lt;File:/tmp/foo.json&gt;</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="no">File</span><span class="p">.</span><span class="nf">open</span><span class="p">(</span><span class="s2">"/tmp/foo.json"</span><span class="p">,</span> <span class="s2">"w+"</span><span class="p">),</span> <span class="mi">12</span><span class="p">,</span> <span class="ss">strict: </span><span class="kp">true</span><span class="p">)</span> <span class="c1"># =&gt; #&lt;File:/tmp/foo.json&gt;</span>
-<span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({},</span> <span class="no">File</span><span class="p">.</span><span class="nf">open</span><span class="p">(</span><span class="s2">"/tmp/foo.json"</span><span class="p">,</span> <span class="s2">"w+"</span><span class="p">),</span> <span class="ss">strict: </span><span class="kp">true</span><span class="p">)</span> <span class="c1"># =&gt; #&lt;File:/tmp/foo.json&gt;</span></code></pre></figure>
-
-<p>Here’s how the argument parsing was implemented:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">anIO</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
-  <span class="n">io_limit_opt</span> <span class="o">=</span> <span class="p">[</span><span class="n">anIO</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">].</span><span class="nf">compact</span>
-  <span class="n">kwargs</span> <span class="o">=</span> <span class="n">io_limit_opt</span><span class="p">.</span><span class="nf">pop</span> <span class="k">if</span> <span class="n">io_limit_opt</span><span class="p">.</span><span class="nf">last</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Hash</span><span class="p">)</span>
-  <span class="n">anIO</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="n">io_limit_opt</span>
-  <span class="k">if</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:to_io</span><span class="p">)</span>
-    <span class="n">anIO</span> <span class="o">=</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">to_io</span>
-  <span class="k">elsif</span> <span class="n">limit</span><span class="p">.</span><span class="nf">nil?</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">anIO</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:write</span><span class="p">)</span>
-    <span class="n">anIO</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">anIO</span>
-  <span class="k">end</span>
-  <span class="n">opts</span> <span class="o">=</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump_default_options</span>
-  <span class="n">opts</span> <span class="o">=</span> <span class="n">opts</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="ss">:max_nesting</span> <span class="o">=&gt;</span> <span class="n">limit</span><span class="p">)</span> <span class="k">if</span> <span class="n">limit</span>
-  <span class="n">opts</span> <span class="o">=</span> <span class="n">merge_dump_options</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="k">if</span> <span class="n">kwargs</span>
-  <span class="n">result</span> <span class="o">=</span> <span class="n">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span><span class="p">)</span>
-  <span class="k">if</span> <span class="n">anIO</span>
-    <span class="n">anIO</span><span class="p">.</span><span class="nf">write</span> <span class="n">result</span>
-    <span class="n">anIO</span>
-  <span class="k">else</span>
-    <span class="n">result</span>
-  <span class="k">end</span>
-<span class="k">rescue</span> <span class="no">JSON</span><span class="o">::</span><span class="no">NestingError</span>
-  <span class="k">raise</span> <span class="no">ArgumentError</span><span class="p">,</span> <span class="s2">"exceed depth limit"</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>There are a number of operations in there that are reasonably costly in abstract, but costly enough that you don’t want to use them in hot spots.</p>
-
-<p>The first one is <code class="language-plaintext highlighter-rouge">[anIO, limit, kwargs].compact</code>, which is used to ignore <code class="language-plaintext highlighter-rouge">nil</code> arguments. It’s quite pleasing to the eye, and fairly idiomatic Ruby,
-but it means one extra allocation, which is a lot on micro-benchmarks.</p>
-
-<p>The alternative we’re trying to catch up to, only allocates a single object on its equivalent path, the returned JSON document as a String.
-But <code class="language-plaintext highlighter-rouge">ruby/json</code> also need to allocate the <code class="language-plaintext highlighter-rouge">JSON::Generator::State</code> object, so that’s a total of 3 allocations, 3 times as much as <code class="language-plaintext highlighter-rouge">oj</code> or <code class="language-plaintext highlighter-rouge">rapidjson-ruby</code>.</p>
-
-<p>Allocations aren’t that big of a problem on modern Ruby, it’s actually quite fast, the problem is that allocating will ultimately trigger the GC,
-and while that too is negligible when doing a meaningful amount of work, it’s a huge proportion of the runtime in a micro-benchmark.</p>
-
-<p><img src="/assets/articles/json-2/setup-cost-flamegraph.png" alt="" /></p>
-
-<p>Then, there’s the <code class="language-plaintext highlighter-rouge">respond_to?(:to_io)</code> call (and sometimes the second one), which too is totally mundane and idiomatic Ruby code, but something
-you want to avoid in hot paths.</p>
-
-<p><code class="language-plaintext highlighter-rouge">respond_to?</code> does all the same work a method call does to find which method to call, but the major difference is that method calls have an inline cache
-while <code class="language-plaintext highlighter-rouge">respond_to?</code> doesn’t, so it has to do more work than most method calls.</p>
-
-<h3 id="method-lookup">Method Lookup</h3>
-
-<p>To give you an idea of how much work looking up a method without a cache can entail, here is what it would look like if implemented in Ruby</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">Object</span>
-  <span class="k">def</span> <span class="nf">respond_to?</span><span class="p">(</span><span class="nb">method</span><span class="p">)</span>
-    <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">ancestors</span><span class="p">.</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">ancestor</span><span class="o">|</span>
-      <span class="k">return</span> <span class="kp">true</span> <span class="k">if</span> <span class="n">ancestor</span><span class="p">.</span><span class="nf">methods_hash</span><span class="p">.</span><span class="nf">key?</span><span class="p">(</span><span class="nb">method</span><span class="p">)</span>
-    <span class="k">end</span>
-
-    <span class="c1"># object doesn't respond to `method` but maybe it has a `respond_to_missing?` method.</span>
-    <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">ancestors</span><span class="p">.</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">ancestor</span><span class="o">|</span>
-      <span class="k">if</span> <span class="n">respond_to_missing</span> <span class="o">=</span> <span class="n">ancestor</span><span class="p">.</span><span class="nf">methods_hash</span><span class="p">[</span><span class="ss">:respond_to_missing?</span><span class="p">]</span>
-        <span class="k">return</span> <span class="n">respond_to_missing</span><span class="p">.</span><span class="nf">bind_call</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="nb">method</span><span class="p">)</span>
-      <span class="k">end</span>
-    <span class="k">end</span>
-
-    <span class="kp">false</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>If you assume most of the time <code class="language-plaintext highlighter-rouge">anIO</code> is <code class="language-plaintext highlighter-rouge">nil</code>, that’s a lot of needless hash lookups, because <code class="language-plaintext highlighter-rouge">nil</code> has way more ancestors than you’d think:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">p</span> <span class="kp">nil</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">ancestors</span><span class="p">.</span><span class="nf">size</span> <span class="c1"># =&gt; 4</span>
-<span class="nb">require</span> <span class="s2">"json"</span>
-<span class="nb">p</span> <span class="kp">nil</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">ancestors</span><span class="p">.</span><span class="nf">size</span> <span class="c1"># =&gt; 6</span>
-<span class="nb">require</span> <span class="s2">"active_support/all"</span>
-<span class="nb">p</span> <span class="kp">nil</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">ancestors</span><span class="p">.</span><span class="nf">size</span> <span class="c1"># =&gt; 9</span></code></pre></figure>
-
-<p>And on a miss, you might actually have to do all that a second time, to check if perhaps that class implements <code class="language-plaintext highlighter-rouge">#respond_to_missing</code>.</p>
-
-<p>As mentioned, calling a method conceptually requires as much work, however, most method calls don’t result in a <code class="language-plaintext highlighter-rouge">NoMethodError</code> so you normally don’t
-go all the way up the ancestor chain, and more importantly method calls have inline caches.</p>
-
-<h3 id="inline-caches">Inline Caches</h3>
-
-<p><a href="https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/#inline-caches">I touched a bit on what inline caches are last year in my post about object shapes</a>,
-but to reiterate here, when Ruby compiles your code into YARV bytecode, for every method call it leaves a little bit of space called an inline cache.</p>
-
-<p>For instance, if Ruby has to execute <code class="language-plaintext highlighter-rouge">nil.bar</code>, it will compile that into an <code class="language-plaintext highlighter-rouge">opt_send_without_block</code> instruction:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{nil.bar}</span><span class="p">).</span><span class="nf">disasm</span>
-<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,7)&gt;</span>
-<span class="mo">0000</span> <span class="n">putnil</span>                                                           <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0001</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:bar</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0003</span> <span class="n">leave</span></code></pre></figure>
-
-<p>Which down the line will end up in <a href="https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/vm_insnhelper.c#L2256-L2279"><code class="language-plaintext highlighter-rouge">vm_search_method_fastpath</code></a>, that has access to <code class="language-plaintext highlighter-rouge">cc</code> AKA a “callcache”.
-The actual method is a bit hard to read with lots of asserts etc, but here’s a stripped-down version that should be easy to understand:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="k">const</span> <span class="k">struct</span> <span class="n">rb_callcache</span> <span class="o">*</span>
-<span class="nf">vm_search_method_fastpath</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">cd_owner</span><span class="p">,</span> <span class="k">struct</span> <span class="n">rb_call_data</span> <span class="o">*</span><span class="n">cd</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">klass</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="k">const</span> <span class="k">struct</span> <span class="n">rb_callcache</span> <span class="o">*</span><span class="n">cc</span> <span class="o">=</span> <span class="n">cd</span><span class="o">-&gt;</span><span class="n">cc</span><span class="p">;</span>
-
-    <span class="k">if</span> <span class="p">(</span><span class="n">LIKELY</span><span class="p">(</span><span class="n">cc</span><span class="o">-&gt;</span><span class="n">klass</span> <span class="o">==</span> <span class="n">klass</span><span class="p">))</span> <span class="p">{</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">LIKELY</span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="n">cc</span><span class="o">-&gt;</span><span class="n">cme</span><span class="o">-&gt;</span><span class="n">flags</span> <span class="o">&amp;</span> <span class="n">INVALIDATED_FLAG</span><span class="p">))))</span> <span class="p">{</span>
-            <span class="k">return</span> <span class="n">cc</span><span class="p">;</span>
-        <span class="p">}</span>
-    <span class="p">}</span>
-    <span class="k">return</span> <span class="n">vm_search_method_slowpath0</span><span class="p">(</span><span class="n">cd_owner</span><span class="p">,</span> <span class="n">cd</span><span class="p">,</span> <span class="n">klass</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>So in short, every single call site has a cache that contains the class of the last object this method was called on, and the result of the previous search.
-Revalidating that cache is just a simple pointer comparison to ensure we’re still dealing with an instance of the same class,
-and a check in a bitmap to ensure the cache wasn’t invalidated by something like <code class="language-plaintext highlighter-rouge">define_method</code> or <code class="language-plaintext highlighter-rouge">remove_method</code>.</p>
-
-<p>That is a ton less work than the slow path, and since in practice most call sites are “monomorphic”, meaning they only ever apply to a single type,
-this cache hit rate is fairly high.</p>
-
-<p>The problem with <code class="language-plaintext highlighter-rouge">respond_to?</code> is that the name of the method we’re looking for is passed as an argument:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{nil.respond_to?(:bar)}</span><span class="p">).</span><span class="nf">disasm</span>
-<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,21)&gt;</span>
-<span class="mo">0000</span> <span class="n">putnil</span>                                                           <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0001</span> <span class="n">putobject</span>                              <span class="ss">:bar</span>
-<span class="mo">0003</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:respond_to?</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0005</span> <span class="n">leave</span></code></pre></figure>
-
-<p>So here we have a call cache to lookup <code class="language-plaintext highlighter-rouge">respond_to?</code> on <code class="language-plaintext highlighter-rouge">nil</code>, but nowhere to cache the lookup of <code class="language-plaintext highlighter-rouge">bar</code>.</p>
-
-<p>It actually wouldn’t be too hard to add such a cache, we’d need to modify the Ruby compiler to compile
-<code class="language-plaintext highlighter-rouge">respond_to?</code> calls into a specialized <code class="language-plaintext highlighter-rouge">opt_respond_to</code> instruction that does have two caches instead of one.
-The first cache would be used to look up <code class="language-plaintext highlighter-rouge">respond_to?</code> on the object to make sure it wasn’t redefined,
-and the second one to look up the method we’re interested in. Or perhaps even 3 caches, as you also need to
-check if the object has a <code class="language-plaintext highlighter-rouge">respond_to_missing?</code> method defined in some cases.</p>
-
-<p>That’s an idea I remember discussing in the past with some fellow committers, but I can’t quite remember if
-there was a reason we didn’t do it yet.</p>
-
-<h3 id="nested-caching">Nested Caching</h3>
-
-<p>That said, even without inline caches, <code class="language-plaintext highlighter-rouge">respond_to?</code> usually avoids doing the full method lookup.</p>
-
-<p>Given how horrendously expensive they are, method lookups have two layers of cache.
-Inside the <code class="language-plaintext highlighter-rouge">Class</code> object structure, there is a field called <code class="language-plaintext highlighter-rouge">cc_tbl</code> for “call cache table”.
-That’s essentially a Hash with method names as keys, and “call caches” as values.</p>
-
-<p>So <code class="language-plaintext highlighter-rouge">respond_to?</code>’s implementation is actually more like this:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">Object</span>
-  <span class="k">def</span> <span class="nf">respond_to?</span><span class="p">(</span><span class="nb">method</span><span class="p">)</span>
-    <span class="n">cc</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">call_cache</span><span class="p">[</span><span class="nb">method</span><span class="p">]</span>
-    <span class="k">if</span> <span class="n">method_entry</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">search_method_with_cache</span><span class="p">(</span><span class="nb">method</span><span class="p">,</span> <span class="n">cc</span><span class="p">)</span>
-      <span class="k">return</span> <span class="kp">true</span>
-    <span class="k">end</span>
-
-    <span class="n">respond_to_missing_cc</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">call_cache</span><span class="p">[</span><span class="nb">method</span><span class="p">]</span>
-    <span class="k">if</span> <span class="n">respond_to_missing</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">search_method_with_cache</span><span class="p">(</span><span class="ss">:respond_to_missing?</span><span class="p">,</span> <span class="n">cc</span><span class="p">)</span>
-      <span class="k">return</span> <span class="n">respond_to_missing</span><span class="p">.</span><span class="nf">bind_call</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="nb">method</span><span class="p">)</span>
-    <span class="k">end</span>
-
-    <span class="kp">false</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>So it’s thankfully much less work than an uncached method lookup, but when <code class="language-plaintext highlighter-rouge">respond_to?</code> returns <code class="language-plaintext highlighter-rouge">false</code>
-we’re still doing at least two hash lookups to get the corresponding call caches.</p>
-
-<p>So you can see how calling <code class="language-plaintext highlighter-rouge">respond_to?</code> on <code class="language-plaintext highlighter-rouge">nil</code> is a bit of a waste.</p>
-
-<h3 id="cheaper-argument-parsing">Cheaper Argument Parsing</h3>
-
-<p>But enough digression, and back to the problem at hand.</p>
-
-<p>In most cases, none of these options are set, so the goal is to avoid allocating an array,
-and avoid <code class="language-plaintext highlighter-rouge">respond_to?</code> when possible, <a href="https://github.com/ruby/json/pull/616">which led me to rewrite <code class="language-plaintext highlighter-rouge">dump</code> as this</a>:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">anIO</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
-  <span class="k">if</span> <span class="n">kwargs</span><span class="p">.</span><span class="nf">nil?</span>
-    <span class="k">if</span> <span class="n">limit</span><span class="p">.</span><span class="nf">nil?</span>
-      <span class="k">if</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Hash</span><span class="p">)</span>
-        <span class="n">kwargs</span> <span class="o">=</span> <span class="n">anIO</span>
-        <span class="n">anIO</span> <span class="o">=</span> <span class="kp">nil</span>
-      <span class="k">end</span>
-    <span class="k">elsif</span> <span class="n">limit</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Hash</span><span class="p">)</span>
-      <span class="n">kwargs</span> <span class="o">=</span> <span class="n">limit</span>
-      <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span>
-    <span class="k">end</span>
-  <span class="k">end</span>
-
-  <span class="k">unless</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">nil?</span>
-    <span class="k">if</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:to_io</span><span class="p">)</span>
-      <span class="n">anIO</span> <span class="o">=</span> <span class="n">anIO</span><span class="p">.</span><span class="nf">to_io</span>
-    <span class="k">elsif</span> <span class="n">limit</span><span class="p">.</span><span class="nf">nil?</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">anIO</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:write</span><span class="p">)</span>
-      <span class="n">anIO</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">anIO</span>
-    <span class="k">end</span>
-  <span class="k">end</span>
-
-  <span class="n">opts</span> <span class="o">=</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump_default_options</span>
-  <span class="n">opts</span> <span class="o">=</span> <span class="n">opts</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="ss">:max_nesting</span> <span class="o">=&gt;</span> <span class="n">limit</span><span class="p">)</span> <span class="k">if</span> <span class="n">limit</span>
-  <span class="n">opts</span> <span class="o">=</span> <span class="n">merge_dump_options</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="k">if</span> <span class="n">kwargs</span>
-
-  <span class="k">begin</span>
-    <span class="k">if</span> <span class="no">State</span> <span class="o">===</span> <span class="n">opts</span>
-      <span class="n">opts</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">anIO</span><span class="p">)</span>
-    <span class="k">else</span>
-      <span class="no">State</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">opts</span><span class="p">,</span> <span class="n">anIO</span><span class="p">)</span>
-    <span class="k">end</span>
-  <span class="k">rescue</span> <span class="no">JSON</span><span class="o">::</span><span class="no">NestingError</span>
-    <span class="k">raise</span> <span class="no">ArgumentError</span><span class="p">,</span> <span class="s2">"exceed depth limit"</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>So instead of using <code class="language-plaintext highlighter-rouge">Array#compact</code>, we do multiple nested <code class="language-plaintext highlighter-rouge">if thing.nil?</code> checks. It’s more verbose, but much more efficient, allocations
-free, and JIT very well.</p>
-
-<p>The <code class="language-plaintext highlighter-rouge">is_a?(Hash)</code> calls are no performance concern on Ruby 3.2+ thanks to <a href="https://www.youtube.com/watch?v=qlq-iQGtCgs">John Hawthorn’s stellar work</a>, so they can stay.</p>
-
-<p>As for <code class="language-plaintext highlighter-rouge">respond_to?</code>, we can’t fully eliminate it, but at least we can avoid calling it when the variable is <code class="language-plaintext highlighter-rouge">nil</code>, which should be most of the time.</p>
-
-<p>All this combined yielded a nice <code class="language-plaintext highlighter-rouge">16%</code> improvement on micro benchmarks:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   227.226k i/100ms
-Calculating -------------------------------------
-               after      2.415M (± 0.9%) i/s  (414.02 ns/i) -     12.270M in   5.080537s
-
-Comparison:
-              before:  2078464.1 i/s
-               after:  2415336.1 i/s - 1.16x  faster
-</code></pre></div></div>
-
-<p>After I merged that patch, <a href="https://github.com/eregon">Benoit Daloze</a> a fellow Ruby committer and TruffleRuby lead, suggested a funny trick that is
-used very effectively in the Ruby stdlib for optimizing this sort of signature:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">anIO</span> <span class="o">=</span> <span class="p">(</span><span class="n">no_args_set</span> <span class="o">=</span> <span class="kp">true</span><span class="p">;</span> <span class="kp">nil</span><span class="p">),</span> <span class="n">limit</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">)</span>
-  <span class="k">unless</span> <span class="n">no_args_set</span>
-    <span class="c1"># do the whole argument parsing</span>
-  <span class="k">end</span>
-
-  <span class="c1"># ...</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>I love that trick because it exploits the fact that, like pretty much everything in Ruby, arguments’ default values are expressions.</p>
-
-<p>This trick is most commonly used when you need to know if an argument was passed as <code class="language-plaintext highlighter-rouge">nil</code> or just not passed, <a href="https://github.com/ruby/ruby/blob/8417d09f9381c93352fe2cddbdfd4144b5924979/hash.rb#L37-L39">an example of that
-is <code class="language-plaintext highlighter-rouge">Hash#initialize</code></a></p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">Hash</span>
-  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="n">ifnone</span> <span class="o">=</span> <span class="p">(</span><span class="n">ifnone_unset</span> <span class="o">=</span> <span class="kp">true</span><span class="p">),</span> <span class="ss">capacity: </span><span class="mi">0</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">block</span><span class="p">)</span>
-    <span class="no">Primitive</span><span class="p">.</span><span class="nf">rb_hash_init</span><span class="p">(</span><span class="n">capacity</span><span class="p">,</span> <span class="n">ifnone_unset</span><span class="p">,</span> <span class="n">ifnone</span><span class="p">,</span> <span class="n">block</span><span class="p">)</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>If it used the classic <code class="language-plaintext highlighter-rouge">ifnone = nil</code> signature, it wouldn’t be possible to differentiate <code class="language-plaintext highlighter-rouge">Hash.new</code> and <code class="language-plaintext highlighter-rouge">Hash.new(nil)</code>.</p>
-
-<p>However in this case that trick didn’t make a measurable difference, so I didn’t include that suggestion, but I thought it was worth a mention.</p>
-
-<h2 id="jump-tables">Jump Tables</h2>
-
-<p>The previous optimization helped with the setup cost, but it was still way more expensive than it should.</p>
-
-<p>So I went to craft an even more micro-benchmark, trying to reduce the time spent generating JSON to better see the setup cost:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">require</span> <span class="s2">"json"</span>
-
-<span class="n">i</span> <span class="o">=</span> <span class="mi">20_000_000</span>
-<span class="n">obj</span> <span class="o">=</span> <span class="p">{}</span>
-<span class="k">while</span> <span class="n">i</span> <span class="o">&gt;</span> <span class="mi">0</span>
-  <span class="n">i</span> <span class="o">-=</span> <span class="mi">1</span>
-  <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
-<span class="k">end</span></code></pre></figure>
-
-<p><img src="/assets/articles/json-2/setup-cost-flamegraph-2.png" alt="" /></p>
-
-<p><a href="https://share.firefox.dev/41EtIkw">Full profile.</a></p>
-
-<p>As you may have spotted on that flame graph, a huge part of the setup is spent in <code class="language-plaintext highlighter-rouge">rb_hash_aref</code> and <code class="language-plaintext highlighter-rouge">rb_hash_has_key</code>, which are the
-C API equivalents of <code class="language-plaintext highlighter-rouge">Hash#[]</code> and <code class="language-plaintext highlighter-rouge">Hash#key?</code>.</p>
-
-<p>And all of this was in the <code class="language-plaintext highlighter-rouge">JSON::Generator::State#configure</code> method, implemented in C this way:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define option_given_p(opts, key) RTEST(rb_funcall(opts, i_key_p, 1, key))
-</span>
-<span class="k">static</span> <span class="n">VALUE</span> <span class="nf">cState_configure</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">self</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">opts</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="n">VALUE</span> <span class="n">tmp</span><span class="p">;</span>
-    <span class="n">GET_STATE</span><span class="p">(</span><span class="n">self</span><span class="p">);</span>
-    <span class="n">tmp</span> <span class="o">=</span> <span class="n">rb_check_convert_type</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">T_HASH</span><span class="p">,</span> <span class="s">"Hash"</span><span class="p">,</span> <span class="s">"to_hash"</span><span class="p">);</span>
-    <span class="k">if</span> <span class="p">(</span><span class="n">NIL_P</span><span class="p">(</span><span class="n">tmp</span><span class="p">))</span> <span class="n">tmp</span> <span class="o">=</span> <span class="n">rb_convert_type</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">T_HASH</span><span class="p">,</span> <span class="s">"Hash"</span><span class="p">,</span> <span class="s">"to_h"</span><span class="p">);</span>
-    <span class="n">opts</span> <span class="o">=</span> <span class="n">tmp</span><span class="p">;</span>
-    <span class="n">tmp</span> <span class="o">=</span> <span class="n">rb_hash_aref</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">ID2SYM</span><span class="p">(</span><span class="n">i_indent</span><span class="p">));</span>
-    <span class="k">if</span> <span class="p">(</span><span class="n">RTEST</span><span class="p">(</span><span class="n">tmp</span><span class="p">))</span> <span class="p">{</span>
-        <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">len</span><span class="p">;</span>
-        <span class="n">Check_Type</span><span class="p">(</span><span class="n">tmp</span><span class="p">,</span> <span class="n">T_STRING</span><span class="p">);</span>
-        <span class="n">len</span> <span class="o">=</span> <span class="n">RSTRING_LEN</span><span class="p">(</span><span class="n">tmp</span><span class="p">);</span>
-        <span class="n">state</span><span class="o">-&gt;</span><span class="n">indent</span> <span class="o">=</span> <span class="n">fstrndup</span><span class="p">(</span><span class="n">RSTRING_PTR</span><span class="p">(</span><span class="n">tmp</span><span class="p">),</span> <span class="n">len</span> <span class="o">+</span> <span class="mi">1</span><span class="p">);</span>
-        <span class="n">state</span><span class="o">-&gt;</span><span class="n">indent_len</span> <span class="o">=</span> <span class="n">len</span><span class="p">;</span>
-    <span class="p">}</span>
-    <span class="n">tmp</span> <span class="o">=</span> <span class="n">rb_hash_aref</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">ID2SYM</span><span class="p">(</span><span class="n">i_space</span><span class="p">));</span>
-    <span class="k">if</span> <span class="p">(</span><span class="n">RTEST</span><span class="p">(</span><span class="n">tmp</span><span class="p">))</span> <span class="p">{</span>
-        <span class="kt">unsigned</span> <span class="kt">long</span> <span class="n">len</span><span class="p">;</span>
-        <span class="n">Check_Type</span><span class="p">(</span><span class="n">tmp</span><span class="p">,</span> <span class="n">T_STRING</span><span class="p">);</span>
-        <span class="n">len</span> <span class="o">=</span> <span class="n">RSTRING_LEN</span><span class="p">(</span><span class="n">tmp</span><span class="p">);</span>
-        <span class="n">state</span><span class="o">-&gt;</span><span class="n">space</span> <span class="o">=</span> <span class="n">fstrndup</span><span class="p">(</span><span class="n">RSTRING_PTR</span><span class="p">(</span><span class="n">tmp</span><span class="p">),</span> <span class="n">len</span> <span class="o">+</span> <span class="mi">1</span><span class="p">);</span>
-        <span class="n">state</span><span class="o">-&gt;</span><span class="n">space_len</span> <span class="o">=</span> <span class="n">len</span><span class="p">;</span>
-    <span class="p">}</span>
-    <span class="c1">// ....</span>
-
-    <span class="n">tmp</span> <span class="o">=</span> <span class="n">ID2SYM</span><span class="p">(</span><span class="n">i_max_nesting</span><span class="p">);</span>
-    <span class="n">state</span><span class="o">-&gt;</span><span class="n">max_nesting</span> <span class="o">=</span> <span class="mi">100</span><span class="p">;</span>
-    <span class="k">if</span> <span class="p">(</span><span class="n">option_given_p</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">tmp</span><span class="p">))</span> <span class="p">{</span>
-        <span class="n">VALUE</span> <span class="n">max_nesting</span> <span class="o">=</span> <span class="n">rb_hash_aref</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">tmp</span><span class="p">);</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">RTEST</span><span class="p">(</span><span class="n">max_nesting</span><span class="p">))</span> <span class="p">{</span>
-            <span class="n">Check_Type</span><span class="p">(</span><span class="n">max_nesting</span><span class="p">,</span> <span class="n">T_FIXNUM</span><span class="p">);</span>
-            <span class="n">state</span><span class="o">-&gt;</span><span class="n">max_nesting</span> <span class="o">=</span> <span class="n">FIX2LONG</span><span class="p">(</span><span class="n">max_nesting</span><span class="p">);</span>
-        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
-            <span class="n">state</span><span class="o">-&gt;</span><span class="n">max_nesting</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
-        <span class="p">}</span>
-    <span class="p">}</span></code></pre></figure>
-
-<p>Which again is very verbose and noisy because it’s in C, but is essentially the naive way you’d initialize some object state from an options hash:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">configure</span><span class="p">(</span><span class="n">opts</span><span class="p">)</span>
-  <span class="k">if</span> <span class="n">indent</span> <span class="o">=</span> <span class="n">opts</span><span class="p">[</span><span class="ss">:indent</span><span class="p">]</span>
-    <span class="vi">@indent</span> <span class="o">=</span> <span class="n">ensure_string</span><span class="p">(</span><span class="n">indent</span><span class="p">)</span>
-  <span class="k">end</span>
-
-  <span class="k">if</span> <span class="n">space</span> <span class="o">=</span> <span class="n">opts</span><span class="p">[</span><span class="ss">:space</span><span class="p">]</span>
-    <span class="vi">@space</span> <span class="o">=</span> <span class="n">ensure_string</span><span class="p">(</span><span class="n">space</span><span class="p">)</span>
-  <span class="k">end</span>
-
-  <span class="c1"># ...</span>
-
-  <span class="vi">@max_nesting</span> <span class="o">=</span> <span class="mi">100</span>
-  <span class="k">if</span> <span class="n">opts</span><span class="p">.</span><span class="nf">key?</span><span class="p">(</span><span class="ss">:max_nesting</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">max_nesting</span> <span class="o">=</span> <span class="n">opts</span><span class="p">[</span><span class="ss">:max_nesting</span><span class="p">]</span>
-      <span class="vi">@max_nesting</span> <span class="o">=</span> <span class="no">Integer</span><span class="p">(</span><span class="n">max_nesting</span><span class="p">)</span>
-    <span class="k">else</span>
-      <span class="vi">@max_nesting</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="k">end</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<h3 id="gccct">gccct</h3>
-
-<p>On the surface, there is some weirdly inefficient code here, such as using:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">RTEST</span><span class="p">(</span><span class="n">rb_funcall</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">i_key_p</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">key</span><span class="p">))</span></code></pre></figure>
-
-<p>To check if the option hash contains a key. Calling a method from C is quite costly because, you guessed it, looking up a method without a cache is costly.
-Here again, we don’t have an inline cache, so Ruby has yet another trick down its sleeve to not make the performance atrocious,
-the <code class="language-plaintext highlighter-rouge">gccct</code>. No I’m not having a stroke, it’s the acronym for “Global Call Cache Cache Table”, and yes it’s a cache of caches.</p>
-
-<p>I did write <a href="https://twitter.com/_byroot/status/1831417434223604146">a Twitter thread back in September that talked about the <code class="language-plaintext highlighter-rouge">gccct</code></a>, but since
-that site is quite hostile to outsiders, I’ll repeat some of it here.</p>
-
-<p>The <code class="language-plaintext highlighter-rouge">gccct</code> is just a big global array of exactly <code class="language-plaintext highlighter-rouge">1023</code> <code class="language-plaintext highlighter-rouge">call_cache</code> objects, so when you need to lookup a method and there’s no better cache you can use,
-you use one of these global caches:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">GLOBAL_CALL_CACHE_CACHE_TABLE_SIZE</span> <span class="o">=</span> <span class="mi">1023</span>
-<span class="no">GLOBAL_CALL_CACHE_CACHE_TABLE</span> <span class="o">=</span> <span class="no">Array</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="no">GLOBAL_CALL_CACHE_CACHE_TABLE_SIZE</span><span class="p">)</span>
-
-<span class="k">def</span> <span class="nf">gccct_method_search</span><span class="p">(</span><span class="n">receiver</span><span class="p">,</span> <span class="n">method_name</span><span class="p">)</span>
-  <span class="n">index</span> <span class="o">=</span> <span class="p">[</span><span class="n">receiver</span><span class="p">.</span><span class="nf">class</span><span class="p">,</span> <span class="n">method_name</span><span class="p">].</span><span class="nf">hash</span> <span class="o">%</span> <span class="no">GLOBAL_CALL_CACHE_CACHE_TABLE_SIZE</span>
-  <span class="n">call_cache</span> <span class="o">=</span> <span class="no">GLOBAL_CALL_CACHE_CACHE_TABLE</span><span class="p">[</span><span class="n">index</span><span class="p">]</span>
-  <span class="n">cached_method_search</span><span class="p">(</span><span class="n">receiver</span><span class="p">,</span> <span class="n">method_name</span><span class="p">,</span> <span class="n">call_cache</span><span class="p">)</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>It’s as simple as that, we do a digest of the receiver class and the method name, and use that as an offset inside the array to select a call cache.</p>
-
-<p>Of course, it can be subject to collisions, so distinct calls can end up sharing the same cache and make it flip-flop, but it still offers some decent
-hit rate for cheap, so it’s better than nothing.</p>
-
-<p>But that’s yet another digression because ultimately we just don’t need that at all, given the C API exposes some C functions
-that allow us to check if a key exists without needing to go through method lookup. I suspect this may have been implemented this way
-a long time ago to also support Hash-like objects, but it really isn’t worth the overhead.</p>
-
-<p>In another Pull Request, <a href="https://github.com/luke-gru">Luke Gruber</a> had done <a href="https://github.com/ruby/json/pull/512/files#diff-2f079e65e9070fc3350059dbb4804c04be215ff9bed44144ee68b4de90faf2a6R20-R27">a similar optimization for the parser initialization</a>,
-rewriting <code class="language-plaintext highlighter-rouge">option_given_p</code> into:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">hash_has_key</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">key</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="k">if</span> <span class="p">(</span><span class="n">Qundef</span> <span class="o">==</span> <span class="n">rb_hash_lookup2</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">Qundef</span><span class="p">))</span> <span class="p">{</span>
-        <span class="k">return</span> <span class="n">Qtrue</span><span class="p">;</span>
-    <span class="p">}</span>
-    <span class="k">return</span> <span class="n">Qfalse</span><span class="p">;</span>
-<span class="p">}</span>
-<span class="cp">#define option_given_p(opts, key) (RTEST(hash_has_key(opts, key)))</span></code></pre></figure>
-
-<p>And I could probably have done the same here, but I had another, less conventional, idea.</p>
-
-<h3 id="inversion-of-priorities">Inversion of Priorities</h3>
-
-<p>There’s probably a name for that optimization, but if so I don’t know it.</p>
-
-<p>When thinking about the problem, it occurred to me that there are 13 possible option keys we need to check,
-but in the vast majority of cases, the hash will only contain a few of them.</p>
-
-<p>By default <code class="language-plaintext highlighter-rouge">JSON.dump</code> starts from the <code class="language-plaintext highlighter-rouge">JSON.dump_default_options</code> global config, so if you call dump with no extra options, that’s what we’ll get:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c">  <span class="n">self</span><span class="p">.</span><span class="n">dump_default_options</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="o">:</span><span class="n">max_nesting</span> <span class="o">=&gt;</span> <span class="nb">false</span><span class="p">,</span>
-    <span class="o">:</span><span class="n">allow_nan</span>   <span class="o">=&gt;</span> <span class="nb">true</span><span class="p">,</span>
-    <span class="o">:</span><span class="n">script_safe</span> <span class="o">=&gt;</span> <span class="nb">false</span><span class="p">,</span>
-  <span class="p">}</span></code></pre></figure>
-
-<p>Actually, out of these 3 keys, the third one is useless, as it’s already the default, so really most of the time we only have two keys to check.</p>
-
-<p>So what if instead of doing one to two lookups for every possible key (13), we’d iterate over the provided keys and use a <a href="https://en.wikipedia.org/wiki/Branch_table">jump table</a>?</p>
-
-<p>The problem, however, is to do jump tables in C, you need a <code class="language-plaintext highlighter-rouge">switch</code> statement with static values, and hash keys are Ruby symbol objects, hence we can’t statically
-know their value because they’re defined at runtime.</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">switch</span><span class="p">(</span><span class="n">key</span><span class="p">)</span> <span class="p">{</span>
-  <span class="k">case</span> <span class="n">sym_max_nesting</span><span class="p">:</span> <span class="c1">// This is just not possible...</span>
-    <span class="k">break</span><span class="p">;</span>
-  
-<span class="p">}</span></code></pre></figure>
-
-<p>But what few people know, is that Ruby’s <code class="language-plaintext highlighter-rouge">case</code> statement do generate a jump table when possible. Let me show you:</p>
-
-<p>By default Ruby’s <code class="language-plaintext highlighter-rouge">case</code> just compiles down to a series of <code class="language-plaintext highlighter-rouge">if / elsif</code>:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="o">&lt;&lt;~</span><span class="no">RUBY</span><span class="p">).</span><span class="nf">disasm</span><span class="sh">
-case key
-when /foo/
-  something
-when /bar/
-  something_else
-end
-</span><span class="no">RUBY</span>
-
-<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(6,3)&gt;</span>
-<span class="mo">0000</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0001</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:key</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0003</span> <span class="n">putobject</span>                              <span class="sr">/foo/</span>                     <span class="p">(</span>   <span class="mi">2</span><span class="p">)</span>
-<span class="mo">0005</span> <span class="n">topn</span>                                   <span class="mi">1</span>
-<span class="mo">0007</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:===</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">000</span><span class="mi">9</span> <span class="n">branchif</span>                               <span class="mi">22</span>
-<span class="mo">0011</span> <span class="n">putobject</span>                              <span class="sr">/bar/</span>                     <span class="p">(</span>   <span class="mi">4</span><span class="p">)</span>
-<span class="mo">0013</span> <span class="n">topn</span>                                   <span class="mi">1</span>
-<span class="mo">0015</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:===</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0017</span> <span class="n">branchif</span>                               <span class="mi">27</span>
-<span class="mo">001</span><span class="mi">9</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">1</span><span class="p">)</span>
-<span class="mo">0020</span> <span class="n">putnil</span>
-<span class="mo">0021</span> <span class="n">leave</span>                                                            <span class="p">(</span>   <span class="mi">5</span><span class="p">)</span>
-<span class="mo">0022</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">2</span><span class="p">)</span>
-<span class="mo">0023</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">3</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0024</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:something</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0026</span> <span class="n">leave</span>                                                            <span class="p">(</span>   <span class="mi">5</span><span class="p">)</span>
-<span class="mo">0027</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">4</span><span class="p">)</span>
-<span class="mo">002</span><span class="mi">8</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">5</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">002</span><span class="mi">9</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:something_else</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0031</span> <span class="n">leave</span></code></pre></figure>
-
-<p>If you’re not familar with YARV assembly, here’s the “desugared” Ruby version of it:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">if</span> <span class="n">key</span> <span class="o">===</span> <span class="sr">/foo/</span>
-  <span class="n">something</span>
-<span class="k">elsif</span> <span class="n">key</span> <span class="o">===</span> <span class="sr">/bar/</span>
-  <span class="n">something_else</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>So it’s not a jump table, just some syntax sugar for <code class="language-plaintext highlighter-rouge">if / elsif</code>.
-But if all the <code class="language-plaintext highlighter-rouge">when</code> values are essentially static (this includes literal numbers, literal symbols and literal strings),
-Ruby generates some slightly different bytecode:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="o">&lt;&lt;~</span><span class="no">RUBY</span><span class="p">).</span><span class="nf">disasm</span><span class="sh">
-case key
-when :foo
-  something
-when :bar
-  something_else
-end
-</span><span class="no">RUBY</span>
-
-<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(6,3)&gt;</span>
-<span class="mo">0000</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0001</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:key</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0003</span> <span class="nb">dup</span>
-<span class="mo">0004</span> <span class="n">opt_case_dispatch</span>                      <span class="o">&lt;</span><span class="n">cdhash</span><span class="o">&gt;</span><span class="p">,</span> <span class="mi">23</span>
-<span class="mo">0007</span> <span class="n">putobject</span>                              <span class="ss">:foo</span>                      <span class="p">(</span>   <span class="mi">2</span><span class="p">)</span>
-<span class="mo">000</span><span class="mi">9</span> <span class="n">topn</span>                                   <span class="mi">1</span>
-<span class="mo">0011</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:===</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0013</span> <span class="n">branchif</span>                               <span class="mi">26</span>
-<span class="mo">0015</span> <span class="n">putobject</span>                              <span class="ss">:bar</span>                      <span class="p">(</span>   <span class="mi">4</span><span class="p">)</span>
-<span class="mo">0017</span> <span class="n">topn</span>                                   <span class="mi">1</span>
-<span class="mo">001</span><span class="mi">9</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:===</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0021</span> <span class="n">branchif</span>                               <span class="mi">31</span>
-<span class="mo">0023</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">1</span><span class="p">)</span>
-<span class="mo">0024</span> <span class="n">putnil</span>
-<span class="mo">0025</span> <span class="n">leave</span>                                                            <span class="p">(</span>   <span class="mi">5</span><span class="p">)</span>
-<span class="mo">0026</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">2</span><span class="p">)</span>
-<span class="mo">0027</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">3</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">002</span><span class="mi">8</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:something</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0030</span> <span class="n">leave</span>                                                            <span class="p">(</span>   <span class="mi">5</span><span class="p">)</span>
-<span class="mo">0031</span> <span class="n">pop</span>                                                              <span class="p">(</span>   <span class="mi">4</span><span class="p">)</span>
-<span class="mo">0032</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">5</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
-<span class="mo">0033</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:something_else</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">VCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
-<span class="mo">0035</span> <span class="n">leave</span></code></pre></figure>
-
-<p>The thing to notice here is the <code class="language-plaintext highlighter-rouge">opt_case_dispatch</code> instruction, which wasn’t present on the previous disassembly.
-What this instruction does, is that it holds a Hash, of which the keys are the static values we use in the <code class="language-plaintext highlighter-rouge">when</code> statements
-and the values are the bytecode offset to which to directly jump. The rest of the bytecode is the same, to be used as the fallback
-if the <code class="language-plaintext highlighter-rouge">opt_case_dispatch</code> doesn’t match.</p>
-
-<p>With this, we can check as many symbols as we want in somewhat constant time, all we had to do was to rewrite all that nasty C code in Ruby,
-<a href="https://github.com/ruby/json/pull/617/commits/25db79dfaa8f019077ef7e713a5aa62ff6af4a99">which I did in the most straightforward way in a preparatory commit</a>.
-That commit alone already brought a <code class="language-plaintext highlighter-rouge">3%</code> improvement, thanks to inline caches:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   230.150k i/100ms
-Calculating -------------------------------------
-               after      2.450M (± 0.5%) i/s  (408.23 ns/i) -     12.428M in   5.073603s
-
-Comparison:
-              before:  2370478.1 i/s
-               after:  2449616.3 i/s - 1.03x  faster
-</code></pre></div></div>
-
-<p>But I then followed up in the same pull request, with <a href="https://github.com/ruby/json/pull/617/commits/a75c9eccfd35e1d6715b05cbd7ef4d83b1bc177e">a rewrite of <code class="language-plaintext highlighter-rouge">State#configure</code> to use a case dispatch</a>:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">configure</span><span class="p">(</span><span class="n">opts</span><span class="p">)</span>
-  <span class="k">unless</span> <span class="n">opts</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Hash</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">opts</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:to_hash</span><span class="p">)</span>
-      <span class="n">opts</span> <span class="o">=</span> <span class="n">opts</span><span class="p">.</span><span class="nf">to_hash</span>
-    <span class="k">elsif</span> <span class="n">opts</span><span class="p">.</span><span class="nf">respond_to?</span><span class="p">(</span><span class="ss">:to_h</span><span class="p">)</span>
-      <span class="n">opts</span> <span class="o">=</span> <span class="n">opts</span><span class="p">.</span><span class="nf">to_h</span>
-    <span class="k">else</span>
-      <span class="k">raise</span> <span class="no">TypeError</span><span class="p">,</span> <span class="s2">"can't convert </span><span class="si">#{</span><span class="n">opts</span><span class="p">.</span><span class="nf">class</span><span class="si">}</span><span class="s2"> into Hash"</span>
-    <span class="k">end</span>
-  <span class="k">end</span>
-
-  <span class="n">opts</span><span class="p">.</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="o">|</span>
-    <span class="k">case</span> <span class="n">key</span>
-    <span class="k">when</span> <span class="ss">:indent</span>
-      <span class="nb">self</span><span class="p">.</span><span class="nf">indent</span> <span class="o">=</span> <span class="n">value</span>
-    <span class="k">when</span> <span class="ss">:space</span>
-      <span class="nb">self</span><span class="p">.</span><span class="nf">space</span> <span class="o">=</span> <span class="n">value</span>
-    <span class="c1"># ...</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>And that brought a further <code class="language-plaintext highlighter-rouge">11%</code> improvement:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small mixed (34 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   247.127k i/100ms
-Calculating -------------------------------------
-               after      2.645M (± 0.6%) i/s  (378.07 ns/i) -     13.345M in   5.045454s
-
-Comparison:
-              before:  2379291.6 i/s
-               after:  2645019.6 i/s - 1.11x  faster
-</code></pre></div></div>
-
-<p>So the rewrite in Ruby was a win-win, less C code to maintain, and more efficiency overall.</p>
-
-<h2 id="to-be-continued">To Be Continued</h2>
-
-<p>I only talked about two small optimizations, but I digressed so much that it’s already longer than part one,
-and I probably won’t have time to write in the next few days, so it’s probably best if I stop here for part two.</p>
-
-<p>At this rate, and based only on the number of commits I haven’t yet covered, I may need 5 or 6 more parts,
-but I hope I won’t have to disgress as much as the series progress, and not all commits may be worth talking about.</p>
-
-<p>Edit: <a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html">Part three is here</a>.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, I covered my motivations for improving ruby/json’s performance, and detailed the first 4 notable optimizations applied to speed up JSON generation.]]></summary></entry></feed>
+<p>Edit: <a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">Part four is here</a>.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, I covered how I reimplemented JSON::Generator::State#configure in Ruby and some other changes. Unfortunately, it didn’t go as well as I initially thought.]]></summary></entry></feed>

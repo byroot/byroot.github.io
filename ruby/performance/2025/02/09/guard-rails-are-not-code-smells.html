@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Guardrails Are Not Code Smells | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Guardrails Are Not Code Smells" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency." />
+<meta property="og:description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-02-09T09:47:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Guardrails Are Not Code Smells" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-02-09T09:47:51+00:00","datePublished":"2025-02-09T09:47:51+00:00","description":"I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.","headline":"Guardrails Are Not Code Smells","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"},"url":"https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Guardrails Are Not Code Smells</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-02-09T09:47:51+00:00" itemprop="datePublished">Feb 9, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.</p>
+
+<p>A few years ago, I read a tweet calling out <a href="https://github.com/kzk/unicorn-worker-killer"><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code></a> as a
+major code smell.
+I don’t quite remember who or when it was, it doesn’t matter anyway, but I think it is an interesting topic because,
+depending on how that gem is used, I can either strongly agree with or vehemently oppose this tweet.</p>
+
+<h2 id="what-does-it-do">What Does It Do?</h2>
+
+<p><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code> provides two optional features for <a href="https://yhbt.net/unicorn/README.html">Unicorn</a>.</p>
+
+<p>The first one allows to set a number of requests after which a Unicorn worker should be recycled, as in shutdown and
+replaced by a fresh one, and the second allows to set the memory usage threshold after which a worker should be recycled.</p>
+
+<p>In my opinion, the first setting is indeed a terrible code smell and there’s absolutely no valid reason to use it.
+However the second one is absolutely essential, and in my opinion, it’s borderline irresponsible to deploy code to
+production without something akin to it.</p>
+
+<p>Both features are meant as ways to deal with memory leaks or bloat, so you may wonder why I have such radically different
+opinions on what seem to be two fairly similar features.
+It is because the former sweeps memory leaks under the rug, while the latter gracefully handles them.</p>
+
+<h2 id="why-maxrequests-is-bad">Why MaxRequests is Bad</h2>
+
+<p>One of the reasons why memory leaks are such a painful bug to deal with in Ruby applications is that unless they
+are really bad, they’ll often take hours or days to bloat your process enough for the system OOM killer to trigger.
+So contrary to most bugs, they’re not easy to correlate with an application deployment.
+Assuming you deploy several times a day, you may only notice something went wrong over the weekend after you haven’t
+deployed for a day or two. In some cases, you may even only notice it months later when most of the team is away for summer
+or winter vacations and no deployment happens for a week.</p>
+
+<p><code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> “solves” that by essentially continuously restarting your application on a regular
+schedule, making it impossible to even know you are suffering from a memory leak.</p>
+
+<p>And not only is it sweeping issues under the rug, but it also negatively impacts the performance of your application.
+While restarting a Unicorn worker is a relatively cheap operation, Ruby processes need some warmup time.
+Even if we ignore JIT warmup, the regular interpreter has lots of inline caches, so the first time a code path is
+executed it needs to do some extra work, and that work tends to cause Copy-on-Write invalidations, further impacting latency.
+And beyond the VM itself, while it’s a bad pattern, it’s very common for Ruby application to have some lazily initialized state.</p>
+
+<p>That is why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> is a major code smell.
+It is an indication that it was acknowledged that a memory leak exists, but that the team has given up on trying to fix it.</p>
+
+<p>Even if you are aware of this, you may think it’s an acceptable tradeoff for your use case, but it may only be a matter
+of time until you don’t have one but two or ten memory leaks and then need to face the problem or keep lowering the
+<code class="language-plaintext highlighter-rouge">max_requests</code> setting.</p>
+
+<h2 id="why-maxmemory-is-good">Why MaxMemory is Good</h2>
+
+<p>On the other hand, having a <code class="language-plaintext highlighter-rouge">max_memory</code> setting that gracefully restarts workers when they reach a given memory threshold
+is an essential resiliency feature.</p>
+
+<p>If your application doesn’t enforce a max memory policy by itself, the operating system will do it for you, and it won’t
+be pretty.
+What happens when there is no more available memory depends on the operating system and how it is configured but in the
+context of Ruby programs, the most likely case is that you’ll run into the Linux OOM Killer.
+In short, when Linux can no longer hand memory to a program, it looks at all the running processes on the machine, and
+use a few heuristics to find a process to kill to free some memory.
+Nothing guarantees that the process that will be killed is the one leaking, and the process will receive a <code class="language-plaintext highlighter-rouge">SIGKILL</code> so
+it won’t be able to shut down cleanly and may cause huge problems.</p>
+
+<p>For the anecdote, over a decade ago, I worked for a startup that had a PHP and Backbone.js application.
+All of it, including the MySQL server, was running on a single machine.
+One day there was a spike of traffic and the number of PHP processes caused the Linux OOM Killer to trigger, and its
+heuristics thought that the big <code class="language-plaintext highlighter-rouge">mysqld</code> process was a much more attractive target than the hundreds of 30 MB PHP processes,
+hence it decided to SIGKILL <code class="language-plaintext highlighter-rouge">mysqld</code> bringing the entire website to the ground.</p>
+
+<p>That’s why if you don’t enforce a max memory policy yourself, you will be subject to the overall system memory limits
+and if you ever reach them it won’t be pretty.</p>
+
+<p>That’s why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::Oom</code> is an essential resiliency feature, even though it needs to be used
+correctly.
+It is crucial that every OOM event is reported somewhere and that there is alerting in place if it becomes
+a frequent occurrence. If no one notices that suddenly OOM events are through the roof, then it’s no better than <code class="language-plaintext highlighter-rouge">max_request</code>.</p>
+
+<p>You can even go farther than that.
+Something I implemented in Shopify’s monolith, is that for a sample of OOM events before the worker is recycled,
+the heap is first dumped using <a href="https://docs.ruby-lang.org/en/3.4/ObjectSpace.html#method-i-dump_all"><code class="language-plaintext highlighter-rouge">ObjectSpace.dump_all</code></a>
+and uploaded in an object store, allowing us to investigate the root cause and identify leaks if any.</p>
+
+<p>This is the best of both worlds.
+OOM events are gracefully handled, any significant increase in such events is reported, and debugging is facilitated.</p>
+
+<p>It might be that your application legitimately started using more memory and you just need to increase the threshold,
+but it is preferable to have to review the policy once in a while than to be paged at night because a hard-to-diagnose
+memory leak was introduced and started causing havoc.</p>
+
+<p>On another note, I’m not a big fan of the exact implementation provided by <code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code>, because it uses
+<a href="https://en.wikipedia.org/wiki/Resident_set_size">RSS</a> as its memory metric, and I believe
+<a href="https://en.wikipedia.org/wiki/Proportional_set_size">PSS</a> is a much better memory metrics for preforking applications<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.</p>
+
+<p>In any case, cleanly shutting down workers on your own terms outside of the request cycle is much preferable to letting
+the operating system sends <code class="language-plaintext highlighter-rouge">SIGKILL</code> to somewhat random processes.</p>
+
+<h2 id="accept-it-bugs-will-happen">Accept It: Bugs Will Happen</h2>
+
+<p>Here I used memory as an example because I think it’s a good illustration of where to draw the line.
+But the point I’m trying to make is much more general.</p>
+
+<p>Another example could be Unicorn’s built-in request timeout setting.
+Whenever a worker is assigned a request, it is allotted a fixed amount of time to complete, if not, the worker will be
+shut down and replaced.</p>
+
+<p>You may think this is bad design and is working around a bug, but that’s the key to building resilient systems.
+You must accept that bugs and other catastrophic events will happen eventually, hence systems should be designed in a
+way that limits the blast radius of such events.</p>
+
+<p>This isn’t to say bugs are acceptable.
+You absolutely should strive to prevent as many bugs as reasonably possible upfront through testing, code reviews and what not.
+Having a resilient system is in no way a license to be complacent and ship crap software.</p>
+
+<p>But it is fanciful to believe you can prevent all bugs via sheer competency or process.</p>
+
+<p>If you are telling me your car doesn’t have seatbelts because you are such a good driver that you don’t need them,
+I will run in the opposite direction as fast as I can.</p>
+
+<p>This attitude can function for a while at a small scale but is untenable whenever a project grows to have
+a larger team, hence a faster rate of change.</p>
+
+<h2 id="the-resilient-nature-of-share-nothing-architecture">The Resilient Nature of Share-Nothing Architecture</h2>
+
+<p>This is why as an infrastructure engineer, I’m quite a fan of “share-nothing” architecture: it has inherent resiliency benefits.</p>
+
+<p>Take PHP for instance.
+As much as I dislike it as a programming language, I have to admit its classic execution model is really nice.
+Every request starts with a fresh new process, making it close to impossible to leak state between requests.</p>
+
+<p>That model wouldn’t perform well with Ruby though, because of the necessary warmup I mentioned previously,
+but Unicorn’s model is somewhat halfway through.
+Workers do process more than one request, but never concurrently, hence you still benefit from quite a high level of
+isolation, and if something goes really wrong, killing the worker is always an option and the operating system will take
+care of reclaiming the resources.</p>
+
+<p>Whereas cleanly interrupting a thread is basically impossible.
+You probably heard how <a href="https://jvns.ca/blog/2015/11/27/why-rubys-timeout-is-dangerous-and-thread-dot-raise-is-terrifying/">Ruby’s <code class="language-plaintext highlighter-rouge">Timeout</code> module should be avoided like the plague</a>,
+well that’s because it is trying to interrupt a thread, and that can go really wrong.</p>
+
+<p>If you look at <a href="https://github.com/zombocom/rack-timeout"><code class="language-plaintext highlighter-rouge">rack-timeout</code></a>, which is the Puma equivalent to Unicorn’s
+request timeout.
+You’ll see that whenever it has to timeout a request, it shutdowns the entire Puma worker because there’s no way to
+cleanly shut down a single thread.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>As I tried to explain here, even if <a href="/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html">Ruby didn’t have a GVL</a>,
+and even considering <a href="/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html">fork has its share of problems</a>,
+I strongly believe that this execution model has some very attractive properties that aren’t easily replaced.</p>
+
+<p>As with everything, it’s of course a tradeoff, you gain some and lose some, but it shouldn’t be lazily discarded as some
+sort of deprecated model for badly written applications.</p>
+
+<p>It also has its benefits, and resiliency is just one of them.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>I wrote about the difference between RSS and PSS in <a href="https://shopify.engineering/ruby-execution-models">a post on Shopify’s engineering blog</a>. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
