@@ -1,4 +1,180 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-02-09T12:56:18+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Guardrails Are Not Code Smells</title><link href="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" rel="alternate" type="text/html" title="Guardrails Are Not Code Smells" /><published>2025-02-09T09:47:51+00:00</published><updated>2025-02-09T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-02-24T20:40:56+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">There Isn’t Much Point to HTTP/2 Past The Load Balancer</title><link href="https://byroot.github.io/ruby/performance/2025/02/24/http2-past-the-load-balancer.html" rel="alternate" type="text/html" title="There Isn’t Much Point to HTTP/2 Past The Load Balancer" /><published>2025-02-24T19:47:51+00:00</published><updated>2025-02-24T19:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/02/24/http2-past-the-load-balancer</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/02/24/http2-past-the-load-balancer.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to share my mental model on a few things, in this case, HTTP/2.</p>
+
+<p>From time to time, either online or at conferences, I hear people complain about the lack of support for HTTP/2 in
+Ruby HTTP servers, generally Puma.
+And every time I do the same, I ask them why they want that feature, and so far nobody had an actual use case for it.</p>
+
+<p>Personally, this lack of support doesn’t bother me much, because the only use case I can see for it, is wanting to expose
+your Ruby HTTP directly to the internet without any sort of load balancer or reverse proxy, which I understand may seem
+tempting, as it’s “one less moving piece”, but not really worth the trouble in my opinion.</p>
+
+<p>If you are not familiar with the HTTP protocol and what’s different in version 2 (and even 3 nowadays), you might
+be surprised by this take, so let me try to explain what it is all about.</p>
+
+<h2 id="what-does-http2-solve">What Does HTTP/2 Solve?</h2>
+
+<p>HTTP/2 started under the name SPDY in 2009, with multiple goals, but mainly to reduce page load latency, by allowing it to
+download more resources faster.
+A major factor in page load time is that a page isn’t just a single HTTP request.
+Once your browser has downloaded the HTML page and starts parsing it, it will find other resources it needs to also
+download to render the page, be it stylesheets, scripts, or images.</p>
+
+<p>So a page isn’t one HTTP request, but a cascade of them, and in the late 2000s, the number of resources on the average
+page kept going up.
+This bloat was in part offset by broadband getting better, but still, HTTP/1.1 wasn’t really adequate to download
+many small files quickly for a few reasons.</p>
+
+<p>The first one is that <a href="https://datatracker.ietf.org/doc/html/rfc2616">RFC 2616</a>, which introduced HTTP/1.1
+specified that browsers were only allowed <em>two</em> concurrent connections to a given domain:</p>
+
+<blockquote>
+  <p>8.1.4 Practical Considerations</p>
+
+  <p>Clients that use persistent connections SHOULD limit the number of simultaneous connections that they maintain to a
+given server. A single-user client SHOULD NOT maintain more than 2 connections with any server or proxy.</p>
+</blockquote>
+
+<p>So if you can only request a single resource per connection, and are limited to two connections, even if you have a very
+large bandwidth, the latency to the server will have a massive impact on performance whenever you need to download more than
+a couple of resources.</p>
+
+<p>Imagine you have an excellent 100Gb connection, but are trying to load a webpage hosted across the Atlantic ocean.
+The roundtrip time to that server (your ping), will probably be around 60ms. If you need to download 100 small resources
+through just two connections, it will take at least <code class="language-plaintext highlighter-rouge">ping * (resources / connections)</code>, so 3 seconds, which isn’t great.</p>
+
+<p>That’s what made many frontend optimization techniques like assets bundling absolutely essentials back then, they
+made a major difference in load time<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.
+Similarly, some websites were using a technique called domain sharding, splitting assets into multiple domains to allow
+more concurrency.</p>
+
+<p>In theory, even these two connections could have been used much more effectively by pipelining requests,
+the RFC 2616 has an entire section about it, and that was one of the big features added in HTTP/1.1 compared to 1.0.
+The idea is simple, after sending your request, you don’t have to wait for the response before sending more requests.
+You can send 10 requests immediately before having received a single response, and the server will send them one by one
+in order.</p>
+
+<p>But in practice most browsers ended up disabling that feature by default because they ran into misbehaving servers, dooming
+the feature.
+It also wasn’t perfect, as you could experience <em>head-of-line blocking</em>.
+Since responses don’t have an identifier to map them to the request they’re the answer to, they have to be sent in order.
+If one resource is slow to generate, all the subsequent resources can’t be sent yet.</p>
+
+<p>That’s why as early as 2008, browsers stopped respecting the two concurrent connection rule.
+Firefox 3 started raising the connection limit to 6 per domain, and most other browsers followed suit shortly after.</p>
+
+<p>However, more concurrent connections isn’t an ideal solution, because TCP connections have a <em>slow start</em>.
+When you connect to a remote address, your computer doesn’t know if the link to that other machine can support 10 gbit/s
+or only 56 kbit/s.
+Hence, to avoid flooding the network with tons of packets that will be dropped on the floor, it starts relatively slow
+and periodically increase the throughput until it receives packet loss notifications, at that point it know it has more
+or less reached the maximum throuhput the link can sustain.</p>
+
+<p>That’s why persistent connections are a big deal, a freshly established connection has a much lower throughput than one
+that has seen some use.</p>
+
+<p>So by multiplying the number of connections, you can download more resources faster, but it would be preferable if they
+were all downloaded from the same connection to not suffer as much from TCP slow start.</p>
+
+<p>And that’s exactly the main thing HTTP/2 solved, by allowing multiplexing of requests inside a single TCP connection,
+solving the head-of-line blocking issue<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>.</p>
+
+<p>It also did a few other things, such as mandating the use of encryption and also compressing request and response headers
+with GZip, and “server push”, but multiplexing is really the big one.</p>
+
+<h2 id="why-it-doesnt-matter-over-lan">Why It Doesn’t Matter Over LAN</h2>
+
+<p>So the main motivation for HTTP/2 is multiplexing, and over the Internet, especially mobile Internet with somewhat more
+spotty connections, it can have a massive impact.</p>
+
+<p>But in the data center, not so much. If you think about it, the very big factor in the computation we did above was the
+roundtrip time (ping) with the client.
+Unless your infrastructure is terribly designed, that roundtrip time between your server (say Puma) and its client
+(your load balancer or reverse proxy) should be extremely small, way under one millisecond, and totally dwarfed by the
+actual request render time.</p>
+
+<p>When you are serving mostly static assets over the Internet, latency may be high and HTTP/2 multiplexing is a huge deal.
+But when you are serving application-generated responses over LAN (or even a UNIX socket), it won’t make a measurable
+difference.</p>
+
+<p>In addition to the low roundtrip time, the connections between your load balancer and application server likely have
+a very long lifetime, hence don’t suffer from TCP slow start as much, and that’s assuming your operating system hasn’t
+been tuned to disable slow start entirely, which is very common on servers.</p>
+
+<h2 id="server-push-fail">Server Push Fail</h2>
+
+<p>Another reason people may have wanted HTTP/2 all the way to the Ruby application server at one point was the “server push”
+capability.</p>
+
+<p>The idea was relatively simple, servers were allowed to send HTTP resources to the client without being prompted for it.
+This way, when you request the landing page of a website, the server can send you all the associated resources up front
+so your browser doesn’t have to parse the HTML to realize it needs them and start to ask for it.</p>
+
+<p>However, that capability was actually removed from the spec and nowadays all browsers have removed it because was
+actually doing more harm than good. It turns out that if the browser already had these resources in its cache, then
+pushing them again would slow down the page load time.</p>
+
+<p>People tried to find smart heuristics to know which resources may be in the cache or not, but in the end, none worked
+and the feature was abandoned.</p>
+
+<p>Today it has been superseded by <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/103">103 Early Hints</a>, which
+is a much simpler and elegant spec, and is retro-compatible with HTTP/1.1.</p>
+
+<p>So there isn’t any semantic difference left between HTTP/1.1 and HTTP/2.
+From a <a href="https://github.com/rack/rack/blob/main/SPEC.rdoc"><code class="language-plaintext highlighter-rouge">Rack</code></a> application point of view, whether the request was
+issued through an HTTP/2 or HTTP/1.1 connection makes no difference.
+You can tunnel one into the other just fine.</p>
+
+<h2 id="extra-complexity">Extra Complexity</h2>
+
+<p>In addition to not providing much if any benefit over LAN, HTTP/2 adds some extra complexity.</p>
+
+<p>First, the complexity of implementation, as HTTP/2 while not being crazy complicated at all, is still a fully encrypted and
+largely binary protocol, so it’s noticeably harder to implement than a plain text protocol like HTTP/1.1, and much harder
+to debug.</p>
+
+<p>But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
+certificate, that’s not insurmountable, but is an extra hassle compared to just using HTTP/1.1, unless of course for some
+reasons you are required to use only encrypted connections even over LAN.</p>
+
+<p>So unless you are deploying to a single machine, hence don’t have a load balancer, bringing HTTP/2 all the way to
+the Ruby app server is significantly complexifying your infrastructure for little benefit.</p>
+
+<p>And even if you are on a single machine, it’s probably to leave that concern to a reverse proxy, which will also take
+care of serving static assets, normalize inbound requests, and also probably fend off at least some malicious actors.</p>
+
+<p>There are numerous battle-tested reverse proxies such as Nginx, Caddy, etc, and they’re pretty simple to setup, might as well use these common middlewares rather than to try to do everything in a single Ruby application.</p>
+
+<p>But if you think a reverse proxy is too much complexity and you’d rather do without, there are now zero config solutions
+such as <a href="https://github.com/basecamp/thruster">thruster</a>, I haven’t tried it so I can’t vouch for it, but at least on
+paper it solves that need.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>I think HTTP/2 is better thought of not as an upgrade over HTTP/1.1, but as an alternative protocol to more efficiently
+transport the same HTTP resources over the Internet. In a way, it’s similar to how HTTPS doesn’t change the semantics
+of the HTTP protocol, it only changes how it’s serialized over the wire.</p>
+
+<p>So I believe handling HTTP/2 is better left to your infrastructure entry point, typically the load balancer or reverse proxy, for the same
+reason that TLS has been left to the load balancer or reverse proxy for ages. They have to decrypt and decompress
+the request to know what to do with it, why re-encrypt and re-compress it to forward it to the app server?</p>
+
+<p>Hence, in my opinion, HTTP/2 support in Ruby HTTP servers isn’t a critically important feature, would be nice to have it for a few
+niche use cases, but overall, the lack of it isn’t hindering much of anything.</p>
+
+<p>Note that I haven’t mentioned HTTP/3, but while the protocol is very different, its goals are largely the same as HTTP2, so I’d apply the same conclusion to it.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Minifying and bundling still improve load time with HTTP/2, fewer requests and fewer bytes transferred are still positive, so they’re still useful, but it’s no longer critical to achieve a decent experience. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>At the HTTP layer at least, HTTP/2 still suffers from some forms of head-of-line blocking in lower layers, but it is beyond the scope of this post. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, HTTP/2.]]></summary></entry><entry><title type="html">Guardrails Are Not Code Smells</title><link href="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" rel="alternate" type="text/html" title="Guardrails Are Not Code Smells" /><published>2025-02-09T09:47:51+00:00</published><updated>2025-02-09T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
 is like it is, and how I see its future.
 But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.</p>
 
@@ -4322,518 +4498,4 @@ Comparison:
       <p>In the initial version of this post I wrongly assumed the <code class="language-plaintext highlighter-rouge">a</code> suffix was referring to “arrays of bytes”. Thanks to f33d5173 and ciupicri for lettingme know the real meaning on HN. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
     </li>
   </ol>
-</div>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, we established that as long as ruby/json wasn’t competitive on micro-benchmarks, public perception wouldn’t change. Since what made ruby/json appear so bad on micro-benchmarks was its setup cost, we had to find ways to reduce it further.]]></summary></entry><entry><title type="html">Optimizing Ruby’s JSON, Part 3</title><link href="https://byroot.github.io/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 3" /><published>2024-12-27T09:05:51+00:00</published><updated>2024-12-27T09:05:51+00:00</updated><id>https://byroot.github.io/ruby/json/2024/12/27/optimizing-ruby-json-part-3</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html"><![CDATA[<p><a href="/ruby/json/2024/12/18/optimizing-ruby-json-part-2.html">In the previous post</a>, I covered how I reimplemented <code class="language-plaintext highlighter-rouge">JSON::Generator::State#configure</code>
-in Ruby and some other changes. Unfortunately, it didn’t go as well as I initially thought.</p>
-
-<h2 id="mistakes-were-made">Mistakes Were Made</h2>
-
-<p>The default gems that ship with Ruby are automatically copied inside <code class="language-plaintext highlighter-rouge">ruby/ruby</code>’s repo.
-In short, there’s a bot aptly named <a href="https://github.com/matzbot">matzbot</a>, that replicates all the commits from the various <code class="language-plaintext highlighter-rouge">ruby/*</code> gems,
-inside <code class="language-plaintext highlighter-rouge">ruby/ruby</code>, and <a href="https://github.com/ruby/ruby/commit/0e2ac4658430ae5c8beba36e0b608902b3404879">that’s what it did with my <code class="language-plaintext highlighter-rouge">State#configure</code> patch</a>.</p>
-
-<p>The reason is that Ruby runs on many different platforms and its CI tests many different compilers, in different versions, and also test builds
-with various compilation flags enabled to hopefully catch some subtle bugs, these gems will ultimately ship as part of Ruby, so they might as
-well, be tested together.</p>
-
-<p>Depending on which files the commit touches, it can trigger up to 150 CI tasks just on GitHub:</p>
-
-<p><img src="/assets/articles/json-3/gha.png" alt="" /></p>
-
-<p>And that’s only the beginning, after such a commit is merged, there are other secondary CIs maintained by core contributors which will
-test Ruby on various OS and platforms that are hard to integrate into GitHub actions, such as Solaris and some CPU architectures
-I barely know the existence of.</p>
-
-<p>This is centralized in a channel inside Ruby committers’ Slack: <code class="language-plaintext highlighter-rouge">#alert-emoji</code>.</p>
-
-<p>On October 17th, Mame pinged me because that <code class="language-plaintext highlighter-rouge">State#configure</code> commit <a href="https://github.com/ruby/ruby/actions/runs/11384118908">started making builds fail</a>,
-with this crash report:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Assertion Failed: ../src/vm_core.h:1394:VM_ENV_FLAGS:FIXNUM_P(flags)
-ruby 3.4.0dev (2024-10-17T11:35:33Z master 0e2ac46584) +PRISM [i686-linux-gnu]
-
--- Control frame information -----------------------------------------------
-Assertion Failed: ../src/vm_core.h:1394:VM_ENV_FLAGS:FIXNUM_P(flags)
-ruby 3.4.0dev (2024-10-17T11:35:33Z master 0e2ac46584) +PRISM [i686-linux-gnu]
-
-Crashed while printing bug report
-running file: /home/runner/work/ruby/ruby/src/test/json/json_common_interface_test.rb
-
-A test worker crashed. It might be an interpreter bug or
-a bug in test/unit/parallel.rb. Try again without the -j
-option.
-</code></pre></div></div>
-
-<p>This is the worst for me. Normally when Ruby runs into a SEGV or some other bug, before it exits, it collects lots of debug information
-including the native C stacktrace, and print a useful report that helps a lot in the debugging process.</p>
-
-<p>But sometimes, the process is corrupted enough, that the crash reporter itself crashes while trying to collect that data, and that’s what happened here.</p>
-
-<p>Yet, we still have a few information. Since we failed an assertion, we do know which condition was wrong:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kr">inline</span> <span class="kt">unsigned</span> <span class="kt">long</span>
-<span class="nf">VM_ENV_FLAGS</span><span class="p">(</span><span class="k">const</span> <span class="n">VALUE</span> <span class="o">*</span><span class="n">ep</span><span class="p">,</span> <span class="kt">long</span> <span class="n">flag</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="n">VALUE</span> <span class="n">flags</span> <span class="o">=</span> <span class="n">ep</span><span class="p">[</span><span class="n">VM_ENV_DATA_INDEX_FLAGS</span><span class="p">];</span>
-    <span class="n">VM_ASSERT</span><span class="p">(</span><span class="n">FIXNUM_P</span><span class="p">(</span><span class="n">flags</span><span class="p">));</span> <span class="c1">// CRASHED HERE.</span>
-    <span class="k">return</span> <span class="n">flags</span> <span class="o">&amp;</span> <span class="n">flag</span><span class="p">;</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>And we also do know that the crash was triggered by a test inside <code class="language-plaintext highlighter-rouge">test/json/json_common_interface_test.rb</code>, but not which one exactly.</p>
-
-<p>Unfortunately, for some reason, I’m still not quite clear on why the crash would only happen on <code class="language-plaintext highlighter-rouge">i686</code>, aka 32-bit Intel, and all I have is an arm64 machine (I really should do something about that).
-In some cases, you can use emulation layers, but it’s terribly slow, so I was looking at hours of compilation, and generally when emulating another
-architecture you can’t use debuggers like <code class="language-plaintext highlighter-rouge">gdb</code> or <code class="language-plaintext highlighter-rouge">lldb</code> so it’s not that helpful.</p>
-
-<p>So that’s where I called a favor from my colleague <a href="https://peterzhu.ca/">Peter Zhu</a>, who owns an x86_64 machine, to ask him if he could get me a proper
-backtrace or something, and generally give me some more information about what was going on.</p>
-
-<p>But Peter being Peter, <a href="https://github.com/ruby/json/pull/621">he directly opened a pull request on <code class="language-plaintext highlighter-rouge">ruby/json</code> with the fix</a>.</p>
-
-<p>Turns out, I didn’t introduce the bug, it had been present in the <code class="language-plaintext highlighter-rouge">State#max_nesting=</code> since October 2009, 15 years!
-My change caused it to be covered by tests, while before it wasn’t.</p>
-
-<p>But you might wonder what the bug is exactly, so let me explain.</p>
-
-<h3 id="boxing-day">Boxing Day</h3>
-
-<p>In the Ruby VM, object references are held in the <code class="language-plaintext highlighter-rouge">VALUE</code> type, which in short is a pointer type. Meaning on 64-bit hardware it’s a 64-bit integer,
-and on 32-bit hardware, it’s a 32-bit integer.</p>
-
-<p>This is so that for objects that are allocated on the heap, their reference is simply a pointer to their location, and there’s no lookup or
-transformation needed to access that reference, you simply use it like a normal C pointer. This might seem obvious, but some other VMs don’t do it this way, it’s a tradeoff.</p>
-
-<p>But not all <code class="language-plaintext highlighter-rouge">VALUE</code> references are an actual pointer to an active memory region on the heap, some of them are what is called “immediates”.</p>
-
-<p>This is a technique often referred to as “pointer tagging”, that exploits the fact that pointers are guaranteed to be aligned on 8 bytes, in other words all the pointers you’ll
-get from malloc and such will always be divisible by 8, so that <code class="language-plaintext highlighter-rouge">(pointer % 8) == 0</code>, always.</p>
-
-<p>In binary form, that means the last 3 bits of a pointer are always <code class="language-plaintext highlighter-rouge">0</code>, and Ruby would never leave 3 good bits to go to waste.
-For objects that are fully immutable, like <code class="language-plaintext highlighter-rouge">Integer</code>, you don’t need them to be stored in allocated memory, you can simply pack them in
-the pointer instead, and use these 3 bits as “tag”, to inform Ruby that it’s not a real memory pointer, but an immediate value that needs to be
-massaged first to be used.</p>
-
-<p>The way these are used is defined in <a href="https://github.com/ruby/ruby/blob/335bba0fde0c0407377b6e10050ab6c2ad0d3270/include/ruby/internal/special_consts.h#L86-L120">the <code class="language-plaintext highlighter-rouge">ruby_special_consts</code> enum in <code class="language-plaintext highlighter-rouge">special_const.h</code></a>
-and can vary based on which architecture Ruby is compiled for, typically 32-bit and 64-bit Rubies are quite different.</p>
-
-<p>Here I’ll just focus on how <code class="language-plaintext highlighter-rouge">Integer</code> is tagged. On both 32 and 64 bits, if the least significant bit is set, then we’re dealing with an immediate integer.</p>
-
-<p>So to know if a reference is an immediate integer, you just have to check that bit:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">RUBY_FIXNUM_FLAG</span> <span class="o">=</span> <span class="mh">0x01</span>
-
-<span class="k">static</span> <span class="kr">inline</span> <span class="n">bool</span>
-<span class="nf">RB_FIXNUM_P</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">obj</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="k">return</span> <span class="n">obj</span> <span class="o">&amp;</span> <span class="n">RUBY_FIXNUM_FLAG</span><span class="p">;</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>The <code class="language-plaintext highlighter-rouge">_P</code> prefix is the convention used by Ruby to encode question mark <code class="language-plaintext highlighter-rouge">?</code> into valid C function names, as for <code class="language-plaintext highlighter-rouge">fixnum</code>, that’s how integers small
-enough to be immediates were called in the past. Before Ruby 2.4, you had two Integer classes, <code class="language-plaintext highlighter-rouge">Fixnum</code> and <code class="language-plaintext highlighter-rouge">Bignum</code>. The two were merged and now as a Ruby user you can only
-observe a single <code class="language-plaintext highlighter-rouge">Integer</code> class, but internally in the virtual machine, they’re still very much distinct.</p>
-
-<p>Based on this to convert a C integer into a Ruby fixnum you use some simple bitwise transformations:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">int_to_fixnum</span><span class="p">(</span><span class="n">int</span><span class="p">)</span>
-  <span class="p">(</span><span class="n">int</span> <span class="o">&lt;&lt;</span> <span class="mi">1</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span>
-<span class="k">end</span>
-
-<span class="k">def</span> <span class="nf">fixnum_to_int</span><span class="p">(</span><span class="n">fixnum</span><span class="p">)</span>
-  <span class="n">fixnum</span> <span class="o">&gt;&gt;</span> <span class="mi">1</span>
-<span class="k">end</span>
-
-<span class="nb">p</span><span class="p">(</span><span class="mi">5</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="n">int_to_fixnum</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="p">})</span> <span class="c1"># =&gt; [1, 3, 5, 7, 9]</span></code></pre></figure>
-
-<p>This sort of conversion is often referred to as “boxing” and “unboxing”, the idea being to take a native integer type, and put it in a “box” so that
-it fits the same generic pattern than all other object references. And then when you need to use it you have to “unbox” it back to the native type.</p>
-
-<p>In the Ruby C API, these types of functions are provided as <code class="language-plaintext highlighter-rouge">NUM2&lt;ctype&gt;</code> and <code class="language-plaintext highlighter-rouge">&lt;ctype&gt;2NUM</code> or <code class="language-plaintext highlighter-rouge">FIX2&lt;ctype&gt;</code> and <code class="language-plaintext highlighter-rouge">&lt;ctype&gt;2FIX</code>, for instance,
-to convert a <code class="language-plaintext highlighter-rouge">FIXNUM</code> into a native C <code class="language-plaintext highlighter-rouge">long</code>, you use <code class="language-plaintext highlighter-rouge">FIX2LONG</code>.</p>
-
-<p>Going back to our crash, what Ruby was complaining about, is that it was expecting to read a <code class="language-plaintext highlighter-rouge">FIXNUM</code> on the stack,
-but somehow, the <code class="language-plaintext highlighter-rouge">VALUE</code> it read wasn’t a <code class="language-plaintext highlighter-rouge">FIXNUM</code>, as its least significant bit wasn’t set.</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">cState_max_nesting_set</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">self</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">depth</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="n">GET_STATE</span><span class="p">(</span><span class="n">self</span><span class="p">);</span>
-    <span class="n">Check_Type</span><span class="p">(</span><span class="n">depth</span><span class="p">,</span> <span class="n">T_FIXNUM</span><span class="p">);</span>
-    <span class="k">return</span> <span class="n">state</span><span class="o">-&gt;</span><span class="n">max_nesting</span> <span class="o">=</span> <span class="n">NUM2LONG</span><span class="p">(</span><span class="n">depth</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>With what I explained above, you might be able to spot that <code class="language-plaintext highlighter-rouge">State#max_nesting=</code> is supposed to return a Fixnum, but actually returns the native C <code class="language-plaintext highlighter-rouge">long</code> integer,
-and thanks to C’s weak typing, none of the many compilers Ruby is tested against ever complained about it.</p>
-
-<p>You might also have deduced that this crash would only happen if <code class="language-plaintext highlighter-rouge">depth</code> happens to be an even number.</p>
-
-<p>But also the crash was only happening on debug builds of Ruby, because that function is a setter, so unless you do something weird, the return value
-is just dropped on the floor.</p>
-
-<p>But you can easily reproduce it on older versions of the JSON gem:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="o">::</span><span class="no">VERSION</span>
-<span class="o">=&gt;</span> <span class="s2">"2.5.1"</span>
-<span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="o">::</span><span class="no">State</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="ss">:max_nesting</span><span class="o">=</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span>
-<span class="o">=&gt;</span> <span class="mi">2</span>
-<span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="o">::</span><span class="no">State</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="ss">:max_nesting</span><span class="o">=</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
-<span class="sr">/opt/</span><span class="n">rubies</span><span class="o">/</span><span class="mf">3.0</span><span class="o">.</span><span class="mi">7</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">ruby</span><span class="o">/</span><span class="mf">3.0</span><span class="o">.</span><span class="mi">0</span><span class="o">/</span><span class="n">pp</span><span class="p">.</span><span class="nf">rb</span><span class="p">:</span><span class="mi">582</span><span class="p">:</span> <span class="p">[</span><span class="no">BUG</span><span class="p">]</span> <span class="no">Segmentation</span> <span class="n">fault</span> <span class="n">at</span> <span class="mh">0x0000000000000014</span>
-<span class="n">ruby</span> <span class="mf">3.0</span><span class="o">.</span><span class="mi">7</span><span class="n">p220</span> <span class="p">(</span><span class="mi">2024</span><span class="o">-</span><span class="mo">04</span><span class="o">-</span><span class="mi">23</span> <span class="n">revision</span> <span class="mi">724</span><span class="n">a071175</span><span class="p">)</span> <span class="p">[</span><span class="n">arm64</span><span class="o">-</span><span class="n">darwin23</span><span class="p">]</span>
-<span class="o">....</span></code></pre></figure>
-
-<p>But this post is named “Optimizing Ruby’s JSON”, we’re not here to talk about bugs, so let’s move on.</p>
-
-<h2 id="path-splitting">Path Splitting</h2>
-
-<p>After the previous optimizations I mentioned in parts 1 and 2, I still wasn’t satisfied with the <code class="language-plaintext highlighter-rouge">JSON.dump</code> performance.
-So I went back to profile the <code class="language-plaintext highlighter-rouge">twitter.json</code> macro benchmark:</p>
-
-<p><img src="/assets/articles/json-3/generate-json-string-flamegraph.png" alt="" /></p>
-
-<p><a href="https://share.firefox.dev/3P3BTzr">Full Profile</a></p>
-
-<p>As you can see, we’re spending 55% (13% + 28% + 14%) of our time in <code class="language-plaintext highlighter-rouge">generate_json_string</code>, and most of that is spent in <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code>
-which is essentially our <code class="language-plaintext highlighter-rouge">escape</code> function.</p>
-
-<p>This makes sense, of all the JSON types, it’s one of the most common and requires some costly scanning and escaping.</p>
-
-<p>Having such an obvious hotspot is pleasant in a way, as it gives you a very specific area to focus on.</p>
-
-<p>Looking more specifically at the heatmap of <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code>, we can see that Mame’s precondition check
-helps, but we’re still spending quite a lot of time in the slow path, decoding UTF-8.</p>
-
-<p><img src="/assets/articles/json-3/generate-json-string-heatmap.png" alt="" /></p>
-
-<p>That’s because the <code class="language-plaintext highlighter-rouge">twitter.json</code> payload happens to contain mostly Japanese tweets, hence it’s quite UTF-8
-heavy, but that’s good, it means it’s not only benchmarking the happy path.</p>
-
-<p>That said, even in this case, actual UTF-8 strings are the minority in the document, most of them are pure ASCII,
-as such it would be interesting not to bother decoding UTF-8 at all when we know the string is plain ASCII.</p>
-
-<p>As mentioned in part 1, we already know if the string is pure ASCII upfront, because we asked Ruby to compute the string coderange.</p>
-
-<p>But you may also wonder, why we even bother decoding UTF-8, after all, UTF-8 is a superset of ASCII, and all we care about are <code class="language-plaintext highlighter-rouge">\</code> and <code class="language-plaintext highlighter-rouge">"</code> characters
-as well as characters that are <code class="language-plaintext highlighter-rouge">&lt; 0x20</code>. That’s the nice thing with UTF-8, any code that only knows about ASCII will be compatible with UTF-8 as long
-as it ignores characters outside the ASCII range.</p>
-
-<p>But the reason we need to care about UTF-8 is the <code class="language-plaintext highlighter-rouge">script_safe: true</code> option. On paper, JSON is an extremely simple spec, but it also somewhat claims
-to be a subset of JavaScript, hence you may want to interpolate some JSON inside JavaScript as a way to pass data from Ruby to JS. e.g.</p>
-
-<figure class="highlight"><pre><code class="language-erb" data-lang="erb"><span class="nt">&lt;script&gt;</span>
-  <span class="nx">MyLibrary</span><span class="p">.</span><span class="nx">configure</span><span class="p">(</span><span class="cp">&lt;%=</span> <span class="no">MyLib</span><span class="o">::</span><span class="no">CONFIG</span><span class="p">.</span><span class="nf">to_json</span> <span class="cp">%&gt;</span><span class="p">);</span>
-<span class="nt">&lt;/script&gt;</span></code></pre></figure>
-
-<p>And this works well except that you need to escape more characters. First forward slashes (<code class="language-plaintext highlighter-rouge">/</code>) to prevent XSS, we touched on that in part 1, but
-also two weird characters, the infamous <code class="language-plaintext highlighter-rouge">U+2028</code> and <code class="language-plaintext highlighter-rouge">U+2029</code> characters aka Line Separator and Paragraph Separator.</p>
-
-<p><a href="https://stackoverflow.com/a/9168133">The ECMAScript standard specifies that these two characters are treated as new lines</a>,
-and you can’t put newlines in a JavaScript string so you end up with some syntax errors.</p>
-
-<p>So if you plan to embed your JSON in JS, you need to care about characters outside the ASCII range, but here again,
-this is the exception, not the common case, as such we should be able to implement a fast path that doesn’t care about that.</p>
-
-<p>You can see <a href="https://github.com/ruby/json/pull/620/commits/2aefa41d51efff154f8bbd24ba6cfa35521cea87">the full commit on GitHub</a>,
-but the key part can be understood by just looking at <code class="language-plaintext highlighter-rouge">generate_json_string</code>. Now it dispatches to a much simpler <code class="language-plaintext highlighter-rouge">convert_ASCII_to_JSON</code>
-when possible.</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kt">void</span> <span class="nf">generate_json_string</span><span class="p">(</span><span class="n">FBuffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">Vstate</span><span class="p">,</span> <span class="n">JSON_Generator_State</span> <span class="o">*</span><span class="n">state</span><span class="p">,</span> <span class="n">VALUE</span> <span class="n">obj</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">enc_utf8_compatible_p</span><span class="p">(</span><span class="n">RB_ENCODING_GET</span><span class="p">(</span><span class="n">obj</span><span class="p">)))</span> <span class="p">{</span>
-        <span class="n">obj</span> <span class="o">=</span> <span class="n">rb_str_export_to_enc</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">rb_utf8_encoding</span><span class="p">());</span>
-    <span class="p">}</span>
-
-    <span class="n">fbuffer_append_char</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="sc">'"'</span><span class="p">);</span>
-
-    <span class="k">switch</span><span class="p">(</span><span class="n">rb_enc_str_coderange</span><span class="p">(</span><span class="n">obj</span><span class="p">))</span> <span class="p">{</span>
-        <span class="k">case</span> <span class="n">ENC_CODERANGE_7BIT</span><span class="p">:</span>
-            <span class="n">convert_ASCII_to_JSON</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="n">state</span><span class="o">-&gt;</span><span class="n">script_safe</span><span class="p">);</span>
-            <span class="k">break</span><span class="p">;</span>
-        <span class="k">case</span> <span class="n">ENC_CODERANGE_VALID</span><span class="p">:</span>
-            <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">state</span><span class="o">-&gt;</span><span class="n">ascii_only</span><span class="p">))</span> <span class="p">{</span>
-                <span class="n">convert_UTF8_to_ASCII_only_JSON</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="n">state</span><span class="o">-&gt;</span><span class="n">script_safe</span><span class="p">);</span>
-            <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
-                <span class="n">convert_UTF8_to_JSON</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="n">state</span><span class="o">-&gt;</span><span class="n">script_safe</span><span class="p">);</span>
-            <span class="p">}</span>
-            <span class="k">break</span><span class="p">;</span>
-        <span class="nl">default:</span>
-            <span class="n">rb_raise</span><span class="p">(</span><span class="n">rb_path2class</span><span class="p">(</span><span class="s">"JSON::GeneratorError"</span><span class="p">),</span> <span class="s">"source sequence is illegal/malformed utf-8"</span><span class="p">);</span>
-            <span class="k">break</span><span class="p">;</span>
-    <span class="p">}</span>
-    <span class="n">fbuffer_append_char</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="sc">'"'</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>And it had a pretty nice impact:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   189.000 i/100ms
-Calculating -------------------------------------
-               after      1.894k (± 1.2%) i/s  (527.87 μs/i) -      9.639k in   5.088860s
-
-Comparison:
-              before:     1489.1 i/s
-               after:     1894.4 i/s - 1.27x  faster
-</code></pre></div></div>
-
-<p>Note: because Mame’s lookup table patch was almost a year old when I took over the gem, it had to be rebased
-and adapted quite a bit, so in reality, Mame’s lookup table patch was applied after this split of <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code>
-<a href="https://github.com/ruby/json/pull/620">as part of a PR that combined both</a>.
-If the two commits had been applied in the opposite order I suspect my patch’s impact would have been much smaller, if not null.</p>
-
-<p>The logical followup would have been to also make optimized versions of <code class="language-plaintext highlighter-rouge">convert_</code> methods, that assume <code class="language-plaintext highlighter-rouge">script_safe = false</code>,
-allowing to get one more conditional out of the loop. But I didn’t want to have to maintain this many versions of the same subroutine,
-as it was already a bit tedious. And anyway, I already had another idea.</p>
-
-<h2 id="dont-ignore-the-not-so-happy-path">Don’t Ignore the “Not So Happy” Path</h2>
-
-<p>While we can expect most JSON strings to be ASCII only, we can also likely assume that even in strings that aren’t pure ASCII,
-most of the characters still are in the ASCII range.</p>
-
-<p>The <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark is a total counter-example because all strings in it are either English or Japanese, so either full ASCII
-or close to no ASCII at all.
-But over a larger corpus, you’d likely see strings that are mostly ASCII, but a few of them might contain an accent or some symbol.
-Even English texts will often contain a couple of characters outside the ASCII range, be it some emojis or some word borrowed from
-French to look fancy.</p>
-
-<p>A good example of that is the <code class="language-plaintext highlighter-rouge">ctim_catalog.json</code> benchmark, which contains some French language strings:</p>
-
-<figure class="highlight"><pre><code class="language-json" data-lang="json"><span class="err">//</span><span class="w"> </span><span class="err">...</span><span class="w">
-    </span><span class="nl">"areaNames"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-        </span><span class="nl">"205705993"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Arrière-scène central"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205705994"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1er balcon central"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205705995"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2ème balcon bergerie cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205705996"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2ème balcon bergerie jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205705998"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1er balcon bergerie jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205705999"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1er balcon bergerie cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706000"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Arrière-scène jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706001"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Arrière-scène cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706002"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2ème balcon jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706003"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2ème balcon cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706004"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2ème Balcon central"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706005"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1er balcon jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706006"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1er balcon cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706007"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Orchestre central"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706008"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Orchestre jardin"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"205706009"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Orchestre cour"</span><span class="p">,</span><span class="w">
-        </span><span class="nl">"342752287"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Zone physique secrète"</span><span class="w">
-    </span><span class="p">}</span><span class="err">,</span></code></pre></figure>
-
-<p>To make it easier to profile <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code> in this particular case, I added another micro-benchmark in the suite:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_encoding</span> <span class="s2">"mixed utf8"</span><span class="p">,</span> <span class="p">([(</span><span class="s2">"a"</span> <span class="o">*</span> <span class="mi">5000</span><span class="p">)</span> <span class="o">+</span> <span class="s2">"€"</span> <span class="o">+</span> <span class="p">(</span><span class="s2">"a"</span> <span class="o">*</span> <span class="mi">5000</span><span class="p">)]</span> <span class="o">*</span> <span class="mi">500</span><span class="p">)</span></code></pre></figure>
-
-<p>It’s a <code class="language-plaintext highlighter-rouge">10kiB</code> string, with just one character outside the ASCII range, and repeated <code class="language-plaintext highlighter-rouge">500</code> times to reduce
-the relative cost of the setup, giving me a profile with 91% of the time spent inside <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code>
-and a pretty clear heatmap:</p>
-
-<p><img src="/assets/articles/json-3/mixed-utf8-heatmap.png" alt="" /></p>
-
-<p>All this code <a href="https://github.com/ruby/json/pull/567">had recently been rewritten pretty much from scratch by Luke Shumaker</a> to resolve some
-potential licensing issues with the original code from the early days of the gem.
-It’s a fairly clear and straightforward implementation that first decodes UTF-8 bytes into 32-bit codepoints, then checks whether escaping is needed.
-If it is, we’d then copy all the scanned bytes into the buffer, followed by the escaped character. Otherwise, the loop would just continue onto the next
-codepoint.</p>
-
-<p>While this code is very clean and generic, with a good separation of the multiple levels of abstractions, such as bytes and codepoints,
-that would make it very easy to extend the escaping logic,
-it isn’t taking advantage of many assumptions <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code> could make to take shortcuts.</p>
-
-<p>One of these for instance is that there’s no point validating the UTF-8 encoding because Ruby did it for us and it’s impossible to end up inside
-<code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code> with invalid UTF-8.</p>
-
-<p>Another is that there are only two multi-byte characters we care about, and both start with the same <code class="language-plaintext highlighter-rouge">0xE2</code> byte, so the decoding into codepoints is a bit superfluous.</p>
-
-<p>So what can we do about it? Well, the same thing we do every day Pinky, eliminate conditionals.</p>
-
-<p>You can see <a href="https://github.com/ruby/json/pull/629">the full pull request</a>, but let me try to explain what it does.</p>
-
-<p>To replace the complex conditional that defines if the character needs to be escaped, we can re-use Mame’s lookup table, but with a twist.
-Instead of only storing a boolean, which tells us if the character needs to be escaped or not, we can also pack the character length.</p>
-
-<p>Wikipedia has <a href="https://en.wikipedia.org/wiki/UTF-8#Byte_map">a pretty good table to understand how UTF-8 works</a>:</p>
-
-<p><img src="/assets/articles/json-3/utf8-table.png" alt="" /></p>
-
-<p>If we turn this into a lookup table, with just one pointer offset we can efficiently figure out for each byte
-if it needs to be escaped or if we have to deal with a multi-byte character:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="k">const</span> <span class="kt">char</span> <span class="n">escape_table</span><span class="p">[</span><span class="mi">256</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="c1">// ASCII Control Characters</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="c1">// ASCII Characters</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span> <span class="c1">// '"'</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span> <span class="c1">// '\\'</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
-    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
-    <span class="c1">// Continuation byte</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-    <span class="c1">// First byte of a 2-byte code point</span>
-    <span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span>
-    <span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span>
-    <span class="c1">// First byte of a 4-byte code point</span>
-    <span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span>
-    <span class="c1">//First byte of a 4+byte code point</span>
-    <span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
-<span class="p">};</span></code></pre></figure>
-
-<p><code class="language-plaintext highlighter-rouge">0</code> here means a single-byte character that doesn’t require escaping, and <code class="language-plaintext highlighter-rouge">&gt;= 2</code> means a multi-byte character.
-We also have a second version of that table for the <code class="language-plaintext highlighter-rouge">script_safe: true</code> escaping mode, with forward-slash (<code class="language-plaintext highlighter-rouge">/</code>) set to <code class="language-plaintext highlighter-rouge">1</code>,
-and <code class="language-plaintext highlighter-rouge">convert_UTF8_to_JSON</code> takes the table to use as an argument.</p>
-
-<p>In pseudo-Ruby, the function would now look like this:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">convert_UTF8_to_JSON</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="n">lookup_table</span><span class="p">)</span>
-  <span class="n">buffer</span> <span class="o">=</span> <span class="o">+</span><span class="s2">""</span>
-  <span class="n">beginning</span> <span class="o">=</span> <span class="mi">0</span>
-  <span class="n">position</span> <span class="o">=</span> <span class="mi">0</span>
-  <span class="k">while</span> <span class="n">position</span> <span class="o">&lt;</span> <span class="n">string</span><span class="p">.</span><span class="nf">bytesize</span>
-    <span class="n">byte</span> <span class="o">=</span> <span class="n">string</span><span class="p">.</span><span class="nf">getbyte</span><span class="p">(</span><span class="n">position</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">escape</span> <span class="o">=</span> <span class="n">lookup_table</span><span class="p">[</span><span class="n">byte</span><span class="p">]</span>
-      <span class="k">case</span> <span class="n">escape</span>
-      <span class="k">when</span> <span class="mi">1</span>
-        <span class="c1"># Copy all the bytes we saw didn't need escaping</span>
-        <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="n">string</span><span class="p">.</span><span class="nf">byteslice</span><span class="p">(</span><span class="n">beginning</span><span class="o">..</span><span class="n">position</span><span class="p">)</span>
-
-        <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="n">escape</span><span class="p">(</span><span class="n">byte</span><span class="p">)</span>
-        <span class="n">position</span> <span class="o">+=</span> <span class="mi">1</span>
-        <span class="n">beginning</span> <span class="o">=</span> <span class="n">position</span>
-      <span class="k">when</span> <span class="mi">3</span>
-        <span class="k">if</span> <span class="n">script_safe?</span> <span class="o">&amp;&amp;</span> <span class="n">byte</span> <span class="o">==</span> <span class="mh">0xE2</span> <span class="o">&amp;&amp;</span> <span class="n">string</span><span class="p">.</span><span class="nf">getbyte</span><span class="p">(</span><span class="n">position</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="o">...</span>
-          <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="n">string</span><span class="p">.</span><span class="nf">byteslice</span><span class="p">(</span><span class="n">beginning</span><span class="o">..</span><span class="n">position</span><span class="p">)</span>
-          <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="n">escape</span><span class="p">(</span><span class="n">byte</span><span class="p">)</span>
-          <span class="n">position</span> <span class="o">+=</span> <span class="mi">3</span>
-          <span class="n">beginning</span> <span class="o">=</span> <span class="n">position</span>
-        <span class="k">end</span> 
-      <span class="k">else</span>
-        <span class="n">position</span> <span class="o">+=</span> <span class="n">escape</span>
-      <span class="k">end</span>
-    <span class="k">else</span>
-      <span class="n">position</span> <span class="o">+=</span> <span class="mi">1</span> 
-    <span class="k">end</span>
-  <span class="k">end</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>Since our assumption is that the overwhelming majority of characters don’t need escaping and are single bytes,
-for most iterations, we’re not even going to enter the <code class="language-plaintext highlighter-rouge">if escape</code> condition.</p>
-
-<p>This resulted in the new micro-benchmark being sped up by more than 2x:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding mixed utf8 (5003001 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    37.000 i/100ms
-Calculating -------------------------------------
-               after    439.128 (± 8.7%) i/s    (2.28 ms/i) -      2.183k in   5.012174s
-
-Comparison:
-              before:      194.6 i/s
-               after:      439.1 i/s - 2.26x  faster
-</code></pre></div></div>
-
-<p>And the function heatmap shows that we’re now down to pretty much just table lookups:</p>
-
-<p><img src="/assets/articles/json-3/mixed-utf8-heatmap-after.png" alt="" /></p>
-
-<p>However, this, unfortunately, didn’t translate in a particularly measurable gain on the macro-benchmarks, even <code class="language-plaintext highlighter-rouge">ctim_catalog.json</code>:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding citm_catalog.json (500298 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   132.000 i/100ms
-Calculating -------------------------------------
-               after      1.351k (± 0.5%) i/s  (739.92 μs/i) -      6.864k in   5.078953s
-
-Comparison:
-              before:     1330.9 i/s
-               after:     1351.5 i/s - 1.02x  faster
-</code></pre></div></div>
-
-<p>It doesn’t mean it wasn’t worth optimizing, but I misjudged how much time was spent dealing with this sort of mixed strings, and should have
-prioritized another hostspot. But I still merged the improvements, because benchmarks are just arbitrary workloads, someone out there might 
-significantly benefit from the improvement.</p>
-
-<p>I also realize now that I’m writing this, that I could have used something other than <code class="language-plaintext highlighter-rouge">3</code> in the lookup table for <code class="language-plaintext highlighter-rouge">0xE2</code> so that we don’t
-do any extra work for the 15 other bytes that mark the start of a 3-byte wide codepoint we’re not interested in, and also so that only the
-script safe version of the escape table would ever enter this branch of the code.</p>
-
-<h2 id="micro-benchmarks-shouldnt-matter-but-clearly-they-do">Micro-Benchmarks Shouldn’t Matter, But Clearly They Do</h2>
-
-<p>At that point, <code class="language-plaintext highlighter-rouge">ruby/json</code> was now on par with alternatives on macro-benchmarks, and I didn’t have any more immediate ideas on how to speed it up
-further.</p>
-
-<p>We were still very significantly slower on micro-benchmarks, but micro-benchmarks as explained before were simply dominated by allocations, and because
-of the API exposed by <code class="language-plaintext highlighter-rouge">ruby/json</code> we have to allocate one more object than <code class="language-plaintext highlighter-rouge">oj</code>, so it’s just impossible to match its performance there.</p>
-
-<p>But to me, that wasn’t a big deal, because micro-benchmarks are nowhere near indicative of real-world performance. As demonstrated above,
-they can be useful to help focus on optimizing a specific part of a larger system, but other than that, they don’t serve any actual purpose.
-Unless of course online flamewars on who got the fastest is your purpose.</p>
-
-<p>Additionally, if somehow you needed to generate a lot of small documents, you could use a lower-level API to elide that allocation,
-by reusing the <code class="language-plaintext highlighter-rouge">Generator::State</code> object:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">state</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">State</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="no">JSON</span><span class="p">.</span><span class="nf">dump_default_options</span><span class="p">)</span>
-<span class="n">state</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">ruby_obj</span><span class="p">)</span>
-<span class="n">state</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">another_obj</span><span class="p">)</span></code></pre></figure>
-
-<p>Using this API, <code class="language-plaintext highlighter-rouge">ruby/json</code> was very much on par with alternatives:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding small nested array (121 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-                  oj   223.200k i/100ms
-                json   167.997k i/100ms
-        json (reuse)   237.781k i/100ms
-Calculating -------------------------------------
-                  oj      2.295M (± 1.2%) i/s  (435.64 ns/i) -     11.606M in   5.056904s
-                json      1.742M (± 0.2%) i/s  (574.13 ns/i) -      8.736M in   5.015536s
-        json (reuse)      2.449M (± 0.2%) i/s  (408.28 ns/i) -     12.365M in   5.048249s
-
-Comparison:
-                  oj:  2295492.3 i/s
-        json (reuse):  2449294.2 i/s - 1.07x  faster
-                json:  1741765.4 i/s - 1.32x  slower
-
-
-== Encoding small hash (65 bytes)
-ruby 3.4.0rc1 (2024-12-12 master 29caae9991) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-                  oj   676.718k i/100ms
-                json   269.175k i/100ms
-        json (reuse)   500.536k i/100ms
-Calculating -------------------------------------
-                  oj      7.305M (± 0.3%) i/s  (136.90 ns/i) -     36.543M in   5.002601s
-                json      2.855M (± 0.2%) i/s  (350.23 ns/i) -     14.535M in   5.090715s
-        json (reuse)      5.371M (± 3.7%) i/s  (186.18 ns/i) -     27.029M in   5.041441s
-
-Comparison:
-                  oj:  7304845.2 i/s
-        json (reuse):  5371216.1 i/s - 1.36x  slower
-                json:  2855303.9 i/s - 2.56x  slower
-</code></pre></div></div>
-
-<p>So I started working on releasing <code class="language-plaintext highlighter-rouge">json 2.7.3</code>, and announced that from now on, I’d consider
-significant performance differences on <em>realistic</em> benchmarks a bug.</p>
-
-<p><img src="/assets/articles/json-3/tweet-release.png" alt="" /></p>
-
-<p>I specifically said <em>realistic</em>, because I had no intention to spent time optimizing for what I consider to be unrealistic micro-benchmarks.</p>
-
-<p>And yet, I pretty quickly got a response saying <code class="language-plaintext highlighter-rouge">ruby/json</code> was 3x slower than <code class="language-plaintext highlighter-rouge">oj</code>:</p>
-
-<p><img src="/assets/articles/json-3/tweet-response.png" alt="" /></p>
-
-<p>So clearly, no amount of communication on how micro-benchmarks don’t matter would be enough to change people’s perceptions.</p>
-
-<p>If I wanted the public perception to change, I had to make <code class="language-plaintext highlighter-rouge">ruby/json</code> faster on micro-benchmarks too, and that meant
-reducing the setup cost even further. But that’s a story for the next post.</p>
-
-<h2 id="to-be-continued">To Be Continued</h2>
-
-<p>In the next post, we’ll dive into how the setup cost was optimized further, and then at some point, we’ll have to
-start talking about optimizing the parser.</p>
-
-<p>Edit: <a href="/ruby/json/2024/12/29/optimizing-ruby-json-part-4.html">Part four is here</a>.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, I covered how I reimplemented JSON::Generator::State#configure in Ruby and some other changes. Unfortunately, it didn’t go as well as I initially thought.]]></summary></entry></feed>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, we established that as long as ruby/json wasn’t competitive on micro-benchmarks, public perception wouldn’t change. Since what made ruby/json appear so bad on micro-benchmarks was its setup cost, we had to find ways to reduce it further.]]></summary></entry></feed>
