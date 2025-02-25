@@ -180,13 +180,13 @@ You can tunnel one into the other just fine.</p>
 
 <p>In addition to not providing much if any benefit over LAN, HTTP/2 adds some extra complexity.</p>
 
-<p>First, the complexity of implementation, as HTTP/2 while not being crazy complicated at all, is still a fully encrypted and
-largely binary protocol, so it’s noticeably harder to implement than a plain text protocol like HTTP/1.1, and much harder
-to debug.</p>
+<p>First, the complexity of implementation, as HTTP/2 while not being crazy complicated at all, is still a largely binary
+protocol, so it’s much harder to debug.</p>
 
-<p>But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
+<p><del>But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
 certificate, that’s not insurmountable, but is an extra hassle compared to just using HTTP/1.1, unless of course for some
-reasons you are required to use only encrypted connections even over LAN.</p>
+reasons you are required to use only encrypted connections even over LAN.</del> Edit: The HTTP/2 spec doesn’t actually require
+encryption, so you can do unencrypted HTTP/2 inside your datacenter.</p>
 
 <p>So unless you are deploying to a single machine, hence don’t have a load balancer, bringing HTTP/2 all the way to
 the Ruby app server is significantly complexifying your infrastructure for little benefit.</p>
@@ -194,7 +194,8 @@ the Ruby app server is significantly complexifying your infrastructure for littl
 <p>And even if you are on a single machine, it’s probably to leave that concern to a reverse proxy, which will also take
 care of serving static assets, normalize inbound requests, and also probably fend off at least some malicious actors.</p>
 
-<p>There are numerous battle-tested reverse proxies such as Nginx, Caddy, etc, and they’re pretty simple to setup, might as well use these common middlewares rather than to try to do everything in a single Ruby application.</p>
+<p>There are numerous battle-tested reverse proxies such as Nginx, Caddy, etc, and they’re pretty simple to setup,
+might as well use these common middlewares rather than to try to do everything in a single Ruby application.</p>
 
 <p>But if you think a reverse proxy is too much complexity and you’d rather do without, there are now zero config solutions
 such as <a href="https://github.com/basecamp/thruster">thruster</a>, I haven’t tried it so I can’t vouch for it, but at least on
