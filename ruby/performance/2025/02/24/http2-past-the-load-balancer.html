@@ -130,7 +130,7 @@ were all downloaded from the same connection to not suffer as much from TCP slow
 <p>And that’s exactly the main thing HTTP/2 solved, by allowing multiplexing of requests inside a single TCP connection,
 solving the head-of-line blocking issue<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>.</p>
 
-<p>It also did a few other things, such as mandating the use of encryption and also compressing request and response headers
+<p>It also did a few other things, such as mandating the use of encryption<sup id="fnref:3"><a href="#fn:3" class="footnote" rel="footnote" role="doc-noteref">3</a></sup> and also compressing request and response headers
 with GZip, and “server push”, but multiplexing is really the big one.</p>
 
 <h2 id="why-it-doesnt-matter-over-lan">Why It Doesn’t Matter Over LAN</h2>
@@ -222,6 +222,9 @@ niche use cases, but overall, the lack of it isn’t hindering much of anything.
     </li>
     <li id="fn:2">
       <p>At the HTTP layer at least, HTTP/2 still suffers from some forms of head-of-line blocking in lower layers, but it is beyond the scope of this post. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:3">
+      <p>The RFC doesn’t actually requires encryption, but all browser implementations do. <a href="#fnref:3" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
     </li>
   </ol>
 </div>
