@@ -186,7 +186,7 @@ protocol, so it’s much harder to debug.</p>
 <p><del>But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
 certificate, that’s not insurmountable, but is an extra hassle compared to just using HTTP/1.1, unless of course for some
 reasons you are required to use only encrypted connections even over LAN.</del> Edit: The HTTP/2 spec doesn’t actually require
-encryption, so you can do unencrypted HTTP/2 inside your datacenter.</p>
+encryption, only browsers and some libraries, so you can do unencrypted HTTP/2 inside your datacenter.</p>
 
 <p>So unless you are deploying to a single machine, hence don’t have a load balancer, bringing HTTP/2 all the way to
 the Ruby app server is significantly complexifying your infrastructure for little benefit.</p>
