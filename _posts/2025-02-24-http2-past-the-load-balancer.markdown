@@ -85,7 +85,7 @@ were all downloaded from the same connection to not suffer as much from TCP slow
 And that's exactly the main thing HTTP/2 solved, by allowing multiplexing of requests inside a single TCP connection,
 solving the head-of-line blocking issue[^2].
 
-It also did a few other things, such as mandating the use of encryption and also compressing request and response headers
+It also did a few other things, such as mandating the use of encryption[^3] and also compressing request and response headers
 with GZip, and "server push", but multiplexing is really the big one.
 
 ## Why It Doesn't Matter Over LAN
@@ -135,13 +135,13 @@ You can tunnel one into the other just fine.
 
 In addition to not providing much if any benefit over LAN, HTTP/2 adds some extra complexity.
 
-First, the complexity of implementation, as HTTP/2 while not being crazy complicated at all, is still a fully encrypted and
-largely binary protocol, so it's noticeably harder to implement than a plain text protocol like HTTP/1.1, and much harder
-to debug.
+First, the complexity of implementation, as HTTP/2 while not being crazy complicated at all, is still a largely binary
+protocol, so it's much harder to debug.
 
-But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
+~~But also the complexity of deployment. HTTP/2 is fully encrypted, so you need all your application servers to have a key and
 certificate, that's not insurmountable, but is an extra hassle compared to just using HTTP/1.1, unless of course for some
-reasons you are required to use only encrypted connections even over LAN. 
+reasons you are required to use only encrypted connections even over LAN.~~ Edit: The HTTP/2 spec doesn't actually require
+encryption, only browsers and some libraries, so you can do unencrypted HTTP/2 inside your datacenter.
 
 So unless you are deploying to a single machine, hence don't have a load balancer, bringing HTTP/2 all the way to
 the Ruby app server is significantly complexifying your infrastructure for little benefit.
@@ -149,7 +149,8 @@ the Ruby app server is significantly complexifying your infrastructure for littl
 And even if you are on a single machine, it's probably to leave that concern to a reverse proxy, which will also take
 care of serving static assets, normalize inbound requests, and also probably fend off at least some malicious actors.
 
-There are numerous battle-tested reverse proxies such as Nginx, Caddy, etc, and they're pretty simple to setup, might as well use these common middlewares rather than to try to do everything in a single Ruby application.
+There are numerous battle-tested reverse proxies such as Nginx, Caddy, etc, and they're pretty simple to setup,
+might as well use these common middlewares rather than to try to do everything in a single Ruby application.
 
 But if you think a reverse proxy is too much complexity and you'd rather do without, there are now zero config solutions
 such as [thruster](https://github.com/basecamp/thruster), I haven't tried it so I can't vouch for it, but at least on
@@ -172,3 +173,4 @@ Note that I haven't mentioned HTTP/3, but while the protocol is very different, 
 
 [^1]: Minifying and bundling still improve load time with HTTP/2, fewer requests and fewer bytes transferred are still positive, so they're still useful, but it's no longer critical to achieve a decent experience.
 [^2]: At the HTTP layer at least, HTTP/2 still suffers from some forms of head-of-line blocking in lower layers, but it is beyond the scope of this post.
+[^3]: The RFC doesn't actually requires encryption, but all browser implementations do.
