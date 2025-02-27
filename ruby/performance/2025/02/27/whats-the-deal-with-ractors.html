@@ -206,7 +206,7 @@ even if you never attempted to mutate it.</p>
 e.g.:</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Something</span>
-  <span class="no">DEFAULTS</span> <span class="o">=</span> <span class="p">{</span> <span class="ss">config: </span><span class="mi">1</span> <span class="p">}</span> <span class="c1"># You'd need to explictly free that Hash.</span>
+  <span class="no">DEFAULTS</span> <span class="o">=</span> <span class="p">{</span> <span class="ss">config: </span><span class="mi">1</span> <span class="p">}</span> <span class="c1"># You'd need to explictly freeze that Hash.</span>
 
   <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="n">options</span> <span class="o">=</span> <span class="p">{})</span>
     <span class="vi">@options</span> <span class="o">=</span> <span class="no">DEFAULTS</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="n">options</span><span class="p">)</span> <span class="c1"># =&gt; Ractor::IsolationError</span>
