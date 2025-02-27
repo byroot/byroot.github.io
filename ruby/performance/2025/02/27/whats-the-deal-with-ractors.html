@@ -370,7 +370,7 @@ and instead, each ractor has its own “GVL”. But this isn’t actually true.<
 <p>There are still a significant number of routines in the Ruby virtual machine that do lock all Ractors.
 Let me show you an example.</p>
 
-<p>Imagine you have 5 million small JSON documents to parse:</p>
+<p>Imagine you have 5 millions small JSON documents to parse:</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># frozen_string_literal: true</span>
 <span class="nb">require</span> <span class="s1">'json'</span>
