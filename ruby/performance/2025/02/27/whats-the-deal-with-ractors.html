@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>What’s The Deal With Ractors? | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="What’s The Deal With Ractors?" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ractors." />
+<meta property="og:description" content="I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ractors." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2025-02-27T08:03:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="What’s The Deal With Ractors?" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2025-02-27T08:03:51+00:00","datePublished":"2025-02-27T08:03:51+00:00","description":"I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, Ractors.","headline":"What’s The Deal With Ractors?","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html"},"url":"https://byroot.github.io/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">What&#39;s The Deal With Ractors?</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2025-02-27T08:03:51+00:00" itemprop="datePublished">Feb 27, 2025
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
+is like it is, and how I see its future.
+But before I can get to that, I think I need to share my mental model on a few things, in this case, Ractors.</p>
+
+<p>When Ractors were announced 4 or 5 years ago, many people expected we’d quickly see a Ractor-based web server,
+some sort of Puma but with Ractors instead of threads.
+Yet this still hasn’t happened, except for a few toy projects and experiments.</p>
+
+<p>Since this post series is about giving context to Ruby HTTP servers design constraints, I think it makes sense to share
+my view on Ractors viability.</p>
+
+<h2 id="what-are-they-supposed-to-be">What Are They Supposed to Be?</h2>
+
+<p>The core idea of Ractors is relatively simple, the goal is to provide a primitive that allows true in-process parallelism,
+while still not fully <a href="/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html">removing the GVL</a>.</p>
+
+<p>As I mentioned in depth in a previous post, operating without a GVL would require synchronization (mutexes) on every
+mutable object that is shared between threads.
+Ractors’ solution to that problem is not to allow sharing of mutable objects between Ractors.
+Instead, they can send each other copies of objects, or in some cases “move” an object to another Ractor, which means they
+can no longer access it themselves.</p>
+
+<p>This isn’t unique to Ruby, it’s largely inspired by the <a href="https://en.wikipedia.org/wiki/Actor_model">Actor model</a>, like
+the Ractor name suggests, and many languages in the same category as Ruby have a similar construct or are working on one.
+For instance, JavaScript has <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">Web Workers</a>,
+and Python has been working on <a href="https://peps.python.org/pep-0734/">subinterpreters</a> for a while.</p>
+
+<p>And it’s no surprise because it makes total sense from a language evolution perspective.
+If you have a language that has prevented in-process parallelism for a long time, a Ractor-like API allows you to introduce (constrained) parallelism in a way that isn’t going to break existing code, without having to add mutexes everywhere.</p>
+
+<p>But even in languages that have free threading, shared mutable state parallelism is seen as a major foot gun by many,
+and message-passing parallelism is often deemed safer, for instance, channels in Go, etc.</p>
+
+<p>Applied to Ruby, this means that instead of having a single Global VM Lock that synchronizes all threads,
+you’d instead have many Ractor Locks, that each synchronize all threads that belong to a given Ractor.
+So in a way, since the Ruby 3.0 release that introduced Ractors, on paper the GVL is somewhat already gone,
+even though as we’ll see later, it’s more subtle than that.</p>
+
+<p>And this can easily be confirmed experimentally with a simple test script:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"benchmark"</span>
+<span class="no">Warning</span><span class="p">[</span><span class="ss">:experimental</span><span class="p">]</span> <span class="o">=</span> <span class="kp">false</span>
+
+<span class="k">def</span> <span class="nf">fibonacci</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+  <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">||</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">1</span>
+    <span class="n">n</span>
+  <span class="k">else</span>
+    <span class="n">fibonacci</span><span class="p">(</span><span class="n">n</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">+</span> <span class="n">fibonacci</span><span class="p">(</span><span class="n">n</span> <span class="o">-</span> <span class="mi">2</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">synchronous_fib</span><span class="p">(</span><span class="n">concurrency</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
+  <span class="n">concurrency</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+    <span class="n">fibonacci</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">threaded_fib</span><span class="p">(</span><span class="n">concurrency</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
+  <span class="n">concurrency</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+    <span class="no">Thread</span><span class="p">.</span><span class="nf">new</span> <span class="p">{</span> <span class="n">fibonacci</span><span class="p">(</span><span class="n">n</span><span class="p">)</span> <span class="p">}</span>
+  <span class="k">end</span><span class="p">.</span><span class="nf">map</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:value</span><span class="p">)</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">ractor_fib</span><span class="p">(</span><span class="n">concurrency</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
+  <span class="n">concurrency</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+    <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">n</span><span class="p">)</span> <span class="p">{</span> <span class="o">|</span><span class="n">num</span><span class="o">|</span> <span class="n">fibonacci</span><span class="p">(</span><span class="n">num</span><span class="p">)</span> <span class="p">}</span>
+  <span class="k">end</span><span class="p">.</span><span class="nf">map</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:take</span><span class="p">)</span>
+<span class="k">end</span>
+
+<span class="nb">p</span> <span class="p">[</span><span class="ss">:sync</span><span class="p">,</span> <span class="no">Benchmark</span><span class="p">.</span><span class="nf">realtime</span> <span class="p">{</span> <span class="n">synchronous_fib</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">38</span><span class="p">)</span> <span class="p">}.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)]</span>
+<span class="nb">p</span> <span class="p">[</span><span class="ss">:thread</span><span class="p">,</span> <span class="no">Benchmark</span><span class="p">.</span><span class="nf">realtime</span> <span class="p">{</span> <span class="n">threaded_fib</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">38</span><span class="p">)</span> <span class="p">}.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)]</span>
+<span class="nb">p</span> <span class="p">[</span><span class="ss">:ractor</span><span class="p">,</span> <span class="no">Benchmark</span><span class="p">.</span><span class="nf">realtime</span> <span class="p">{</span> <span class="n">ractor_fib</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">38</span><span class="p">)</span> <span class="p">}.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)]</span>
+</code></pre></div></div>
+
+<p>Here we use the Fibonacci function as a classic CPU-bound workload and benchmark it in 3 different ways.
+First without any concurrency, just serially, then concurrently using 5 threads, and finally concurrently using 5 Ractors.</p>
+
+<p>If I run this script on my machine, I get these results:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">[</span><span class="ss">:sync</span><span class="p">,</span> <span class="mf">2.26</span><span class="p">]</span>
+<span class="p">[</span><span class="ss">:thread</span><span class="p">,</span> <span class="mf">2.29</span><span class="p">]</span>
+<span class="p">[</span><span class="ss">:ractor</span><span class="p">,</span> <span class="mf">0.68</span><span class="p">]</span>
+</code></pre></div></div>
+
+<p>As we already knew, using threads for CPU-bound workloads doesn’t make anything faster because of the GVL, however using Ractors we can benefit from some parallelism.
+So this script proves that, at least to some extent, the Ruby VM can execute code in parallel, hence the GVL is not so
+global anymore.</p>
+
+<p>But as always, the devil is in the details.
+Running a pure function like <code class="language-plaintext highlighter-rouge">fibonacci</code>, that only deals with immutable integers, in parallel is one thing, running
+a full-on web application, with hundreds of gems and a lot of global states, in parallel is another.</p>
+
+<h2 id="shareable-objects">Shareable Objects</h2>
+
+<p>Where Ruby ractors are significantly different from most similar features in other languages, is that Ractors share the global
+namespace with other Ractors.</p>
+
+<p>To create a <code class="language-plaintext highlighter-rouge">WebWorker</code> in JavaScript, you have to provide an entry script:</p>
+
+<div class="language-javascript highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">myWorker</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">Worker</span><span class="p">(</span><span class="dl">"</span><span class="s2">worker.js</span><span class="dl">"</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>WebWorkers are created from a blank slate and have their own namespace, they don’t automatically inherit all the constants
+defined by the caller.</p>
+
+<p>Similarly, Python’s sub-interpreters as defined in PEP 734, start with a clean slate.</p>
+
+<p>So both JavaScript’s WebWorker and Python’s sub-interpreters have very limited sharing capabilities and are more akin to light subprocesses, but with an API that allows passing each other’s objects without needing to serialize them.</p>
+
+<p>Ruby’s Ractors are more ambitious than that.
+From a secondary Ractor, you have visibility on all the constants and methods defined by the main Ractor:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">INT</span> <span class="o">=</span> <span class="mi">1</span>
+
+<span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="nb">p</span> <span class="no">INT</span> <span class="c1"># prints 1</span>
+<span class="k">end</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<p>But since Ruby cannot allow concurrent access to mutable objects, it has to limit this in some way:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">HASH</span> <span class="o">=</span> <span class="p">{}</span>
+
+<span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="nb">p</span> <span class="no">HASH</span> <span class="c1"># Ractor::IsolationError</span>
+  <span class="c1"># can not access non-shareable objects in constant Object::HASH by non-main Ractor.</span>
+<span class="k">end</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<p>So all objects are divided into shareable and unshareable objects, and only shareable ones can be accessed by secondary ractors.
+In general, objects that are frozen, or inherently immutable are shareable as long as they don’t reference a non-shareable object.</p>
+
+<p>In addition, some other operations, such as assigning class instance variables aren’t allowed from any ractor other than
+the main one:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span> 
+  <span class="k">class</span> <span class="nc">Foo</span>
+    <span class="k">class</span> <span class="o">&lt;&lt;</span> <span class="nb">self</span>
+      <span class="nb">attr_accessor</span> <span class="ss">:bar</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+  <span class="no">Foo</span><span class="p">.</span><span class="nf">bar</span> <span class="o">=</span> <span class="mi">1</span> <span class="c1"># Ractor::IsolationError</span>
+  <span class="c1"># can not set instance variables of classes/modules by non-main Ractors</span>
+<span class="k">end</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<p>So Ractors’ design is a bit of a double-edged sword.
+On one hand, by having access to all the loaded constants and methods, you don’t have to load the same code multiple
+times, and it’s easier to pass complex objects from one ractor to the other, but it also means that not all code may be
+able to run from a secondary ractor.
+Actually, a lot, if not most, existing Ruby code can’t run from a secondary Ractor.
+Something as mundane as accessing a constant that is technically mutable, like a String or Hash, will raise an <code class="language-plaintext highlighter-rouge">IsolationError</code>,
+even if you never attempted to mutate it.</p>
+
+<p>Something as mundane and idiomatic as having a constant with some defaults is enough to make your code not Ractor compatible,
+e.g.:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Something</span>
+  <span class="no">DEFAULTS</span> <span class="o">=</span> <span class="p">{</span> <span class="ss">config: </span><span class="mi">1</span> <span class="p">}</span> <span class="c1"># You'd need to explictly free that Hash.</span>
+
+  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="n">options</span> <span class="o">=</span> <span class="p">{})</span>
+    <span class="vi">@options</span> <span class="o">=</span> <span class="no">DEFAULTS</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="n">options</span><span class="p">)</span> <span class="c1"># =&gt; Ractor::IsolationError</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>That’s one of the main reasons why a Ractor-based web server isn’t really practical for anything more than a trivial application.</p>
+
+<p>If you take Rails as an example, there is quite a lot of legitimate global states, such as the routes, the database schema
+cache, or the logger. Some of it could probably be frozen to be accessible by secondary ractors, but for things
+like the logger, the Active Record connection pool, and various caches, it’s tricky.</p>
+
+<p>To be honest, I’m not even sure how you could implement a Ractor safe connection pool with the current API, but I may
+be missing something. Actually, that’s probably a good illustration of the problem, let’s try to implement a Ractor-compatible connection pool.</p>
+
+<h2 id="a-ractor-aware-connection-pool">A Ractor Aware Connection Pool</h2>
+
+<p>The first challenge is that you’d need to be able to move connections from one ractor to another, something like:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"trilogy"</span>
+
+<span class="n">db_client</span> <span class="o">=</span> <span class="no">Trilogy</span><span class="p">.</span><span class="nf">new</span>
+<span class="n">ractor</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="p">{</span> <span class="n">receive</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span> <span class="p">}</span>
+<span class="n">ractor</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="n">db_client</span><span class="p">,</span> <span class="ss">move: </span><span class="kp">true</span><span class="p">)</span>
+<span class="nb">p</span> <span class="n">ractor</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<p>If you try that you’ll get a <code class="language-plaintext highlighter-rouge">can not move Trilogy object. (Ractor::Error)</code>.
+This is because as far as I’m aware, there is no way for classes implemented in C to define that they can be moved to
+another ractor. Even the ones defined in Ruby’s core, like <code class="language-plaintext highlighter-rouge">Time</code> can’t:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span><span class="p">{}.</span><span class="nf">send</span><span class="p">(</span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span><span class="p">,</span> <span class="ss">move: </span><span class="kp">true</span><span class="p">)</span> <span class="c1"># can not move Time object. (Ractor::Error)</span>
+</code></pre></div></div>
+
+<p>The only thing C extensions can do is define that a type can be shared between Ractors once it is frozen, using the
+<code class="language-plaintext highlighter-rouge">RUBY_TYPED_FROZEN_SHAREABLE</code> flag, but that wouldn’t make sense for a database connection.</p>
+
+<p>A way around this is to encapsulate that object inside its own Ractor:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"trilogy"</span>
+
+<span class="k">class</span> <span class="nc">RactorConnection</span>
+  <span class="k">def</span> <span class="nf">initialize</span>
+    <span class="vi">@ractor</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+      <span class="n">client</span> <span class="o">=</span> <span class="no">Trilogy</span><span class="p">.</span><span class="nf">new</span>
+      <span class="k">while</span> <span class="n">args</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">receive</span>
+        <span class="n">ractor</span><span class="p">,</span> <span class="nb">method</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span> <span class="o">=</span> <span class="n">args</span>
+        <span class="n">ractor</span><span class="p">.</span><span class="nf">send</span> <span class="n">client</span><span class="p">.</span><span class="nf">public_send</span><span class="p">(</span><span class="nb">method</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">)</span>
+      <span class="k">end</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">query</span><span class="p">(</span><span class="n">sql</span><span class="p">)</span>
+    <span class="vi">@ractor</span><span class="p">.</span><span class="nf">send</span><span class="p">([</span><span class="no">Ractor</span><span class="p">.</span><span class="nf">current</span><span class="p">,</span> <span class="ss">:query</span><span class="p">,</span> <span class="n">sql</span><span class="p">],</span> <span class="ss">move: </span><span class="kp">true</span><span class="p">)</span>
+    <span class="no">Ractor</span><span class="p">.</span><span class="nf">receive</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>When we need to perform an operation on the object, we send a message telling it what to do,
+and give it our own ractor so it can send the result back.</p>
+
+<p>It really is a huge hack, and perhaps there is a proper way to do this, but I don’t know of any.</p>
+
+<p>Now that we have a “way” to pass database connections across ractors, we need to implement a pool.
+Here again, it is tricky, because by definition a pool is a mutable data structure, hence it can’t
+be referenced by multiple ractors.</p>
+
+<p>So we somewhat need to use the same hack again:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">RactorConnectionPool</span>
+  <span class="k">def</span> <span class="nf">initialize</span>
+    <span class="vi">@ractor</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+      <span class="n">pool</span> <span class="o">=</span> <span class="p">[]</span>
+      <span class="k">while</span> <span class="n">args</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">receive</span>
+        <span class="n">ractor</span><span class="p">,</span> <span class="nb">method</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span> <span class="o">=</span> <span class="n">args</span>
+        <span class="k">case</span> <span class="nb">method</span>
+        <span class="k">when</span> <span class="ss">:checkout</span>
+          <span class="n">ractor</span><span class="p">.</span><span class="nf">send</span><span class="p">(</span><span class="n">pool</span><span class="p">.</span><span class="nf">pop</span> <span class="o">||</span> <span class="no">RactorConnection</span><span class="p">.</span><span class="nf">new</span><span class="p">)</span>
+        <span class="k">when</span> <span class="ss">:checkin</span>
+          <span class="n">pool</span> <span class="o">&lt;&lt;</span> <span class="n">args</span><span class="p">.</span><span class="nf">first</span>
+        <span class="k">end</span>
+      <span class="k">end</span>
+    <span class="k">end</span>
+    <span class="nb">freeze</span> <span class="c1"># so we're shareable</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">checkout</span>
+    <span class="vi">@ractor</span><span class="p">.</span><span class="nf">send</span><span class="p">([</span><span class="no">Ractor</span><span class="p">.</span><span class="nf">current</span><span class="p">,</span> <span class="ss">:checkout</span><span class="p">],</span> <span class="ss">move: </span><span class="kp">true</span><span class="p">)</span>
+    <span class="no">Ractor</span><span class="p">.</span><span class="nf">receive</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">checkin</span><span class="p">(</span><span class="n">connection</span><span class="p">)</span>
+    <span class="vi">@ractor</span><span class="p">.</span><span class="nf">send</span><span class="p">([</span><span class="no">Ractor</span><span class="p">.</span><span class="nf">current</span><span class="p">,</span> <span class="ss">:checkin</span><span class="p">,</span> <span class="n">connection</span><span class="p">],</span> <span class="ss">move: </span><span class="kp">true</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="no">CONNECTION_POOL</span> <span class="o">=</span> <span class="no">RactorConnectionPool</span><span class="p">.</span><span class="nf">new</span>
+
+<span class="n">ractor</span> <span class="o">=</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="n">db_client</span> <span class="o">=</span> <span class="no">CONNECTION_POOL</span><span class="p">.</span><span class="nf">checkout</span>
+  <span class="n">result</span> <span class="o">=</span> <span class="n">db_client</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span>
+  <span class="no">CONNECTION_POOL</span><span class="p">.</span><span class="nf">checkin</span><span class="p">(</span><span class="n">db_client</span><span class="p">)</span>
+  <span class="n">result</span>
+<span class="k">end</span>
+<span class="nb">p</span> <span class="n">ractor</span><span class="p">.</span><span class="nf">take</span><span class="p">.</span><span class="nf">to_a</span> <span class="c1"># =&gt; [[1]]</span>
+</code></pre></div></div>
+
+<p>I’m not going to go further, as this implementation is quite ridiculous, I think this is enough to make my point.</p>
+
+<p>For Ractors to be viable to run a full-on application in, Ruby would need to provide at least a few basic data structures
+that would be shareable across ractors, so that we can implement useful constructs like connection pools.</p>
+
+<p>Perhaps some <code class="language-plaintext highlighter-rouge">Ractor::Queue</code>, maybe even some <code class="language-plaintext highlighter-rouge">Ractor::ConcurrentMap</code>, and more importantly, C extensions
+would need to be able to make their types movable.</p>
+
+<h2 id="what-ractors-could-be-useful-for">What Ractors Could Be Useful For</h2>
+
+<p>So while I don’t believe it makes sense to try to run a full application inside Ractors, I still think Ractors could be
+very useful even with their current limitations.</p>
+
+<p>For instance, in my previous post about the GVL, I mentioned how some gems do have background threads, one example being
+<a href="https://github.com/Shopify/statsd-instrument/blob/6fd8c49d50803bbccfcc11b195f9e334a6e835e9/lib/statsd/instrument/batched_sink.rb#L163"><code class="language-plaintext highlighter-rouge">statsd-instrument</code></a>,
+but there are others like open telemetry and such.</p>
+
+<p>These gems all have a similar pattern, they collect information in memory, and periodically serialize and send it down
+the wire. Currently, this is done using a thread, which is sometimes problematic because the serialization part holds
+the GVL, hence can slow down the threads that are responding to incoming traffic.</p>
+
+<p>This would be an excellent pattern for Ractors, as they’d be able to do the same thing without holding the main Ractor’s
+GVL and it’s mostly fire and forget.</p>
+
+<p>I only mean this as an example I know well, I’m sure there’s more.
+The key point is that while Ractors in their current form can hardly be used as the main execution primitive, they can certainly be used for parallelizing lower-level functions inside libraries.</p>
+
+<p>But unfortunately, in practice, it’s not really a good idea to do that today.</p>
+
+<h2 id="also-there-are-many-implementation-issues">Also There Are Many Implementation Issues</h2>
+
+<p>If you attempt to use Ractors, Ruby will display a warning:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>warning: Ractor is experimental, and the behavior may change in future versions of Ruby!
+Also there are many implementation issues.
+</code></pre></div></div>
+
+<p>And that’s not an overstatement.
+As I’m writing this article, there are 74 open issues about Ractors.
+A handful are feature requests or minor things, but a significant part are really critical bugs such as
+segmentation faults, or deadlocks.
+As such, one cannot reasonably use Ractors for anything more than small experiments.</p>
+
+<p>Another major reason not to use them even in these cases that are perfect for them, is that quite often, they’re not
+really running in parallel as they’re supposed to.</p>
+
+<h2 id="one-more-global-lock">One More Global Lock</h2>
+
+<p>As mentioned previously, on paper, the true Global VM Lock is supposedly gone since the introduction of Ractors in Ruby 3.0
+and instead, each ractor has its own “GVL”. But this isn’t actually true.</p>
+
+<p>There are still a significant number of routines in the Ruby virtual machine that do lock all Ractors.
+Let me show you a few examples.</p>
+
+<p>Imagine you have 5 million small JSON documents to parse:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># frozen_string_literal: true</span>
+<span class="nb">require</span> <span class="s1">'json'</span>
+
+<span class="n">document</span> <span class="o">=</span> <span class="o">&lt;&lt;~</span><span class="no">JSON</span><span class="sh">
+  {"a": 1, "b": 2, "c": 3, "d": 4}
+</span><span class="no">JSON</span>
+
+<span class="mi">5_000_000</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
+  <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="n">document</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Doing so serially takes about 1.3 seconds on my machine:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span><span class="nb">time </span>ruby <span class="nt">--yjit</span> /tmp/j.rb
+
+real	0m1.292s
+user	0m1.251s
+sys	0m0.018s
+</code></pre></div></div>
+
+<p>As unrealistic as this script may look, it should be a perfect use case for Ractor. In theory, we could spawn
+5 Ractors, have each of them parse 1 million documents, and be done in 1/5th of the time:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># frozen_string_literal: true</span>
+<span class="nb">require</span> <span class="s1">'json'</span>
+
+<span class="no">DOCUMENT</span> <span class="o">=</span> <span class="o">&lt;&lt;~</span><span class="no">JSON</span><span class="sh">
+  {"a": 1, "b": 2, "c": 3, "d": 4}
+</span><span class="no">JSON</span>
+
+<span class="n">ractors</span> <span class="o">=</span> <span class="mi">5</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+  <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+    <span class="mi">1_000_000</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
+      <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="no">DOCUMENT</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+<span class="n">ractors</span><span class="p">.</span><span class="nf">each</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:take</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>But somehow, it’s over twice as slow as doing it serially:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/tmp/jr.rb:9: warning: Ractor is experimental, and the behavior may change <span class="k">in </span>future versions of Ruby! Also there are many implementation issues.
+
+real	0m3.191s
+user	0m3.055s
+sys	0m6.755s
+</code></pre></div></div>
+
+<p>What’s happening is that in this particular example, JSON has to acquire the true remaining VM lock for each key in
+the JSON document.
+With 4 keys, a million times, it means each Ractor has to acquire and release a lock 4 million times.
+It’s almost surprising it only takes 3 seconds to do so.</p>
+
+<p>For the keys, it needs to acquire the GVL because it inserts string keys into a Hash, and as I explained in
+<a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html">Optimizing Ruby’s JSON, Part 6</a>, when you do that Ruby will
+look inside the interned string table to search for an equivalent string that is already interned.</p>
+
+<p>I used the following Ruby pseudo-code to explain how it works:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Hash</span>
+  <span class="k">def</span> <span class="nf">[]=</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">entry</span> <span class="o">=</span> <span class="n">find_entry</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+      <span class="n">entry</span><span class="p">.</span><span class="nf">value</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">else</span>
+      <span class="k">if</span> <span class="n">key</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">String</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">key</span><span class="p">.</span><span class="nf">interned?</span>
+        <span class="k">if</span> <span class="n">interned_str</span> <span class="o">=</span> <span class="o">::</span><span class="no">RubyVM</span><span class="o">::</span><span class="no">INTERNED_STRING_TABLE</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+          <span class="n">key</span> <span class="o">=</span> <span class="n">interned_str</span>
+        <span class="k">elsif</span> <span class="o">!</span><span class="n">key</span><span class="p">.</span><span class="nf">frozen?</span>
+          <span class="n">key</span> <span class="o">=</span> <span class="n">key</span><span class="p">.</span><span class="nf">dup</span><span class="p">.</span><span class="nf">freeze</span>
+        <span class="k">end</span>
+      <span class="k">end</span>
+
+      <span class="nb">self</span> <span class="o">&lt;&lt;</span> <span class="no">Entry</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>In the above example <code class="language-plaintext highlighter-rouge">::RubyVM::INTERNED_STRING_TABLE</code> is a regular hash that could cause a crash if it was accessed
+concurrently, so Ruby still acquires the GVL to look it up.</p>
+
+<p>If you look at <a href="https://github.com/ruby/ruby/blob/d4b8da66ca9533782d2fed9762783c3e560f2998/string.c#L538-L570"><code class="language-plaintext highlighter-rouge">register_fstring</code> in <code class="language-plaintext highlighter-rouge">string.c</code></a>
+(<code class="language-plaintext highlighter-rouge">fstring</code> is the internal name for interned strings), you can see the very obvious <code class="language-plaintext highlighter-rouge">RB_VM_LOCK_ENTER()</code> and
+<code class="language-plaintext highlighter-rouge">RB_VM_LOCK_LEAVE()</code> calls.</p>
+
+<p>As I’m writing this, there are 42 remaining calls to <code class="language-plaintext highlighter-rouge">RB_VM_LOCK_ENTER()</code> in the Ruby VM, many are very rarely hit and not
+much of a problem, but this one demonstrates how even when you have what is a perfect use case for Ractors, besides their constraints,
+it may still not be advantageous to use them yet.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>In his RubyKaigi 2023 talk about the state of Ractors, Koichi Sadasa who’s the main driving force behind them, mentioned that
+Ractors suffered from <a href="https://youtu.be/Id706gYi3wk?si=DaECpXT2lEMO7kiA&amp;t=878">some sort of a chicken and egg problem</a>.
+By his own admission, Ractors suffer from many bugs, and often don’t actually deliver the performance they’re supposed to,
+hence very few people use them enough to be able to provide feedback on the API, and I’m afraid that almost two years later,
+my assessment is the same on bugs and performance.</p>
+
+<p>If Ractors bugs and performance problems were fixed, it’s likely that some of the provided feedback would lead to some of their
+restrictions to be lifted over time.
+I personally don’t think they’ll ever have little enough restrictions for it to be practical to run a full application inside a Ractor, hence that a Ractor-based web server would make sense, but who knows, I’d be happy to be proven wrong.</p>
+
+<p>Ultimately, even if you are among the people who believe that Ruby should just try to remove its GVL for real rather
+than to spend resources on Ractors, let me say that a large part of the work needed to make Ractors perform well,
+like a concurrent hash map for interned strings, is work that would be needed to enable free threading anyway, so it’s not
+wasted.</p>
+
+  </div><a class="u-url" href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
