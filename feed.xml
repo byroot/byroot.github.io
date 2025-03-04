@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-03-04T12:02:27+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">The Pitchfork Story</title><link href="https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story.html" rel="alternate" type="text/html" title="The Pitchfork Story" /><published>2025-03-04T10:03:51+00:00</published><updated>2025-03-04T10:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story.html"><![CDATA[<p>A bit more than two years ago, as part of my work in Shopify’s Ruby and Rails Infrastructure team,
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-03-04T15:59:24+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">The Pitchfork Story</title><link href="https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story.html" rel="alternate" type="text/html" title="The Pitchfork Story" /><published>2025-03-04T10:03:51+00:00</published><updated>2025-03-04T10:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/03/04/the-pitchfork-story.html"><![CDATA[<p>A bit more than two years ago, as part of my work in Shopify’s Ruby and Rails Infrastructure team,
 I released a new Ruby HTTP server called <a href="https://github.com/Shopify/pitchfork">Pitchfork</a>.</p>
 
 <p>It has a bit of an unusual design and makes hard tradeoffs, so I’d like to explain the thought process behind
@@ -375,7 +375,7 @@ and as I explained in <a href="/ruby/performance/2025/02/09/guard-rails-are-not-
 if anything goes wrong, I want to be able to terminate any worker safely.</p>
 
 <p>In this case, what happens if <code class="language-plaintext highlighter-rouge">worker 0</code> is terminated or crashes by itself? Other workers end up orphaned, which in POSIX
-means that they’ll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that a major resiliency issue,
+means that they’ll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that’s a major resiliency issue,
 as Puma needs the workers to be its direct children for various things.
 For this to be resilient, you’d need to fork these workers as siblings, not children, and that’s just not possible.</p>
 
@@ -657,7 +657,7 @@ mold, and respawn all other workers from it:</p>
 1007       \_ pitchfork worker 1, generation 2
 </code></pre></div></div>
 
-<p>All of this of course being done progressively, one worker at a time, to not significantly reduce the capacity
+<p>All of this of course being done progressively, one worker at a time, to avoid significantly reducing the capacity
 of the server.</p>
 
 <h2 id="benchmarking">Benchmarking</h2>

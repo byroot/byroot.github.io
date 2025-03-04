@@ -425,7 +425,7 @@ and as I explained in <a href="/ruby/performance/2025/02/09/guard-rails-are-not-
 if anything goes wrong, I want to be able to terminate any worker safely.</p>
 
 <p>In this case, what happens if <code class="language-plaintext highlighter-rouge">worker 0</code> is terminated or crashes by itself? Other workers end up orphaned, which in POSIX
-means that they’ll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that a major resiliency issue,
+means that they’ll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that’s a major resiliency issue,
 as Puma needs the workers to be its direct children for various things.
 For this to be resilient, you’d need to fork these workers as siblings, not children, and that’s just not possible.</p>
 
@@ -707,7 +707,7 @@ mold, and respawn all other workers from it:</p>
 1007       \_ pitchfork worker 1, generation 2
 </code></pre></div></div>
 
-<p>All of this of course being done progressively, one worker at a time, to not significantly reduce the capacity
+<p>All of this of course being done progressively, one worker at a time, to avoid significantly reducing the capacity
 of the server.</p>
 
 <h2 id="benchmarking">Benchmarking</h2>
