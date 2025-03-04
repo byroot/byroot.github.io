@@ -394,7 +394,7 @@ and as I explained in [my post about how guardrails are important](/ruby/perform
 if anything goes wrong, I want to be able to terminate any worker safely.
 
 In this case, what happens if `worker 0` is terminated or crashes by itself? Other workers end up orphaned, which in POSIX
-means that they'll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that a major resiliency issue,
+means that they'll be adopted by the PID 1, AKA the init process, not the Puma cluster process and that's a major resiliency issue,
 as Puma needs the workers to be its direct children for various things.
 For this to be resilient, you'd need to fork these workers as siblings, not children, and that's just not possible.
 
