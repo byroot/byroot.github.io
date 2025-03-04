@@ -683,7 +683,7 @@ PID     Proctitle
 1007       \_ pitchfork worker 1, generation 2
 ```
 
-All of this of course being done progressively, one worker at a time, to not significantly reduce the capacity
+All of this of course being done progressively, one worker at a time, to avoid significantly reducing the capacity
 of the server.
 
 ## Benchmarking
