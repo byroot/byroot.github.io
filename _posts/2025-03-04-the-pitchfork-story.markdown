@@ -354,7 +354,7 @@ Given all these types of caches are stored right next to each other, as soon as 
 
 Yet another suggestion was to serve traffic for a while from the Unicorn master process, but I didn't like this
 idea because that process is in charge of overseeing and coordinating all the workers, it can't afford to render
-requests, as I can't be timed out.
+requests, as it can't be timed out.
 
 ## Puma's Fork Worker
 
