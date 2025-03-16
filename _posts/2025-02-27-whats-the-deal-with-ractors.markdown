@@ -439,7 +439,7 @@ it may still not be advantageous to use them yet.
 
 ## Conclusion
 
-In his RubyKaigi 2023 talk about the state of Ractors, Koichi Sadasa who's the main driving force behind them, mentioned that
+In his RubyKaigi 2023 talk about the state of Ractors, Koichi Sasada who's the main driving force behind them, mentioned that
 Ractors suffered from [some sort of a chicken and egg problem](https://youtu.be/Id706gYi3wk?si=DaECpXT2lEMO7kiA&t=878).
 By his own admission, Ractors suffer from many bugs, and often don't actually deliver the performance they're supposed to,
 hence very few people use them enough to be able to provide feedback on the API, and I'm afraid that almost two years later,
