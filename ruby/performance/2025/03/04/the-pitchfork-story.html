@@ -387,7 +387,7 @@ statically, so perhaps it would help a bit, but it wouldn’t solve the issue on
 
 <p>Yet another suggestion was to serve traffic for a while from the Unicorn master process, but I didn’t like this
 idea because that process is in charge of overseeing and coordinating all the workers, it can’t afford to render
-requests, as I can’t be timed out.</p>
+requests, as it can’t be timed out.</p>
 
 <h2 id="pumas-fork-worker">Puma’s Fork Worker</h2>
 
