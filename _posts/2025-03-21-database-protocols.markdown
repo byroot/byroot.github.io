@@ -80,7 +80,7 @@ Under the hood, most if not all clients will look like this:
 ```ruby
 def query(command)
   packet = serialize(command)
-  @socket.write(command)
+  @socket.write(packet)
   response = @socket.read
   deserialize(response)
 end
