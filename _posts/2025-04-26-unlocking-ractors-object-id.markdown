@@ -333,7 +333,7 @@ Since Ruby 3.2, objects use shapes to define how their instance variables are st
 
 Here again, let's use some pseudo-Ruby code to illustrate the basics of how they work.
 
-To start, shapes are a tree-like structure. Every share has a parent (except the root one)
+To start, shapes are a tree-like structure. Every shape has a parent (except the root one)
 and 0-N children:
 
 ```ruby
