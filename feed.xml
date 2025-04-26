@@ -1,4 +1,530 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-03-30T08:27:14+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Database Protocols Are Underwhelming</title><link href="https://byroot.github.io/performance/2025/03/21/database-protocols.html" rel="alternate" type="text/html" title="Database Protocols Are Underwhelming" /><published>2025-03-21T08:03:51+00:00</published><updated>2025-03-21T08:03:51+00:00</updated><id>https://byroot.github.io/performance/2025/03/21/database-protocols</id><content type="html" xml:base="https://byroot.github.io/performance/2025/03/21/database-protocols.html"><![CDATA[<p>If you’ve been in this trade for a while, you have probably seen dozens of debates on the merits and problems of SQL
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-04-26T16:02:14+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: object_id</title><link href="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html" rel="alternate" type="text/html" title="Unlocking Ractors: object_id" /><published>2025-04-26T10:03:51+00:00</published><updated>2025-04-26T10:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could
+still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.</p>
+
+<p>But as I mentioned, this is unfortunately not yet viable because there are many known implementation bugs that can lead
+to interpreter crashes, and that while they are supposed to execute in parallel, the Ruby VM still has one true global
+lock that Ractors need to acquire to perform certain operations, making them often perform worse than the equivalent
+single-threaded code.</p>
+
+<p>But things are evolving rapidly.
+Since then, there is now a team of people working on fixing exactly that: tackling known bugs and eliminating or reducing the remaining contention points.</p>
+
+<p>The one example I gave to illustrate this remaining contention, was the <code class="language-plaintext highlighter-rouge">fstring_table</code>, which in short is a big internal
+hash table used to deduplicate strings, which Ruby does whenever you use a String as a key in a Hash.
+Because looking into that table while another Ractor is inserting a new entry would result in a crash (or worse),
+until last week Ruby had to acquire the remaining VM lock whenever it touched that table.</p>
+
+<p>But <a href="https://bugs.ruby-lang.org/issues/21268">John Hawthorn recently replaced it with a lock-free Hash-Set</a>, and now this
+contention point is gone. If you re-run the JSON benchmarks from the previous post using the latest Ruby master,
+the Ractor version is now twice as fast as the single-threaded version, instead of being 3 times slower.</p>
+
+<p>This still isn’t perfect though, as the benchmark uses 5 ractors, hence in an ideal world should be almost 5 times faster
+then the single-threaded example, so we still have a lot of work to do to eliminate or reduce the remaining contention
+points.</p>
+
+<p>One of such remaining contention points, that you likely didn’t suspect would be one, is
+<a href="https://docs.ruby-lang.org/en/3.4/Object.html#method-i-object_id">the <code class="language-plaintext highlighter-rouge">#object_id</code> method</a>.
+And on my way back from RubyKaigi, I started working on tackling it.</p>
+
+<p>But before we delve into what I plan to do about it, let’s talk about how this method came to be a contention point.</p>
+
+<h2 id="a-little-bit-of-history">A Little Bit Of History</h2>
+
+<p>Up until Ruby 2.6, the <code class="language-plaintext highlighter-rouge">#object_id</code> implementation used to be quite trivial:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">VALUE</span>
+<span class="nf">rb_obj_id</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">obj</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">STATIC_SYM_P</span><span class="p">(</span><span class="n">obj</span><span class="p">))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">SYM2ID</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">RVALUE</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="mi">4</span> <span class="o">&lt;&lt;</span> <span class="mi">2</span><span class="p">))</span> <span class="o">|</span> <span class="n">FIXNUM_FLAG</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">FLONUM_P</span><span class="p">(</span><span class="n">obj</span><span class="p">))</span> <span class="p">{</span>
+      <span class="k">return</span> <span class="n">LL2NUM</span><span class="p">((</span><span class="n">SIGNED_VALUE</span><span class="p">)</span><span class="n">obj</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">SPECIAL_CONST_P</span><span class="p">(</span><span class="n">obj</span><span class="p">))</span> <span class="p">{</span>
+      <span class="k">return</span> <span class="n">LONG2NUM</span><span class="p">((</span><span class="n">SIGNED_VALUE</span><span class="p">)</span><span class="n">obj</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">LL2NUM</span><span class="p">((</span><span class="n">SIGNED_VALUE</span><span class="p">)(</span><span class="n">obj</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Of course, it’s C so it might be a bit cryptic to the uninitiated, but in short, for the common case of a heap allocated
+object, its <code class="language-plaintext highlighter-rouge">object_id</code> would be the address where the object is stored, divided by two.
+So in a way, <code class="language-plaintext highlighter-rouge">#object_id</code> used to return you an actual pointer to the object.</p>
+
+<p>This made implementing the lesser-known counterpart of <code class="language-plaintext highlighter-rouge">#object_id</code>, <a href="https://docs.ruby-lang.org/en/2.5.0/ObjectSpace.html#method-c-_id2ref"><code class="language-plaintext highlighter-rouge">ObjectSpace._id2ref</code></a>,
+just as trivial, multiply the <code class="language-plaintext highlighter-rouge">object_id</code> by two, and here you go, you now have a pointer to the corresponding object.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">s</span> <span class="o">=</span> <span class="s2">"I am a string"</span>
+<span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">_id2ref</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="nf">object_id</span><span class="p">).</span><span class="nf">equal?</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="c1"># =&gt; true</span>
+</code></pre></div></div>
+
+<p>But there was actually a major problem with that implementation, which is that the Ruby heap is composed of standard-size slots.
+When an object is no longer referenced, the GC reclaims the object slot and will most likely re-use it for a future object.</p>
+
+<p>Hence if you were to hold onto an <code class="language-plaintext highlighter-rouge">object_id</code>, and use <code class="language-plaintext highlighter-rouge">ObjectSpace._id2ref</code>, it’s not actually certain the object you get
+back is the one you got the <code class="language-plaintext highlighter-rouge">object_id</code> from, it might be a totally different object.</p>
+
+<p>It also meant that if you are holding onto an <code class="language-plaintext highlighter-rouge">object_id</code> as a way to know if you’ve already seen a given object,
+you may run into some false positives.</p>
+
+<p>That’s why <a href="https://bugs.ruby-lang.org/issues/15408">in 2018 there was already a feature request to deprecate both <code class="language-plaintext highlighter-rouge">#object_id</code> and <code class="language-plaintext highlighter-rouge">_id2ref</code></a>.
+Back then Matz agreed to deprecated <code class="language-plaintext highlighter-rouge">_id2ref</code> for Ruby 2.7, but pointed out that removing <code class="language-plaintext highlighter-rouge">#object_id</code> would be too much of a breaking change,
+and that it is a useful API.
+However, this somehow fell through the cracks, and <code class="language-plaintext highlighter-rouge">_id2ref</code> was never formally deprecated, which is <a href="https://github.com/ruby/ruby/pull/13157">something I’d like to
+do for Ruby 3.5</a>.</p>
+
+<p>I’m not certain why <code class="language-plaintext highlighter-rouge">_id2ref</code> was added initially, given that <code class="language-plaintext highlighter-rouge">git blame</code> points to <a href="https://github.com/ruby/ruby/commit/210367ec889">a commit from 1999 that was generated by cvs2svn</a>.
+But if I had to guess, I’d say it was added for <code class="language-plaintext highlighter-rouge">drb</code> which today remains the only significant user of that API in the stdlib, but <a href="https://github.com/ruby/drb/pull/35">even that is about to change</a>.</p>
+
+<h2 id="gc-compaction">GC Compaction</h2>
+
+<p>Regardless of why <code class="language-plaintext highlighter-rouge">_id2ref</code> was added, that major flaw in its design became a blocker for Aaron Patterson when <a href="https://bugs.ruby-lang.org/issues/15626">he implemented
+GC compaction in Ruby 2.7</a>.
+Since GC compaction implies that objects can be moved from one slot to another, <code class="language-plaintext highlighter-rouge">#object_id</code> could no longer be derived from
+the object address, otherwise, it wouldn’t remain stable.</p>
+
+<p>What Aaron did is conceptually simple:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Kernel</span>
+  <span class="k">def</span> <span class="nf">object_id</span>
+    <span class="k">unless</span> <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span>
+      <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span>
+      <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span> <span class="o">+=</span> <span class="mi">8</span>
+      <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span> <span class="o">=</span> <span class="nb">id</span>
+      <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="nb">self</span>
+    <span class="k">end</span>
+    <span class="nb">id</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">module</span> <span class="nn">ObjectSpace</span>
+  <span class="k">def</span> <span class="nc">self</span><span class="o">.</span><span class="nf">_id2ref</span><span class="p">(</span><span class="nb">id</span><span class="p">)</span>
+    <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>In short, Ruby added two internal Hash tables. One of them with objects as keys and IDs as values, and the inverse for the other.
+Whenever you access an object’s ID for the first time, a unique ID is created by incrementing an internal counter,
+and the relation between the object and its ID is stored in the two hash tables.</p>
+
+<p>As a Ruby user, you can observe this change easily by printing some <code class="language-plaintext highlighter-rouge">object_id</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">p</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">object_id</span>
+<span class="nb">p</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">object_id</span>
+</code></pre></div></div>
+
+<p>Up to Ruby 2.6, the above code will print some large and seemingly random integers such as <code class="language-plaintext highlighter-rouge">50666405449360</code>, whereas on
+Ruby 2.7 onwards, it will print small integers, likely <code class="language-plaintext highlighter-rouge">8</code> and <code class="language-plaintext highlighter-rouge">16</code>.</p>
+
+<p>This change both solved the historical issue with <code class="language-plaintext highlighter-rouge">_id2ref</code> and allowed the GC to keep stable IDs when moving objects from one
+address to the other, but made <code class="language-plaintext highlighter-rouge">object_id</code> way more costly than it used to be.</p>
+
+<p>Ruby’s hash-table implementation stores 3 pointer-sized numbers per entry.
+One for the key, one for the value, and one for the hashcode:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">st_table_entry</span> <span class="p">{</span>
+    <span class="n">st_hash_t</span> <span class="n">hash</span><span class="p">;</span>
+    <span class="n">st_data_t</span> <span class="n">key</span><span class="p">;</span>
+    <span class="n">st_data_t</span> <span class="n">record</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>And given every <code class="language-plaintext highlighter-rouge">object_id</code> is stored in two hash-tables, that makes for a total of <code class="language-plaintext highlighter-rouge">48B</code> (plus some change) per <code class="language-plaintext highlighter-rouge">object_id</code>.
+That’s quite a lot of memory for just a small number.</p>
+
+<p>In addition, accessing the <code class="language-plaintext highlighter-rouge">object_id</code> now requires doing a hash lookup, when before it was a simple division, and whenever
+the GC frees or moves an object that has an ID, it needs to update these two hash-tables.</p>
+
+<p>To be clear, I don’t have any evidence that these two tables cause significant memory or CPU overhead in real-world Ruby applications.
+I’m just saying that <code class="language-plaintext highlighter-rouge">#object_id</code> is way more expensive than one might expect.</p>
+
+<h2 id="entering-ractors">Entering Ractors</h2>
+
+<p>Then later on, when Koichi Sasada implemented Ractors since now multiple ractors could attempt to access these two hash-tables
+concurrently, <a href="https://github.com/ruby/ruby/commit/da3438a5045">he had to add a lock around them in <code class="language-plaintext highlighter-rouge">#object_id</code></a>, turning
+<code class="language-plaintext highlighter-rouge">#object_id</code> in a contention point:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Kernel</span>
+  <span class="k">def</span> <span class="nf">object_id</span>
+    <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="k">unless</span> <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span>
+        <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span>
+        <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span> <span class="o">+=</span> <span class="mi">8</span>
+        <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span> <span class="o">=</span> <span class="nb">id</span>
+        <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="nb">self</span>
+      <span class="k">end</span>
+      <span class="nb">id</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">module</span> <span class="nn">ObjectSpace</span>
+  <span class="k">def</span> <span class="nc">self</span><span class="o">.</span><span class="nf">_id2ref</span><span class="p">(</span><span class="nb">id</span><span class="p">)</span>
+    <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>At this point, you may wonder if it’s really a big deal.
+After all, <code class="language-plaintext highlighter-rouge">#object_id</code> is used a bit for debugging, but not so much in actual production code.
+And this is mostly true, but it does come up in real-world code, e.g. <a href="https://github.com/mikel/mail/blob/d1d65b370b109b98e673a934e8b70a0c1f58cc59/lib/mail/message.rb#L1698">in the <code class="language-plaintext highlighter-rouge">mail</code> gem</a>,
+<a href="https://github.com/rubocop/rubocop/blob/4a611564c4e1d8ec12a8e45e96490465e5141605/lib/rubocop/cop/variable_force/branch.rb#L129-L131">in <code class="language-plaintext highlighter-rouge">rubocop</code></a>,
+and of course <a href="https://github.com/rails/rails/blob/99e27fa586af7db2b5334124a62eb3a464cdffd8/activesupport/lib/active_support/cache/strategy/local_cache.rb#L213-L215">quite a bit in Rails</a>.</p>
+
+<p>But calling <code class="language-plaintext highlighter-rouge">Kernel#object_id</code> isn’t the only way you might rely on an object ID.</p>
+
+<p>The <a href="https://docs.ruby-lang.org/en/3.4/Object.html#method-i-hash"><code class="language-plaintext highlighter-rouge">Object#hash</code></a> method for example rely on it:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="n">st_index_t</span>
+<span class="nf">objid_hash</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">obj</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">object_id</span> <span class="o">=</span> <span class="n">rb_obj_id</span><span class="p">(</span><span class="n">obj</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">FIXNUM_P</span><span class="p">(</span><span class="n">object_id</span><span class="p">))</span>
+        <span class="n">object_id</span> <span class="o">=</span> <span class="n">rb_big_hash</span><span class="p">(</span><span class="n">object_id</span><span class="p">);</span>
+
+    <span class="k">return</span> <span class="p">(</span><span class="n">st_index_t</span><span class="p">)</span><span class="n">st_index_hash</span><span class="p">((</span><span class="n">st_index_t</span><span class="p">)</span><span class="n">NUM2LL</span><span class="p">(</span><span class="n">object_id</span><span class="p">));</span>
+<span class="p">}</span>
+
+<span class="n">VALUE</span>
+<span class="nf">rb_obj_hash</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">obj</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">long</span> <span class="n">hnum</span> <span class="o">=</span> <span class="n">any_hash</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">objid_hash</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">ST2FIX</span><span class="p">(</span><span class="n">hnum</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Common value classes such as <code class="language-plaintext highlighter-rouge">String</code>, <code class="language-plaintext highlighter-rouge">Array</code> etc, do define their own <code class="language-plaintext highlighter-rouge">#hash</code> method that doesn’t rely on the object ID,
+but all other objects that are compared by identity by default will end up using <code class="language-plaintext highlighter-rouge">Object#hash</code>, hence accessing the <code class="language-plaintext highlighter-rouge">object_id</code>.</p>
+
+<p>For instance here’s a quite class <code class="language-plaintext highlighter-rouge">#hash</code> implementation from one of Rails classes:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#  activerecord/lib/arel/nodes/delete_statement.rb</span>
+  <span class="k">def</span> <span class="nf">hash</span>
+    <span class="p">[</span><span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">,</span> <span class="vi">@relation</span><span class="p">,</span> <span class="vi">@wheres</span><span class="p">,</span> <span class="vi">@orders</span><span class="p">,</span> <span class="vi">@limit</span><span class="p">,</span> <span class="vi">@offset</span><span class="p">,</span> <span class="vi">@key</span><span class="p">].</span><span class="nf">hash</span>
+  <span class="k">end</span>
+</code></pre></div></div>
+
+<p>It absolutely isn’t obvious, but here we’re hashing a <code class="language-plaintext highlighter-rouge">Class</code> object, and classes are indexed by identity like a default object:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">Class</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">method</span><span class="p">(</span><span class="ss">:hash</span><span class="p">).</span><span class="nf">owner</span>
+<span class="o">=&gt;</span> <span class="no">Kernel</span>
+<span class="o">&gt;&gt;</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">method</span><span class="p">(</span><span class="ss">:hash</span><span class="p">).</span><span class="nf">owner</span>
+<span class="o">=&gt;</span> <span class="no">Kernel</span>
+</code></pre></div></div>
+
+<p>Hence the above code currently requires to lock the entire virtual machine, just to produce a hashcode.</p>
+
+<h2 id="deoptimization">Deoptimization</h2>
+
+<p>So what could we do to remove or reduce the need to synchronize the entire virtual machine when accessing object IDs?</p>
+
+<p>Well first, given that <code class="language-plaintext highlighter-rouge">ObjectSpace._id2ref</code> is very rarely used, and will likely be marked as deprecated soon,
+we can start by optimistically not creating nor updating the <code class="language-plaintext highlighter-rouge">id -&gt; object</code> table until someone needs it, which hopefully
+won’t be the case in the vast majority of programs:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Kernel</span>
+  <span class="k">def</span> <span class="nf">object_id</span>
+    <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="k">unless</span> <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span>
+        <span class="nb">id</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span>
+        <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">next_obj_id</span> <span class="o">+=</span> <span class="mi">8</span>
+        <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span> <span class="o">=</span> <span class="nb">id</span>
+        <span class="k">if</span> <span class="k">defined?</span><span class="p">(</span><span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">)</span>
+          <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="nb">self</span>
+        <span class="k">end</span>
+      <span class="k">end</span>
+      <span class="nb">id</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">module</span> <span class="nn">ObjectSpace</span>
+  <span class="k">def</span> <span class="nc">self</span><span class="o">.</span><span class="nf">_id2ref</span><span class="p">(</span><span class="nb">id</span><span class="p">)</span>
+    <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="k">unless</span> <span class="k">defined?</span><span class="p">(</span><span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">)</span>
+        <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">OBJ_TO_ID_TABLE</span><span class="p">.</span><span class="nf">invert</span>
+      <span class="k">end</span>
+      <span class="no">ObjectSpace</span><span class="o">::</span><span class="no">ID_TO_OBJ_TABLE</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>This doesn’t remove the lock yet, but assuming your program never calls <code class="language-plaintext highlighter-rouge">ObjectSpace._id2ref</code> it removes some work
+from inside the lock, hence it shouldn’t be held as long.
+And even if you don’t use Ractors, it should slightly reduce memory usage as well as remove work for the GC,
+as demonstrated by a micro-benchmark:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>benchmark:
+  baseline: "Object.new"
+  object_id: "Object.new.object_id"
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>compare-ruby: ruby 3.5.0dev (2025-04-10T09:44:40Z master 684cfa42d7) +YJIT +PRISM [arm64-darwin24]
+built-ruby: ruby 3.5.0dev (2025-04-10T10:13:43Z lazy-id-to-obj d3aa9626cc) +YJIT +PRISM [arm64-darwin24]
+warming up..
+
+|           |compare-ruby|built-ruby|
+|:----------|-----------:|---------:|
+|baseline   |     26.364M|   25.974M|
+|           |       1.01x|         -|
+|object_id  |     10.293M|   14.202M|
+|           |           -|     1.38x|
+</code></pre></div></div>
+
+<p>As always, when possible, the most efficient way to speed up some code is to not call it if you can avoid it.</p>
+
+<p>If you’re curious to see the actual implementation, <a href="https://github.com/ruby/ruby/pull/13115">you can have a look at the pull request</a>.</p>
+
+<h2 id="inline-storage">Inline Storage</h2>
+
+<p>But while saving a bit of memory and CPU is nice, we’re still not significantly reducing contention, so what else could we do?</p>
+
+<p>The crux of the issue here is that the <code class="language-plaintext highlighter-rouge">object_id</code> is stored in a centralized hash table, and as long as it will be the case,
+synchronization will be required, short of implementing a lock-free hash table, but this is quite tricky to do.
+Much trickier than a hash-set John used for the <code class="language-plaintext highlighter-rouge">fstring_table</code>.</p>
+
+<p>But more importantly, a centralized data structure to store all the IDs of all objects isn’t great for locality anyway.
+More so, needing to do a hash lookup to access an object’s property is quite costly, when conceptually it should be stored directly
+inside the object.</p>
+
+<p>If you think about it, <code class="language-plaintext highlighter-rouge">object_id</code> isn’t very different from an instance variable:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Kernel</span>
+  <span class="k">def</span> <span class="nf">object_id</span>
+    <span class="vi">@__object_id</span> <span class="o">||=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">generate_next_obj_id</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>You’d need the id generation to be thread-safe, which is easily done using an atomic increment operation, but other than that,
+assuming the object isn’t one of the special objects that is accessible from multiple ractors, you can mutate it to store the
+<code class="language-plaintext highlighter-rouge">object_id</code> without having to lock the entire VM.</p>
+
+<p>However, as is tradition, nothing is ever that simple.</p>
+
+<h2 id="final-shapes">Final Shapes</h2>
+
+<p>Since Ruby 3.2, objects use shapes to define how their instance variables are stored.</p>
+
+<p>Here again, let’s use some pseudo-Ruby code to illustrate the basics of how they work.</p>
+
+<p>To start, shapes are a tree-like structure. Every share has a parent (except the root one)
+and 0-N children:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Shape</span>
+  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="n">parent</span><span class="p">,</span> <span class="n">type</span><span class="p">,</span> <span class="n">edge_name</span><span class="p">,</span> <span class="n">next_ivar_index</span><span class="p">)</span>
+    <span class="vi">@parent</span> <span class="o">=</span> <span class="n">parent</span>
+    <span class="vi">@type</span> <span class="o">=</span> <span class="n">type</span>
+    <span class="vi">@edge_name</span> <span class="o">=</span> <span class="n">edge_name</span>
+    <span class="vi">@next_ivar_index</span> <span class="o">=</span> <span class="n">next_ivar_index</span>
+    <span class="vi">@edges</span> <span class="o">=</span> <span class="p">{}</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">add_ivar</span><span class="p">(</span><span class="n">ivar_name</span><span class="p">)</span>
+    <span class="vi">@edges</span><span class="p">[</span><span class="n">ivar_name</span><span class="p">]</span> <span class="o">||=</span> <span class="no">Shape</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="ss">:ivar</span><span class="p">,</span> <span class="n">ivar_name</span><span class="p">,</span> <span class="n">next_ivar_index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>With this, when the Ruby VM has to execute code such as:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">User</span>
+  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="nb">name</span><span class="p">,</span> <span class="n">role</span><span class="p">)</span>
+    <span class="vi">@name</span> <span class="o">=</span> <span class="nb">name</span>
+    <span class="vi">@role</span> <span class="o">=</span> <span class="n">role</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>It can compute the object shape on the fly such as:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># Allocate the object</span>
+<span class="n">object</span> <span class="o">=</span> <span class="n">new_object</span>
+<span class="n">object</span><span class="p">.</span><span class="nf">shape</span> <span class="o">=</span> <span class="no">ROOT_SHAPE</span>
+
+<span class="c1"># add @name</span>
+<span class="n">next_shape</span> <span class="o">=</span> <span class="n">object</span><span class="p">.</span><span class="nf">add_ivar</span><span class="p">(</span><span class="ss">:@name</span><span class="p">)</span>
+<span class="n">object</span><span class="p">.</span><span class="nf">shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+<span class="n">object</span><span class="p">.</span><span class="nf">ivars</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">next_ivar_index</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="nb">name</span>
+
+<span class="c1"># add @role</span>
+<span class="n">next_shape</span> <span class="o">=</span> <span class="n">object</span><span class="p">.</span><span class="nf">add_ivar</span><span class="p">(</span><span class="ss">:@role</span><span class="p">)</span>
+<span class="n">object</span><span class="p">.</span><span class="nf">shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+<span class="n">object</span><span class="p">.</span><span class="nf">ivars</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">next_ivar_index</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">role</span>
+</code></pre></div></div>
+
+<p>This method may seem surprising, but it’s actually very efficient for various reasons I won’t get into here,
+because I wrote <a href="https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/">another post about it a bit over a year ago</a>,
+go read it if you are curious to know more.</p>
+
+<p>But how instance variables are laid out isn’t the only thing that shapes record. They also keep track of how large an object
+is, hence how many instance variables it can store, as well as whether it has been frozen.</p>
+
+<p>Still in pseudo-Ruby code, it looks like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Shape</span>
+  <span class="k">def</span> <span class="nf">add_ivar</span><span class="p">(</span><span class="n">ivar_name</span><span class="p">)</span>
+    <span class="k">if</span> <span class="vi">@type</span> <span class="o">==</span> <span class="ss">:frozen</span>
+      <span class="k">raise</span> <span class="s2">"Can't modify frozen object"</span>
+    <span class="k">end</span>
+    <span class="vi">@edges</span><span class="p">[</span><span class="n">ivar_name</span><span class="p">]</span> <span class="o">||=</span> <span class="no">Shape</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="ss">:ivar</span><span class="p">,</span> <span class="n">ivar_name</span><span class="p">,</span> <span class="n">next_ivar_index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">freeze</span>
+    <span class="vi">@edges</span><span class="p">[</span><span class="ss">:__frozen</span><span class="p">]</span> <span class="o">||=</span> <span class="no">Shape</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="ss">:frozen</span><span class="p">,</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">next_ivar_index</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So <code class="language-plaintext highlighter-rouge">frozen</code> shapes are final. It is expected that a shape of type <code class="language-plaintext highlighter-rouge">frozen</code> won’t ever have any children.</p>
+
+<p>But in the case of <code class="language-plaintext highlighter-rouge">object_id</code>, we want to be able to store the id on any object, regardless of whether they are frozen
+or not. So the first step is to modify shapes to allow that, <a href="https://github.com/Shopify/ruby/commit/ca92bbe4f646658f9a420e61089cf5d6e27a5a71">which I did in a relatively simple commit</a>.</p>
+
+<p>But here too there was a bit of a complication. In a few cases, for instance when calling <code class="language-plaintext highlighter-rouge">Object#dup</code>, Ruby needs to find
+the unfrozen version of a shape. Previously, since frozen shapes couldn’t possibly have children, it was quite simple:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Object</span>
+  <span class="k">def</span> <span class="nf">dup</span>
+    <span class="n">new_object</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">class</span><span class="p">.</span><span class="nf">allocate</span>
+    <span class="k">if</span> <span class="nb">self</span><span class="p">.</span><span class="nf">shape</span><span class="p">.</span><span class="nf">type</span> <span class="o">==</span> <span class="ss">:frozen</span>
+      <span class="n">new_object</span><span class="p">.</span><span class="nf">shape</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">shape</span><span class="p">.</span><span class="nf">parent</span>
+    <span class="k">else</span>
+      <span class="n">new_object</span><span class="p">.</span><span class="nf">shape</span> <span class="o">=</span> <span class="nb">self</span><span class="p">.</span><span class="nf">shape</span>
+    <span class="k">end</span>
+    <span class="c1"># ...</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Once you allow frozen shapes to have children, this operation becomes more involved, as you now need to go up the tree
+to find the last non-frozen shape, then reapply all the child shapes you wish to carry over.</p>
+
+<p>After this small refactoring was done, I could introduce a new type of shape: <code class="language-plaintext highlighter-rouge">SHAPE_OBJ_ID</code>, which behaves very similarly
+to instance variable shapes:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Shape</span>
+  <span class="k">def</span> <span class="nf">object_id</span>
+    <span class="c1"># First check if there is an OBJ_ID shape in ancestors</span>
+    <span class="n">shape</span> <span class="o">=</span> <span class="nb">self</span>
+    <span class="k">while</span> <span class="n">shape</span><span class="p">.</span><span class="nf">parent</span>
+      <span class="k">return</span> <span class="n">shape</span> <span class="k">if</span> <span class="n">shape</span><span class="p">.</span><span class="nf">type</span> <span class="o">==</span> <span class="ss">:obj_id</span>
+      <span class="n">shape</span> <span class="o">=</span> <span class="n">shape</span><span class="p">.</span><span class="nf">parent</span>
+    <span class="k">end</span>
+
+    <span class="c1"># Otherwise create one.</span>
+    <span class="vi">@edges</span><span class="p">[</span><span class="ss">:__object_id</span><span class="p">]</span> <span class="o">||=</span> <span class="no">Shape</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="nb">self</span><span class="p">,</span> <span class="ss">:obj_id</span><span class="p">,</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">next_ivar_index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>And just like this, we’re now able to reserve some inline space inside any object to store the <code class="language-plaintext highlighter-rouge">object_id</code>,
+and in <em>some cases</em> we’re able to access an object’s ID fully lock-free.</p>
+
+<h2 id="lock-free-shapes">Lock Free Shapes</h2>
+
+<p>Why I’m saying <em>in some cases</em> is because there are still a number of limitations.</p>
+
+<p>First, since shapes are mostly immutable, we can access an object’s shape, and all its ancestors without taking a lock.
+However, finding or creating a shape’s child currently still requires synchronizing the VM.
+So even if my patch was to be applied, Ruby would still lock when accessing an object’s ID for the very first time,
+it would only be lock-free on subsequent accesses.</p>
+
+<p>Being able to find or create child shapes in a lock-free way would be useful way beyond the <code class="language-plaintext highlighter-rouge">object_id</code> use case, so
+hopefully we’ll get to it in the future, I haven’t yet dedicated much thought to it, but I’m hopeful we can find
+a solution. But even if we can’t do it lock-free, I think we could at least use a dedicated lock for it, so we wouldn’t
+contend with all the other code paths that synchronize the entire VM, only paths that do the same operation.</p>
+
+<p>Then, if the object is potentially shared between ractors, we also still need to acquire the lock before storing the ID,
+as otherwise, concurrent writes may cause a race condition. Given we need to both update the object’s shape and write
+the <code class="language-plaintext highlighter-rouge">object_id</code> inside the object, we can’t do it all in an atomic manner.</p>
+
+<p>Finally, not all objects store their instance variables in the same way.</p>
+
+<h2 id="generic-instance-variables">Generic Instance Variables</h2>
+
+<p>As a Rubyist, you likely know that in Ruby everything is an object, but that doesn’t mean all objects are equal.</p>
+
+<p>In the context of instance variables, there are essentially three types of objects: <code class="language-plaintext highlighter-rouge">T_OBJECT</code>, <code class="language-plaintext highlighter-rouge">T_CLASS/T_MODULE</code> and
+then all the rest.</p>
+
+<p><code class="language-plaintext highlighter-rouge">T_OBJECT</code> are your classic objects that inherit from the <code class="language-plaintext highlighter-rouge">BasicObject</code> class. Their instance variables are stored
+inline directly inside the object slot, as long as it’s large enough. If it ends up overflowing, then a separated memory
+location is allocated, and instance variables are moved there, the object slot then only contains a pointer to that auxiliary memory.</p>
+
+<p><code class="language-plaintext highlighter-rouge">T_CLASS</code> and <code class="language-plaintext highlighter-rouge">T_MODULE</code> as their name suggests are all instances of the <code class="language-plaintext highlighter-rouge">Class</code> and <code class="language-plaintext highlighter-rouge">Module</code> classes. These are much
+larger than regular objects, as they need to keep track of a lot of things, such as their method table, a pointer to the
+parent class, etc:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">(</span><span class="no">Object</span><span class="p">.</span><span class="nf">new</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="mi">40</span>
+<span class="o">&gt;&gt;</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">(</span><span class="no">Class</span><span class="p">.</span><span class="nf">new</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="mi">192</span>
+</code></pre></div></div>
+
+<p>As such, they never store their instance variables inline, they always store them in auxiliary memory, and they have
+dedicated space in their object slot to store the auxiliary memory pointer:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp"># internal/class.h
+</span><span class="k">struct</span> <span class="n">rb_classext_struct</span> <span class="p">{</span>
+    <span class="n">VALUE</span> <span class="o">*</span><span class="n">iv_ptr</span><span class="p">;</span> <span class="c1">// iv = instance variable</span>
+    <span class="c1">// ...</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>And finally, there are all the other objects, such as <code class="language-plaintext highlighter-rouge">T_STRING</code>, <code class="language-plaintext highlighter-rouge">T_ARRAY</code>, <code class="language-plaintext highlighter-rouge">T_HASH</code>, <code class="language-plaintext highlighter-rouge">T_REGEXP</code>, etc.
+None of these have free space in their slot to store inline variables, and not even space to store the auxiliary memory
+pointer.</p>
+
+<p>So what does Ruby do when you do add an instance variable to such objects? Well, it stores it in a Hash-table of course!</p>
+
+<p>In pseudo-Ruby, it would look like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">GenericIvarObject</span>
+  <span class="k">class</span> <span class="nc">GenericStorage</span>
+    <span class="nb">attr_accessor</span> <span class="ss">:shape</span>
+    <span class="nb">attr_reader</span> <span class="ss">:ivars</span>
+
+    <span class="k">def</span> <span class="nf">initialize</span>
+      <span class="vi">@ivars</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">instance_variable_get</span><span class="p">(</span><span class="n">ivar_name</span><span class="p">)</span>
+    <span class="n">store</span> <span class="o">=</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="no">GENERIC_STORAGE</span><span class="p">[</span><span class="nb">self</span><span class="p">]</span> <span class="o">||=</span> <span class="no">GenericStorage</span><span class="p">.</span><span class="nf">new</span>
+    <span class="k">end</span>
+
+    <span class="k">if</span> <span class="n">ivar_shape</span> <span class="o">=</span> <span class="n">store</span><span class="p">.</span><span class="nf">shape</span><span class="p">.</span><span class="nf">find</span><span class="p">(</span><span class="n">ivar_name</span><span class="p">)</span>
+      <span class="n">store</span><span class="p">.</span><span class="nf">ivars</span><span class="p">[</span><span class="n">ivar_shape</span><span class="p">.</span><span class="nf">next_ivar_index</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>As you probably have noticed or even guessed, since this is yet another global hash table, any access needs to be synchronized,
+which means that for objects other than <code class="language-plaintext highlighter-rouge">T_OBJECT</code>, <code class="language-plaintext highlighter-rouge">T_CLASS</code> and <code class="language-plaintext highlighter-rouge">T_MODULE</code>,
+my patch replaces one global synchronized hash with another…</p>
+
+<p>So perhaps for these, keeping the original <code class="language-plaintext highlighter-rouge">object -&gt; id</code> table would be preferable, that’s something I still need to figure out.</p>
+
+<h3 id="conclusion">Conclusion</h3>
+
+<p>My patch isn’t finished. I still have to figure out how to best deal with “generic” objects, and probably refine the
+implementation some more, and perhaps it won’t even be merged at all in the end.</p>
+
+<p>But I wanted to share it because explaining something helps me think about the problem,
+and also because while I don’t think <code class="language-plaintext highlighter-rouge">object_id</code> is currently the biggest Ractor bottleneck,
+it’s a good showcase of the type of work that needs to be done to make Ractors more parallel.</p>
+
+<p>If you are curious about the patch, here’s <a href="https://github.com/ruby/ruby/compare/master...byroot:ruby:object_id-in-shape-snapshot">what it currently looks like as of this writing</a>.</p>
+
+<p>Similar work will have to be done for other internal tables, such as the symbol table and the various method tables.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[In a previous post about ractors, I explained why I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.]]></summary></entry><entry><title type="html">Database Protocols Are Underwhelming</title><link href="https://byroot.github.io/performance/2025/03/21/database-protocols.html" rel="alternate" type="text/html" title="Database Protocols Are Underwhelming" /><published>2025-03-21T08:03:51+00:00</published><updated>2025-03-21T08:03:51+00:00</updated><id>https://byroot.github.io/performance/2025/03/21/database-protocols</id><content type="html" xml:base="https://byroot.github.io/performance/2025/03/21/database-protocols.html"><![CDATA[<p>If you’ve been in this trade for a while, you have probably seen dozens of debates on the merits and problems of SQL
 as a relational database query language.
 As an ORM maintainer, I have a few gripes with SQL, but overall it is workable, and anyway, it has so much inertia
 that there’s no point fantasizing about a replacement.</p>
@@ -3816,506 +4342,4 @@ make sure not to disregard performance. Usability and performance don’t have t
 APIs can be both very convenient and performant, but both have to be considered right from the start for it to happen.
 Once a public API has been defined and is widely used, there’s only so much you can do to make it perform faster
 unless you are willing to deprecate it in favor of a more performant one, but the community appetite for deprecations
-and breaking change is no longer what it used to be.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn't matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?]]></summary></entry><entry><title type="html">Optimizing Ruby’s JSON, Part 7</title><link href="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html" rel="alternate" type="text/html" title="Optimizing Ruby’s JSON, Part 7" /><published>2025-01-14T21:28:51+00:00</published><updated>2025-01-14T21:28:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/01/14/optimizing-ruby-json-part-7.html"><![CDATA[<p>In <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html">the previous post</a>, we started covering some parser optimizations.
-There’s just a handful more to cover until we reached what’s the state of the currently released version of <code class="language-plaintext highlighter-rouge">ruby/json</code>.</p>
-
-<h2 id="batch-apis">Batch APIs</h2>
-
-<p>But as always, let’s start with a flame graph of <code class="language-plaintext highlighter-rouge">twitter.json</code>, to see what was left to optimize:</p>
-
-<p><img src="/assets/articles/json-7/flamegraph-twitter.png" alt="" /></p>
-
-<p><a href="https://share.firefox.dev/4gRJXjb">Full profile</a>.</p>
-
-<p>Something that was bothering me in that profile, was the whopping <code class="language-plaintext highlighter-rouge">26.6%</code> of time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code>,
-which is the C API for <code class="language-plaintext highlighter-rouge">Hash#[]=</code>.</p>
-
-<p>It wasn’t really surprising to me though. I’m sure you’ve heard about some super fast JSON parsers like <code class="language-plaintext highlighter-rouge">simdjson</code>, <code class="language-plaintext highlighter-rouge">rapidJSON</code> etc,
-Some of you may have wondered why I didn’t just do a binding of one of these to make <code class="language-plaintext highlighter-rouge">ruby/json</code> faster.
-Aside from many technical and legal restrictions, a big reason is that actually parsing JSON isn’t that much of a bottleneck,
-even the fairly naive Ragel parser in <code class="language-plaintext highlighter-rouge">ruby/json</code> isn’t that slow (It could be way better though, but more on that later).</p>
-
-<p>No, the really expansive part is building the Ruby objects tree, as evidenced by the time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> on that
-flame graph, but also in <code class="language-plaintext highlighter-rouge">rb_ary_push</code> on benchmarks that use a lot of arrays. So a custom parser can potentially end up faster
-overall by being better tailored to make efficient use of Ruby APIs, such as how we do unescaping inside Ruby strings to avoid
-extra copies and cache string keys.</p>
-
-<p>But let’s focus on that part of the flame graph to see why <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> is slow, and what we could do about it:</p>
-
-<p><img src="/assets/articles/json-7/flamegraph-hash-aset.png" alt="" /></p>
-
-<p>I want to draw your attention to two things in this flame graph.</p>
-
-<p>The first is <code class="language-plaintext highlighter-rouge">ar_force_convert_table</code> on the left. You may have noticed that many functions in the graphs are prefixed with
-<code class="language-plaintext highlighter-rouge">st_</code> or <code class="language-plaintext highlighter-rouge">rb_st</code> and a few with <code class="language-plaintext highlighter-rouge">ar_</code>.</p>
-
-<p>The <code class="language-plaintext highlighter-rouge">st_</code> ones are referring to <a href="https://github.com/ruby/ruby/blob/23fc0fc22d0f066938387f3397fb8ee9358744e5/st.c"><code class="language-plaintext highlighter-rouge">st.c</code>, Ruby’s internal Hash Table implementation</a>.
-What the <code class="language-plaintext highlighter-rouge">st</code> name stands for however I don’t know. <code class="language-plaintext highlighter-rouge">st.c</code> is a relatively well-optimized hash table that evolved over the years,
-which is to be expected given how much Ruby relies on hash tables, even a modest performance gain in that data structure can have a
-big impact overall. You can read its preamble if you want more details.</p>
-
-<p>As for <code class="language-plaintext highlighter-rouge">ar_</code>, which I believe stands for “array”, refers to an optimization Ruby hashes do under the hood.
-Hash tables are great, and offer a good access performance when the dataset is large, but when it’s very small they use quite a
-lot of memory and aren’t really any better than a linear search. And Ruby code uses a lot of very small hash tables.</p>
-
-<p>So Ruby hashes have an internal limit, <a href="https://github.com/ruby/ruby/blob/23fc0fc22d0f066938387f3397fb8ee9358744e5/internal/hash.h#L17C9-L17C32"><code class="language-plaintext highlighter-rouge">RHASH_AR_TABLE_MAX_SIZE</code></a>,
-which on 64-bit platforms is <code class="language-plaintext highlighter-rouge">8</code>. Any Ruby Hash that contains <code class="language-plaintext highlighter-rouge">8</code> or fewer entries is actually lying to you, and is just an array
-in a trenchcoat. That’s what <code class="language-plaintext highlighter-rouge">ar_table</code> is, a simple array of key and value pairs being used as an associative array.
-And yes, its algorithmic complexity is technically <code class="language-plaintext highlighter-rouge">O(n)</code>, but with such a small <code class="language-plaintext highlighter-rouge">n</code>, it often is faster than doing all the hashing.</p>
-
-<p>And if you add enough items in a Hash backed by an <code class="language-plaintext highlighter-rouge">ar_table</code>, it will be converted automatically to a <code class="language-plaintext highlighter-rouge">st_table</code>. That’s what
-the <code class="language-plaintext highlighter-rouge">ar_force_convert_table</code> function does.</p>
-
-<p>You can somewhat see this using one of my favorite APIs, <code class="language-plaintext highlighter-rouge">ObjectSpace.dump</code>:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">require</span> <span class="s2">"objspace"</span>
-<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="mi">8</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">to_h</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">})</span>
-<span class="p">{</span><span class="s2">"address"</span><span class="ss">:"0xf3d8"</span><span class="p">,</span> <span class="s2">"type"</span><span class="ss">:"HASH"</span><span class="p">,</span> <span class="s2">"slot_size"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="s2">"size"</span><span class="p">:</span><span class="mi">8</span><span class="p">,</span> <span class="s2">"memsize"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="o">...</span><span class="p">}</span></code></pre></figure>
-
-<p>This tells us a Hash with 8 keys fits neatly in a 160B object slot. Each object reference is 8B, 2 references per entry,
-<code class="language-plaintext highlighter-rouge">16 * 8 =&gt; 128</code>, so with a few extra metadata and perhaps a bit of wasted space, it checks out.</p>
-
-<p>But if we do the same with a Hash with <code class="language-plaintext highlighter-rouge">9</code> items, the result is very different:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="mi">9</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">to_h</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">})</span>
-<span class="p">{</span><span class="s2">"address"</span><span class="ss">:"0x1230"</span><span class="p">,</span> <span class="s2">"type"</span><span class="ss">:"HASH"</span><span class="p">,</span> <span class="s2">"slot_size"</span><span class="p">:</span><span class="mi">160</span><span class="p">,</span> <span class="s2">"size"</span><span class="p">:</span><span class="mi">9</span><span class="p">,</span> <span class="s2">"memsize"</span><span class="p">:</span><span class="mi">544</span><span class="p">,</span> <span class="o">...</span><span class="p">}</span></code></pre></figure>
-
-<p><code class="language-plaintext highlighter-rouge">544B</code>, that’s a big jump, but not so surprising. Hash tables almost by definition need to be somewhat large to not collide too much.</p>
-
-<p>The other function on the flame graph I’d like to point out is <code class="language-plaintext highlighter-rouge">rebuild_table_if_necessary</code>, which stems from the same concern,
-when you append to a Hash table, and it starts to get a bit too full, you have to increase its size, and contrary to an array,
-it’s not just a matter of calling <code class="language-plaintext highlighter-rouge">realloc</code>, you have to essentially allocate a larger table, and then re-insert all the pairs
-which means hashing the keys again, and that’s costly.</p>
-
-<p>The problem though, is that exactly what we’re doing. When we encounter the start of a JSON object (<code class="language-plaintext highlighter-rouge">{</code>), we allocate a Ruby
-Hash with <code class="language-plaintext highlighter-rouge">rb_hash_new</code>, and then every time we’re done parsing a key-value pair, we call <code class="language-plaintext highlighter-rouge">rb_hash_aset</code> to append to the hash.</p>
-
-<p>So if a JSON document contains an object with 30 keys, we first allocate an <code class="language-plaintext highlighter-rouge">ar_table</code> with a capacity of <code class="language-plaintext highlighter-rouge">8</code> pairs, get it rebuilt
-as a <code class="language-plaintext highlighter-rouge">st_table</code> that can hold <code class="language-plaintext highlighter-rouge">16</code> entries, and finally a third time with <code class="language-plaintext highlighter-rouge">32</code> entries. Meaning we’re hashing every key 3 times,
-and wasting time in <code class="language-plaintext highlighter-rouge">malloc</code> and <code class="language-plaintext highlighter-rouge">free</code>.</p>
-
-<p>When parsing a format like <code class="language-plaintext highlighter-rouge">msgpack</code>, or Ruby’s Marshal, the byte that signals the start of a Hash is followed by the expected
-size of the Hash, allowing you to pre-allocate it with the right size, which helps a lot.
-But JSON doesn’t have that, we have no choice but to parse as we go, and we’ll only know how big the Hash is once we’re done
-parsing it.</p>
-
-<p>The problem is the same with large arrays, they start embedded, and then double in size every time they run out of space, it’s just
-not quite as bad because at least we don’t hash to re-hash the keys.</p>
-
-<p>But looking at the flame graph above, we can see that all this resizing is a majority of the time spent in <code class="language-plaintext highlighter-rouge">rb_hash_aset</code>, and
-<code class="language-plaintext highlighter-rouge">rb_hash_aset</code> over a quarter of the overall time, so there was really a big opportunity here.</p>
-
-<p>If it’s a bad idea to directly append to a Hash before we know how large it will be, why don’t we just wait to be done parsing it
-before we build it? Basic.</p>
-
-<p>But that means we need to store its content somewhere else in the meantime, and the ideal structure for that is a stack, which 
-is just a fancy name for an array.</p>
-
-<p>You can look at <a href="https://github.com/ruby/json/pull/678">the full patch in C</a>, but I’ll try to explain the key concept with some
-Ruby code here.</p>
-
-<p>Before the parsing code was something like this:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse_object</span>
-  <span class="nb">hash</span> <span class="o">=</span> <span class="p">{}</span>
-  <span class="k">until</span> <span class="n">object_done?</span>
-    <span class="n">key</span> <span class="o">=</span> <span class="n">parse_object_key</span>
-    <span class="n">value</span> <span class="o">=</span> <span class="n">parse_json</span>
-    <span class="nb">hash</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
-  <span class="k">end</span>
-  <span class="nb">hash</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>We simply parse until we find the object terminator, and until then we append to the Hash whenever we get a complete pair,
-and each parsing function simply returns the parsed object.</p>
-
-<p>After the change it now looks more something like this:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">def</span> <span class="nf">parse_object</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
-  <span class="n">previous_size</span> <span class="o">=</span> <span class="n">stack</span><span class="p">.</span><span class="nf">size</span>
-  <span class="k">until</span> <span class="n">object_done?</span>
-    <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="n">parse_object_key</span>
-    <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="n">parse_json</span>
-  <span class="k">end</span>
-  <span class="nb">hash</span> <span class="o">=</span> <span class="n">stack</span><span class="p">.</span><span class="nf">pop</span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="nf">size</span> <span class="o">-</span> <span class="n">previous_size</span><span class="p">).</span><span class="nf">to_h</span>
-  <span class="n">stack</span> <span class="o">&lt;&lt;</span> <span class="nb">hash</span>
-  <span class="nb">hash</span>
-<span class="k">end</span></code></pre></figure>
-
-<p>Every parse function now receives an array to use as the parsing stack, whatever they parse, they push on the stack.
-The <code class="language-plaintext highlighter-rouge">parse_object</code> function is no exception, it first records how large the stack is, then it parses keys and values
-and push them both on the stack.
-Once the end of the object is found, all the pairs are popped from the back of the stack, and a hash is immediately created with
-the right size, ensuring each key is only hashed once.</p>
-
-<p>In C, it looks like this:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c">    <span class="kt">long</span> <span class="n">count</span> <span class="o">=</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="o">-&gt;</span><span class="n">head</span> <span class="o">-</span> <span class="n">stack_head</span><span class="p">;</span>
-
-    <span class="n">VALUE</span> <span class="n">hash</span><span class="p">;</span>
-<span class="cp">#ifdef HAVE_RB_HASH_NEW_CAPA
-</span>    <span class="n">hash</span> <span class="o">=</span> <span class="n">rb_hash_new_capa</span><span class="p">(</span><span class="n">count</span> <span class="o">&gt;&gt;</span> <span class="mi">1</span><span class="p">);</span>
-<span class="cp">#else
-</span>    <span class="n">hash</span> <span class="o">=</span> <span class="n">rb_hash_new</span><span class="p">();</span>
-<span class="cp">#endif
-</span>    <span class="n">rb_hash_bulk_insert</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">rvalue_stack_peek</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="p">,</span> <span class="n">count</span><span class="p">),</span> <span class="n">hash</span><span class="p">);</span>
-    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">hash</span><span class="p">;</span>
-    <span class="n">rvalue_stack_pop</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">stack</span><span class="p">,</span> <span class="n">count</span><span class="p">);</span></code></pre></figure>
-
-<p>You should be able to recognize the pattern, we create a hash of the right size using the <code class="language-plaintext highlighter-rouge">rb_hash_new_capa</code> API,
-which unfortunately we have to test for its existence because unfortunately <a href="https://bugs.ruby-lang.org/issues/18683">I only exposed it to C extensions a few years ago</a>.
-Then we insert all pairs at once with <code class="language-plaintext highlighter-rouge">rb_hash_bulk_insert</code>.</p>
-
-<p>And that’s it, with just that change, the <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark was sped up by <code class="language-plaintext highlighter-rouge">22%</code>:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    90.000 i/100ms
-Calculating -------------------------------------
-               after    897.170 (± 0.4%) i/s    (1.11 ms/i) -      4.500k in   5.015857s
-
-Comparison:
-              before:      737.1 i/s
-               after:      897.2 i/s - 1.22x  faster
-</code></pre></div></div>
-
-<h2 id="avoid-double-scanning">Avoid Double Scanning</h2>
-
-<p>After the value stack patch was so effective, <code class="language-plaintext highlighter-rouge">json_string_unescape</code> was back to being the biggest bottleneck at <code class="language-plaintext highlighter-rouge">22%</code> of total runtime:</p>
-
-<p><img src="/assets/articles/json-7/flamegraph-str-unescape.png" alt="" /></p>
-
-<p><a href="https://share.firefox.dev/4hfnvjD">Full profile</a>.</p>
-
-<p>I had recently optimized it by optimistically assuming most strings don’t contain any escape character, but something still<br />
-bothered me. The Ragel parser calls our <code class="language-plaintext highlighter-rouge">JSON_parse_string</code> callback with both the start and end pointer of the string, to do
-that it has to scan the string, so it’s a bit silly that the first thing we immediately do right after that is to scan it all over
-again.</p>
-
-<p>It would be way better if while it is looking for the end of the string, the Ragel parser would record if it had seen any
-backslash, and if not, we’d save on re-scanning it again.</p>
-
-<p>Here’s how the JSON strings grammar was defined:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="o">%%</span><span class="p">{</span>
-    <span class="n">machine</span> <span class="n">JSON_string</span><span class="p">;</span>
-    <span class="n">include</span> <span class="n">JSON_common</span><span class="p">;</span>
-
-    <span class="n">write</span> <span class="n">data</span><span class="p">;</span>
-
-    <span class="n">action</span> <span class="n">parse_string</span> <span class="p">{</span>
-        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_unescape</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">NIL_P</span><span class="p">(</span><span class="o">*</span><span class="n">result</span><span class="p">))</span> <span class="p">{</span>
-            <span class="n">fhold</span><span class="p">;</span>
-            <span class="n">fbreak</span><span class="p">;</span>
-        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
-            <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
-        <span class="p">}</span>
-    <span class="p">}</span>
-
-    <span class="n">action</span> <span class="n">exit</span> <span class="p">{</span> <span class="n">fhold</span><span class="p">;</span> <span class="n">fbreak</span><span class="p">;</span> <span class="p">}</span>
-
-    <span class="n">main</span> <span class="o">:=</span> <span class="sc">'"'</span> <span class="p">((</span><span class="o">^</span><span class="p">([</span><span class="err">\</span><span class="s">"</span><span class="se">\\</span><span class="s">] | 0..0x1f) | '</span><span class="se">\\</span><span class="s">'[</span><span class="se">\"\\</span><span class="s">/bfnrt] | '</span><span class="se">\\</span><span class="s">u'[0-9a-fA-F]{4} | '</span><span class="se">\\</span><span class="s">'^([</span><span class="se">\"\\</span><span class="s">/bfnrtu]|0..0x1f))* %parse_string) '"</span><span class="err">'</span> <span class="err">@</span><span class="n">exit</span><span class="p">;</span>
-<span class="p">}</span><span class="o">%%</span></code></pre></figure>
-
-<p>If you don’t understand it, don’t worry, me neither.</p>
-
-<p>That’s where I kinda need to confess that I don’t have a proper computer science education, more some sort of very applied
-software engineering curriculum, and not a particularly good one, so terms like “formal grammar” and parser generators like Ragel
-et al kind of fly over my head, hence I’m kinda struggling to improve the core parsing parts. And I also can’t rely on
-my usual tricks to work with things I don’t fully grasp because Ragel outputs absolutely disgusting code with lots of <code class="language-plaintext highlighter-rouge">goto</code>,
-which makes it super hard to learn by experimentation.</p>
-
-<p>Yet, even with my limited understanding, I can say something is really off here.
-We can see on the last line that we’re basically instructing Ragel about all the possible escape sequences inside a JSON string,
-which to me doesn’t make much sense. All we need the parser to do for us is to know enough to find the end of the string, 
-tell us it ran into the end of the stream without finding it, or if it ran into an invalid character (e.g. a newline).</p>
-
-<p>It absolutely doesn’t need to validate that <code class="language-plaintext highlighter-rouge">\u</code> is followed by 4 hexadecimal characters, we can do that during unescaping.</p>
-
-<p>But anyway, this is for strings with escape sequences, and we don’t have that many of those, I had to figure out a way
-to have a fast path for simple strings, and after a few hours of struggling and begging some properly educated people for help
-I managed to get this:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="o">%%</span><span class="p">{</span>
-    <span class="n">machine</span> <span class="n">JSON_string</span><span class="p">;</span>
-    <span class="n">include</span> <span class="n">JSON_common</span><span class="p">;</span>
-
-    <span class="n">write</span> <span class="n">data</span><span class="p">;</span>
-
-    <span class="n">action</span> <span class="n">parse_complex_string</span> <span class="p">{</span>
-        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_unescape</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
-        <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
-        <span class="n">fhold</span><span class="p">;</span>
-        <span class="n">fbreak</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="n">action</span> <span class="n">parse_simple_string</span> <span class="p">{</span>
-        <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">json_string_fastpath</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">||</span> <span class="n">json</span><span class="o">-&gt;</span> <span class="n">freeze</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">parsing_name</span> <span class="o">&amp;&amp;</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">symbolize_names</span><span class="p">);</span>
-        <span class="n">fexec</span> <span class="n">p</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
-        <span class="n">fhold</span><span class="p">;</span>
-        <span class="n">fbreak</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="n">double_quote</span> <span class="o">=</span> <span class="sc">'"'</span><span class="p">;</span>
-    <span class="n">escape</span> <span class="o">=</span> <span class="sc">'\\'</span><span class="p">;</span>
-    <span class="n">control</span> <span class="o">=</span> <span class="mi">0</span><span class="p">..</span><span class="mh">0x1f</span><span class="p">;</span>
-    <span class="n">simple</span> <span class="o">=</span> <span class="n">any</span> <span class="o">-</span> <span class="n">escape</span> <span class="o">-</span> <span class="n">double_quote</span> <span class="o">-</span> <span class="n">control</span><span class="p">;</span>
-
-    <span class="n">main</span> <span class="o">:=</span> <span class="n">double_quote</span> <span class="p">(</span>
-         <span class="p">(</span><span class="n">simple</span><span class="o">*</span><span class="p">)(</span>
-            <span class="p">(</span><span class="n">double_quote</span><span class="p">)</span> <span class="err">@</span><span class="n">parse_simple_string</span> <span class="o">|</span>
-            <span class="p">((</span><span class="o">^</span><span class="p">([</span><span class="err">\</span><span class="s">"</span><span class="se">\\</span><span class="s">] | control) | escape[</span><span class="se">\"\\</span><span class="s">/bfnrt] | '</span><span class="se">\\</span><span class="s">u'[0-9a-fA-F]{4} | escape^([</span><span class="se">\"\\</span><span class="s">/bfnrtu]|0..0x1f))* double_quote) @parse_complex_string</span><span class="err">
-</span><span class="s">         )</span><span class="err">
-</span><span class="s">    );</span><span class="err">
-</span><span class="s">}%%</span></code></pre></figure>
-
-<p>The idea is simple, start by only looking for a double quote not preceded by any backslash, that’s the optimistic path, and if it
-matches we enter <code class="language-plaintext highlighter-rouge">parse_simple_string</code>. If it doesn’t, we fall back to the previous pattern and end up in <code class="language-plaintext highlighter-rouge">parse_complex_string</code>.</p>
-
-<p>The fast path is a much simpler function:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="n">VALUE</span> <span class="nf">json_string_fastpath</span><span class="p">(</span><span class="n">JSON_Parser</span> <span class="o">*</span><span class="n">json</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">string</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">stringEnd</span><span class="p">,</span> <span class="n">bool</span> <span class="n">is_name</span><span class="p">,</span> <span class="n">bool</span> <span class="n">intern</span><span class="p">,</span> <span class="n">bool</span> <span class="n">symbolize</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="kt">size_t</span> <span class="n">bufferSize</span> <span class="o">=</span> <span class="n">stringEnd</span> <span class="o">-</span> <span class="n">string</span><span class="p">;</span>
-
-    <span class="k">if</span> <span class="p">(</span><span class="n">is_name</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">VALUE</span> <span class="n">cached_key</span><span class="p">;</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">symbolize</span><span class="p">))</span> <span class="p">{</span>
-            <span class="n">cached_key</span> <span class="o">=</span> <span class="n">rsymbol_cache_fetch</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">name_cache</span><span class="p">,</span> <span class="n">string</span><span class="p">,</span> <span class="n">bufferSize</span><span class="p">);</span>
-        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
-            <span class="n">cached_key</span> <span class="o">=</span> <span class="n">rstring_cache_fetch</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">name_cache</span><span class="p">,</span> <span class="n">string</span><span class="p">,</span> <span class="n">bufferSize</span><span class="p">);</span>
-        <span class="p">}</span>
-
-        <span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="n">cached_key</span><span class="p">))</span> <span class="p">{</span>
-            <span class="k">return</span> <span class="n">cached_key</span><span class="p">;</span>
-        <span class="p">}</span>
-    <span class="p">}</span>
-
-    <span class="k">return</span> <span class="n">build_string</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="n">stringEnd</span><span class="p">,</span> <span class="n">intern</span><span class="p">,</span> <span class="n">symbolize</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>Nothing particularly fancy. Unfortunately the impact on <code class="language-plaintext highlighter-rouge">twitter.json</code> wasn’t that big:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    91.000 i/100ms
-Calculating -------------------------------------
-               after    913.740 (± 0.3%) i/s    (1.09 ms/i) -      4.641k in   5.079191s
-
-Comparison:
-              before:      886.9 i/s
-               after:      913.7 i/s - 1.03x  faster
-</code></pre></div></div>
-
-<p>I was a bit disappointed, but still, I progressed a bit in my understanding of Ragel and knew there was
-lots of fishy things in <code class="language-plaintext highlighter-rouge">ruby/json</code>’s Ragel parser, so that would be useful.</p>
-
-<h2 id="avoid-useless-copies">Avoid Useless Copies</h2>
-
-<p>After that disappointment, I needed a bit of a break, so I went back to a function where I knew I could get better
-results on, integer parsing.</p>
-
-<p>I didn’t have a micro-benchmark dedicated to integers, but the small array one would do:</p>
-
-<figure class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">benchmark_parsing</span> <span class="s2">"small nested array"</span><span class="p">,</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">]]</span><span class="o">*</span><span class="mi">10</span><span class="p">)</span></code></pre></figure>
-
-<p>So 10 arrays, with 5 integers each, quite simple.</p>
-
-<p>And you know the drill, it started with some profiling.</p>
-
-<p><img src="/assets/articles/json-7/flamegraph-integer.png" alt="" /></p>
-
-<p><a href="https://share.firefox.dev/4jeyFXA">Full profile</a>.</p>
-
-<p>As <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html#more-stack-allocation">we mentioned in the previous part</a>,
-<code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>, the API Ruby gives us to turn a C string into a Ruby Integer, isn’t very efficient.</p>
-
-<p>First, because it expects a C string, it forces us to first copy the string into a buffer so we can append a <code class="language-plaintext highlighter-rouge">NULL</code> to it,
-but also because it has to deal with quite a lot of cases we don’t care about, such as a variable base. For instance <code class="language-plaintext highlighter-rouge">0xff</code> is a
-valid number for <code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>, but not for JSON. It also has to support arbitrary long integers, which slows it down, but the
-overwhelming majority of the numbers we parse fit in 64 bits.</p>
-
-<p>So we have an opportunity here for another fast path type of function, that would deal with the crux of integer parsing, and
-for the rare and complex cases, continue to rely on <code class="language-plaintext highlighter-rouge">rb_cstr2inum</code>.</p>
-
-<p>The implementation is very straightforward, you can see <a href="https://github.com/ruby/json/pull/692">the full patch</a>,
-but I’ll detail the key parts:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">static</span> <span class="kr">inline</span> <span class="n">VALUE</span> <span class="nf">fast_parse_integer</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="n">p</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="n">pe</span><span class="p">)</span>
-<span class="p">{</span>
-    <span class="n">bool</span> <span class="n">negative</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
-    <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="n">p</span> <span class="o">==</span> <span class="sc">'-'</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">negative</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
-        <span class="n">p</span><span class="o">++</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="kt">long</span> <span class="kt">long</span> <span class="n">memo</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
-    <span class="k">while</span> <span class="p">(</span><span class="n">p</span> <span class="o">&lt;</span> <span class="n">pe</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">memo</span> <span class="o">*=</span> <span class="mi">10</span><span class="p">;</span>
-        <span class="n">memo</span> <span class="o">+=</span> <span class="o">*</span><span class="n">p</span> <span class="o">-</span> <span class="sc">'0'</span><span class="p">;</span>
-        <span class="n">p</span><span class="o">++</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="k">if</span> <span class="p">(</span><span class="n">negative</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">memo</span> <span class="o">=</span> <span class="o">-</span><span class="n">memo</span><span class="p">;</span>
-    <span class="p">}</span>
-    <span class="k">return</span> <span class="n">LL2NUM</span><span class="p">(</span><span class="n">memo</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>We start by checking if the number is negative, then convert ASCII characters into the corresponding integer one by one.</p>
-
-<p>The limitation, however, is that this can only work for an integer that fits in a native integer type, as such we only enter
-this fast path if the number of digits is low enough:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define MAX_FAST_INTEGER_SIZE 18
-</span>
-<span class="kt">long</span> <span class="n">len</span> <span class="o">=</span> <span class="n">p</span> <span class="o">-</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">;</span>
-<span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="n">len</span> <span class="o">&lt;</span> <span class="n">MAX_FAST_INTEGER_SIZE</span><span class="p">))</span> <span class="p">{</span>
-    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">fast_parse_integer</span><span class="p">(</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">,</span> <span class="n">p</span><span class="p">);</span>
-<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
-    <span class="n">fbuffer_clear</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">);</span>
-    <span class="n">fbuffer_append</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="n">json</span><span class="o">-&gt;</span><span class="n">memo</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
-    <span class="n">fbuffer_append_char</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">,</span> <span class="sc">'\0'</span><span class="p">);</span>
-    <span class="o">*</span><span class="n">result</span> <span class="o">=</span> <span class="n">rb_cstr2inum</span><span class="p">(</span><span class="n">FBUFFER_PTR</span><span class="p">(</span><span class="o">&amp;</span><span class="n">json</span><span class="o">-&gt;</span><span class="n">fbuffer</span><span class="p">),</span> <span class="mi">10</span><span class="p">);</span>
-<span class="p">}</span></code></pre></figure>
-
-<p>Why 18? Because regardless of the CPU architecture, <a href="https://en.wikibooks.org/wiki/C_Programming/limits.h#Member_constants">in C a <code class="language-plaintext highlighter-rouge">long long</code> must support a maximum value of <code class="language-plaintext highlighter-rouge">9,223,372,036,854,775,807</code>
-and a minimum value of <code class="language-plaintext highlighter-rouge">−9,223,372,036,854,775,808</code></a>, in other words, it’s always a 64-bit integer.
-That’s 19 digits, but there are some 19-digit numbers that don’t fit in a <code class="language-plaintext highlighter-rouge">long long</code>, so 18.</p>
-
-<p>It would be possible to handle slightly bigger numbers by using an <code class="language-plaintext highlighter-rouge">unsigned long long</code>, but I didn’t think it was worth it.</p>
-
-<p>As for the impact on the micro-benchmark, it was pretty good:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing small nested array (121 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after   124.666k i/100ms
-Calculating -------------------------------------
-               after      1.258M (± 2.3%) i/s  (794.63 ns/i) -      6.358M in   5.055135s
-
-Comparison:
-              before:   816626.3 i/s
-               after:  1258454.3 i/s - 1.54x  faster
-</code></pre></div></div>
-
-<p>But that’s a micro-benchmark of course, here’s the effect on more realistic ones:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    92.000 i/100ms
-Calculating -------------------------------------
-               after    939.320 (± 1.0%) i/s    (1.06 ms/i) -      4.784k in   5.093485s
-
-Comparison:
-              before:      875.5 i/s
-               after:      939.3 i/s - 1.07x  faster
-
-
-== Parsing citm_catalog.json (1727030 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    43.000 i/100ms
-Calculating -------------------------------------
-               after    430.366 (± 0.9%) i/s    (2.32 ms/i) -      2.193k in   5.096015s
-
-Comparison:
-              before:      388.8 i/s
-               after:      430.4 i/s - 1.11x  faster
-</code></pre></div></div>
-
-<h2 id="avoid-duplicated-work">Avoid Duplicated Work</h2>
-
-<p>The final parser optimization that shipped with <code class="language-plaintext highlighter-rouge">json 2.9.0</code>, was submitted by <a href="https://github.com/tenderlove">Aaron Patterson</a>.
-I’m not too sure how he got to work on it, perhaps he was attracted by the smell of blood when he saw me cursing
-against Ragel in our company Slack, who knows?</p>
-
-<p>The key element of Aaron’s patch is that he changed this:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_float</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span>
-<span class="k">if</span> <span class="p">(</span><span class="n">np</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> <span class="p">{</span>
-    <span class="n">fexec</span> <span class="n">np</span><span class="p">;</span>
-<span class="p">}</span>
-<span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_integer</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span></code></pre></figure>
-
-<p>Into this:</p>
-
-<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">np</span> <span class="o">=</span> <span class="n">JSON_parse_number</span><span class="p">(</span><span class="n">json</span><span class="p">,</span> <span class="n">fpc</span><span class="p">,</span> <span class="n">pe</span><span class="p">,</span> <span class="n">result</span><span class="p">);</span></code></pre></figure>
-
-<p>If it’s not yet obvious, the previous version of the parser would first try to parse a float, and if it failed to do so,
-would try to parse an integer. This is quite wasteful, because all floats start with an integer, so whenever the next value to
-parse was an integer, it would first be fully scanned by <code class="language-plaintext highlighter-rouge">JSON_parse_float</code> to figure out it’s not an integer, and then the parser
-would backtrack and scan the same bytes again in <code class="language-plaintext highlighter-rouge">JSON_parse_integer</code>.</p>
-
-<p>You can look at <a href="https://github.com/ruby/json/pull/698/">the full patch</a>, which also contains some changes to the grammar and
-state machine to make the above change possible, but that really is the core of it.</p>
-
-<p>And you might think it’s indeed more efficient, but probably not that big of a deal in the grand scheme of things, but actually
-it did speedup <code class="language-plaintext highlighter-rouge">twitter.json</code> and <code class="language-plaintext highlighter-rouge">citm_catalog.json</code> by a nice <code class="language-plaintext highlighter-rouge">5%</code>:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    95.000 i/100ms
-Calculating -------------------------------------
-               after    947.551 (± 0.9%) i/s    (1.06 ms/i) -      4.750k in   5.013354s
-
-Comparison:
-              before:      904.4 i/s
-               after:      947.6 i/s - 1.05x  faster
-
-
-== Parsing citm_catalog.json (1727030 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-               after    45.000 i/100ms
-Calculating -------------------------------------
-               after    458.244 (± 0.2%) i/s    (2.18 ms/i) -      2.295k in   5.008296s
-
-Comparison:
-              before:      432.7 i/s
-               after:      458.2 i/s - 1.06x  faster
-</code></pre></div></div>
-
-<h2 id="fin">Fin?</h2>
-
-<p>And that’s it, that was the final optimization performed before I released <code class="language-plaintext highlighter-rouge">json 2.9.0</code>, so I will conclude this series.</p>
-
-<p>If you wonder how fast it now is, here’s a final <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark against the competition:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (567916 bytes)
-ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
-Warming up --------------------------------------
-                json    93.000 i/100ms
-                  oj    66.000 i/100ms
-          Oj::Parser    80.000 i/100ms
-           rapidjson    58.000 i/100ms
-Calculating -------------------------------------
-                json    928.472 (± 0.3%) i/s    (1.08 ms/i) -      4.650k in   5.008282s
-                  oj    666.198 (± 0.8%) i/s    (1.50 ms/i) -      3.366k in   5.052899s
-          Oj::Parser    803.031 (± 0.2%) i/s    (1.25 ms/i) -      4.080k in   5.080788s
-           rapidjson    584.869 (± 0.2%) i/s    (1.71 ms/i) -      2.958k in   5.057565s
-
-Comparison:
-                json:      928.5 i/s
-          Oj::Parser:      803.0 i/s - 1.16x  slower
-                  oj:      666.2 i/s - 1.39x  slower
-           rapidjson:      584.9 i/s - 1.59x  slower
-</code></pre></div></div>
-
-<p>That isn’t to say I’m done optimizing, I have quite a few ideas for the future, but I wanted to stabilize the gem prior to the
-release of Ruby 3.4.0, and I feel it is now fast enough that there’s no urgency.</p>
-
-<p>But to give you an idea of what may happen in the future, I’d like to drop Ragel and replace it with a simpler recursive descent
-parser. The existing one could certainly be improved, but I find it much harder to work with generated parsers than to write them
-manually.</p>
-
-<p>I’m also currently pairing with <a href="https://github.com/etiennebarrie">Étienne Barrié</a> on <a href="https://github.com/ruby/json/pull/718">a better API for both the parser and the encoder</a>
-which would allow to reduce the setup cost even further, stop relying as much on global state, and would generally be more ergonomic.</p>
-
-<p>I hope you enjoyed this blog series, I’ll try to continue writing, next, I’d like to share some thoughts on <a href="https://github.com/Shopify/pitchfork">Pitchfork</a>,
-but I may need to set the stage for it with other posts to explain some key concepts.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[In the previous post, we started covering some parser optimizations. There’s just a handful more to cover until we reached what’s the state of the currently released version of ruby/json.]]></summary></entry></feed>
+and breaking change is no longer what it used to be.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn't matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?]]></summary></entry></feed>
