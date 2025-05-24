@@ -338,7 +338,7 @@ The <code class="language-plaintext highlighter-rouge">x86</code> (AKA Intel) me
 so even if your compiler generated the native code in the same order, your CPU could execute them out of order,
 giving you unpredictable results.</p>
 
-<p>To work around this problem, C compilers and CPUs provide (“barriers”)[https://en.wikipedia.org/wiki/Barrier_(computer_science)].
+<p>To work around this problem, C compilers and CPUs provide <a href="https://en.wikipedia.org/wiki/Barrier_(computer_science)">“barriers”</a>.
 You can insert them in your code to enforce that reads and write can’t be reordered across such barriers, allowing
 you to ensure that all threads will observe memory in a consistent way.</p>
 
