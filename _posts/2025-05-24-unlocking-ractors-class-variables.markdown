@@ -299,7 +299,7 @@ The `x86` (AKA Intel) memory model is quite strict, so it doesn't reorder much, 
 so even if your compiler generated the native code in the same order, your CPU could execute them out of order,
 giving you unpredictable results.
 
-To work around this problem, C compilers and CPUs provide ("barriers")[https://en.wikipedia.org/wiki/Barrier_(computer_science)].
+To work around this problem, C compilers and CPUs provide ["barriers"](https://en.wikipedia.org/wiki/Barrier_(computer_science)).
 You can insert them in your code to enforce that reads and write can't be reordered across such barriers, allowing
 you to ensure that all threads will observe memory in a consistent way.
 
