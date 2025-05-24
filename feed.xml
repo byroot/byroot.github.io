@@ -1,4 +1,682 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-04-26T18:44:02+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: object_id</title><link href="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html" rel="alternate" type="text/html" title="Unlocking Ractors: object_id" /><published>2025-04-26T10:03:51+00:00</published><updated>2025-04-26T10:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-05-24T13:32:15+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: class instance variables</title><link href="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html" rel="alternate" type="text/html" title="Unlocking Ractors: class instance variables" /><published>2025-05-24T09:03:51+00:00</published><updated>2025-05-24T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why
+I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could
+still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.</p>
+
+<p>But as I mentioned, this is unfortunately not yet viable because there are many known implementation bugs that can lead
+to interpreter crashes, and that while they are supposed to execute in parallel, the Ruby VM still has one true global
+lock that Ractors need to acquire to perform certain operations, making them often perform worse than the equivalent
+single-threaded code.</p>
+
+<p>One of these remaining contention points is class instance variables and class variables, and given it’s quite frequent
+for code to check a class or module instance variable as some sort of configuration, this contention point can have a very
+sizeable impact on Ractor performance, let me show you with a simple benchmark:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Mod</span>
+  <span class="vi">@a</span> <span class="o">=</span> <span class="vi">@b</span> <span class="o">=</span> <span class="vi">@c</span> <span class="o">=</span> <span class="mi">1</span>
+
+  <span class="k">def</span> <span class="nc">self</span><span class="o">.</span><span class="nf">compute</span><span class="p">(</span><span class="n">count</span><span class="p">)</span>
+    <span class="n">count</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
+      <span class="vi">@a</span> <span class="o">+</span> <span class="vi">@b</span> <span class="o">+</span> <span class="vi">@c</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="no">ITERATIONS</span> <span class="o">=</span> <span class="mi">1_000_000</span>
+<span class="no">PARALLELISM</span> <span class="o">=</span> <span class="mi">8</span>
+
+<span class="k">if</span> <span class="no">ARGV</span><span class="p">.</span><span class="nf">first</span> <span class="o">==</span> <span class="s2">"ractor"</span>
+  <span class="n">ractors</span> <span class="o">=</span> <span class="no">PARALLELISM</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
+    <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+      <span class="no">Mod</span><span class="p">.</span><span class="nf">compute</span><span class="p">(</span><span class="no">ITERATIONS</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+  <span class="n">ractors</span><span class="p">.</span><span class="nf">each</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:take</span><span class="p">)</span>
+<span class="k">else</span>
+  <span class="no">Mod</span><span class="p">.</span><span class="nf">compute</span><span class="p">(</span><span class="no">ITERATIONS</span> <span class="o">*</span> <span class="no">PARALLELISM</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>This simplistic micro-benchmark just add three module instance variables together repeatedly.
+In one mode it does it serialy in the main thread, and if the <code class="language-plaintext highlighter-rouge">ractor</code> argument is passed, it does as many loop, but with 8
+parallel ractors.
+Hence in a perfect world, using the Ractors branch should be close to 8 times faster.</p>
+
+<p>However, if you run this benchmark on Ruby’s master branch, this isn’t the result you’ll get:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>hyperfine <span class="nt">-w</span> 1 <span class="s1">'./miniruby --yjit ../test.rb'</span> <span class="s1">'./miniruby --yjit ../test.rb ractor'</span>
+Benchmark 1: ./miniruby <span class="nt">--yjit</span> <span class="nt">--disable-all</span> ../test.rb
+  Time <span class="o">(</span>mean ± σ<span class="o">)</span>:     252.4 ms ±   1.2 ms    <span class="o">[</span>User: 250.2 ms, System: 1.6 ms]
+  Range <span class="o">(</span>min … max<span class="o">)</span>:   249.9 ms … 253.8 ms    11 runs
+
+Benchmark 2: ./miniruby <span class="nt">--yjit</span> <span class="nt">--disable-all</span> ../test.rb ractor
+  Time <span class="o">(</span>mean ± σ<span class="o">)</span>:      2.005 s ±  0.013 s    <span class="o">[</span>User: 2.098 s, System: 6.963 s]
+  Range <span class="o">(</span>min … max<span class="o">)</span>:    1.992 s …  2.027 s    10 runs
+
+Summary
+  ./miniruby <span class="nt">--yjit</span> ../test.rb ran
+    7.94 ± 0.06 <span class="nb">times </span>faster than ./miniruby <span class="nt">--yjit</span> ../test.rb ractor
+</code></pre></div></div>
+
+<p>That’s right, instead of being 8 times faster, the branch that uses Ractors ended up being 8 times slower.
+This is because to read a module or class instance variables, secondary ractors have to acquire the VM lock,
+which is a costly operation in itself, and worse, they end up waiting a lot to obtain the lock.</p>
+
+<p>So what can we do about it?</p>
+
+<h2 id="language-semantic">Language Semantic</h2>
+
+<p>Before we delves into how this lock could be removed or reduced, let’s review how class instance variables behave with ractors.</p>
+
+<p>Given that classes are global, their instance variables are too, hence they are essentially global.
+Because of this, Ractors can’t let you do everything with them, otherwise, it would be a way to work around Ractors isolation.</p>
+
+<p>The first rule is that only the main Ractor is allowed to set class instance variables:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Test</span>
+  <span class="k">class</span> <span class="o">&lt;&lt;</span> <span class="nb">self</span>
+    <span class="nb">attr_accessor</span> <span class="ss">:var</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="no">Test</span><span class="p">.</span><span class="nf">var</span> <span class="o">=</span> <span class="mi">1</span> <span class="c1"># works</span>
+
+<span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="c1"># works</span>
+  <span class="nb">p</span> <span class="no">Test</span><span class="p">.</span><span class="nf">var</span>
+
+  <span class="c1"># raises Ractor::IsolationError: can not set instance variables</span>
+  <span class="c1"># of classes/modules by non-main Ractors</span>
+  <span class="no">Test</span><span class="p">.</span><span class="nf">var</span> <span class="o">=</span> <span class="mi">2</span>
+<span class="k">end</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<p>So secondary ractors can read instance variables on classes and modules, but can’t write them.</p>
+
+<p>The second rule is that they can only read instance variables on classes if the object stored in that variable is shareable:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Test</span>
+  <span class="k">class</span> <span class="o">&lt;&lt;</span> <span class="nb">self</span>
+    <span class="nb">attr_accessor</span> <span class="ss">:var1</span><span class="p">,</span> <span class="ss">:var2</span>
+  <span class="k">end</span>
+
+  <span class="vi">@var1</span> <span class="o">=</span> <span class="p">{}.</span><span class="nf">freeze</span>
+  <span class="vi">@var2</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">end</span>
+
+<span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="c1"># works:</span>
+  <span class="nb">p</span> <span class="no">Test</span><span class="p">.</span><span class="nf">var1</span>
+
+  <span class="c1"># raises Ractor::IsolationError: can not get unshareable values from</span>
+  <span class="c1"># instance variables of classes/modules from non-main Ractors</span>
+  <span class="nb">p</span> <span class="no">Test</span><span class="p">.</span><span class="nf">var2</span>
+<span class="k">end</span><span class="p">.</span><span class="nf">take</span>
+</code></pre></div></div>
+
+<h2 id="reducing-contention">Reducing Contention</h2>
+
+<p>Usually when dealing with lock contention issues, the first solution is to turn one big lock into multiple finer-grained locks.
+In our simplistic benchmark, all ractors are accessing variables on the same module, so that wouldn’t help, but we could
+assume that in more realistic scenarios, they’d access the variables of many different modules and, hence wouldn’t fight as much
+for the same one.</p>
+
+<p>But the way I envision Ractors being used in real-world cases, at least initially, is for running small pieces of
+code in parallel, with an API approaching futures:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">futures</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">futures</span> <span class="o">&lt;&lt;</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="p">{</span> <span class="n">fetch_and_compute_prices</span> <span class="p">}</span>
+<span class="n">futures</span> <span class="o">&lt;&lt;</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">new</span> <span class="p">{</span> <span class="n">fetch_and_compute_order_history</span> <span class="p">}</span>
+<span class="o">...</span>
+<span class="n">futures</span><span class="p">.</span><span class="nf">map</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:take</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>As such I actually expect Ractors to commonly access the same module or class variables over and over, so introducing more finely grained locks isn’t very enticing.</p>
+
+<p>Another possibility would be to use a <a href="https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock">read-write lock</a>,
+given only the main ractor can “write” variables, all secondary ractors could acquire the read lock concurrently.
+But from previous experience, while read-write locks do allow concurrent read threads not to stall, they’re still quite
+costly when contented because all threads have to atomically increment and decrement the same value and that isn’t good
+for the CPU cache.
+It’s a fine solution when the operation you are protecting is a relatively slow one, but in our case, reading an instance
+variable is extremely cheap, so any kind of lock, even an uncontended one, will be disproportionally costly and ruin performance.</p>
+
+<p>That’s why the only reasonable solution is to find a way to not use a lock at all.</p>
+
+<h2 id="how-do-instance-variables-work">How do Instance Variables Work</h2>
+
+<p>To understand how we could make instance variables lock-free, we must first understand how they work.
+As is now tradition, I’ll try to explain it using Ruby pseudo code, starting with instance variable reads:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_get</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="k">if</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+      <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+      <span class="c1"># hence it doesn't need to lock because we know no one else could be</span>
+      <span class="c1"># concurrently modifying `@shape` or `@fields`</span>
+      <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+        <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span>
+      <span class="k">end</span>
+    <span class="k">else</span>
+      <span class="c1"># Secondary ractors must lock the VM even for reads because the main Ractor</span>
+      <span class="c1"># could be modifying `@shape` or `@fields` concurrently.</span>
+      <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+        <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+          <span class="n">value</span> <span class="o">=</span> <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span>
+          <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">Ractor</span><span class="p">.</span><span class="nf">shareable?</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+          <span class="n">value</span>
+        <span class="k">end</span>
+      <span class="k">end</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>I’m not going to explain how shapes work here, as I already explained it in multiple previous posts.
+The only thing you really need to know is that instance variables are stored in a continuous array, and shapes
+keep track of the offset at which each variable is stored. They also are immutable, so you can query them concurrently.</p>
+
+<p>As a result, reading an instance variable only amount of querying the shape tree to figure out if that particular variable exists,
+and if it does, what its index is. After that, we read the variable at the specified offset in the <code class="language-plaintext highlighter-rouge">@fields</code> array of the
+object.</p>
+
+<p>However, on secondary Ractors, we additionally need to lock the VM to ensure the shape and the fields are consistent,
+but that will be clearer once I explain how writing instance variables works.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="no">RubyVM</span><span class="p">.</span><span class="nf">synchronize</span> <span class="k">do</span>
+      <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+        <span class="c1"># The variable already exists, we replace its value</span>
+        <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+      <span class="k">else</span>
+        <span class="c1"># The variable doesn't exist, we have to make a shape transition</span>
+        <span class="n">next_shape</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">add_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span> <span class="o">&gt;</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">capacity</span>
+          <span class="c1"># @fields is full, we need to allocate a larger one</span>
+          <span class="n">new_fields</span> <span class="o">=</span> <span class="no">Memory</span><span class="p">.</span><span class="nf">allocate</span><span class="p">(</span><span class="ss">size: </span><span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span><span class="p">)</span>
+          <span class="n">new_fields</span><span class="p">.</span><span class="nf">replace</span><span class="p">(</span><span class="vi">@fields</span><span class="p">)</span> <span class="c1"># copy content</span>
+          <span class="vi">@fields</span><span class="p">,</span> <span class="n">old_fields</span> <span class="o">=</span> <span class="n">new_fields</span><span class="p">,</span> <span class="vi">@fields</span>
+
+          <span class="c1"># The fields array is manually managed memory, so it needs to be freed explicitly</span>
+          <span class="no">Memory</span><span class="p">.</span><span class="nf">free</span><span class="p">(</span><span class="n">old_fields</span><span class="p">)</span>
+        <span class="k">end</span>
+
+        <span class="vi">@fields</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+        <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+      <span class="k">end</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>As you can see, the fields array has a given size, if we’re adding a new instance variable, we may need to allocate
+a larger one and swap the two, as well as change the object’s shape.</p>
+
+<p>That is why we need to lock the VM, we can’t let another ractor read an instance variable while we’re doing this because
+it would run into all sorts of race conditions:</p>
+
+<ul>
+  <li>It could be reading inside <code class="language-plaintext highlighter-rouge">old_fields</code> while we’re freeing it, causing a use-after-free bug.</li>
+  <li>It could be reading inside <code class="language-plaintext highlighter-rouge">old_fields</code> using the new shape, causing an out-of-bounds read.</li>
+  <li>It could be reading inside <code class="language-plaintext highlighter-rouge">new_fields</code> using the new shape, but before we’ve written the new value, causing an uninitialized memory read.</li>
+</ul>
+
+<p>Now, if you are not familiar with C, or another low-level programming language, you might be thinking that I’m exaggerating.
+After all, updating the shape is the last operation, so surely cases 2 and 3 aren’t possible.</p>
+
+<p>Well, I got some bad news…</p>
+
+<h2 id="memory-model">Memory Model</h2>
+
+<p>Multithreaded programming is tricky, but even more so when allowing multiple threads to read and write the same memory,
+because processors have all sorts of caches, hence a variable doesn’t only reside in one place in your RAM.</p>
+
+<p>It can also be copied in the CPU L1/L2/etc caches, or even in the CPU registers.
+When one thread writes into a variable, it’s not immediately visible to all other threads, the write will take a while
+to propagate back to the RAM.
+Worse, if you write into multiple variables in a specific order, it’s not even guaranteed other threads will witness these changes
+in the same order.</p>
+
+<p>Let’s consider a simple multi-threaded program:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Point</span> <span class="o">=</span> <span class="no">Struct</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="ss">:x</span><span class="p">,</span> <span class="ss">:y</span><span class="p">)</span>
+
+<span class="n">treasure</span> <span class="o">=</span> <span class="kp">nil</span>
+
+<span class="n">thread</span> <span class="o">=</span> <span class="no">Thread</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
+  <span class="k">while</span> <span class="kp">true</span>
+    <span class="k">if</span> <span class="n">treasure</span>
+      <span class="nb">puts</span> <span class="s2">"Treasure is at </span><span class="si">#{</span><span class="n">treasure</span><span class="p">.</span><span class="nf">x</span><span class="p">.</span><span class="nf">inspect</span><span class="si">}</span><span class="s2"> / </span><span class="si">#{</span><span class="n">treasure</span><span class="p">.</span><span class="nf">y</span><span class="p">.</span><span class="nf">inspect</span><span class="si">}</span><span class="s2">"</span>
+      <span class="k">break</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="n">point</span> <span class="o">=</span> <span class="no">Point</span><span class="p">.</span><span class="nf">new</span>
+<span class="n">point</span><span class="p">.</span><span class="nf">x</span> <span class="o">=</span> <span class="mi">12</span>
+<span class="n">point</span><span class="p">.</span><span class="nf">y</span> <span class="o">=</span> <span class="mi">24</span>
+<span class="n">treasure</span> <span class="o">=</span> <span class="n">point</span>
+
+<span class="n">thread</span><span class="p">.</span><span class="nf">join</span>
+</code></pre></div></div>
+
+<p>As a Ruby programmer, you likely expect this program to print <code class="language-plaintext highlighter-rouge">Treasure is at 12 / 24</code>, and you’d be correct.
+After all, we fully initialize the <code class="language-plaintext highlighter-rouge">Point</code> instance before updating the <code class="language-plaintext highlighter-rouge">treasure</code> global variable to point to it.</p>
+
+<p>But if we were to write a similar program in C, the output could be any of:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">Treasure is at 12 / 24</code></li>
+  <li><code class="language-plaintext highlighter-rouge">Treasure is at nil / 24</code></li>
+  <li><code class="language-plaintext highlighter-rouge">Treasure is at 12 / nil</code></li>
+  <li><code class="language-plaintext highlighter-rouge">Treasure is at nil / nil</code></li>
+</ul>
+
+<p>Why? Well, this has to do with <a href="https://en.wikipedia.org/wiki/Memory_model_(programming)">memory models</a>.
+In order to optimize your code, compilers sometimes may have to change the order of memory reads and writes.
+So for programmers to be able to write correct programs, they need to know what the compiler can and cannot do, and that’s
+what a language memory model defines. In the case of C, the memory model is very lax, and compilers are allowed to reorder
+reads and writes very extensively.</p>
+
+<p>And it’s not only about the compilers. CPUs too can reorder read and write operations.
+The <code class="language-plaintext highlighter-rouge">x86</code> (AKA Intel) memory model is quite strict, so it doesn’t reorder much, but the <code class="language-plaintext highlighter-rouge">arm64</code> memory model is much more lax,
+so even if your compiler generated the native code in the same order, your CPU could execute them out of order,
+giving you unpredictable results.</p>
+
+<p>To work around this problem, C compilers and CPUs provide (“barriers”)[https://en.wikipedia.org/wiki/Barrier_(computer_science)].
+You can insert them in your code to enforce that reads and write can’t be reordered across such barriers, allowing
+you to ensure that all threads will observe memory in a consistent way.</p>
+
+<h2 id="atomic-write">Atomic Write</h2>
+
+<p>From a programmer’s perspective, it’s generally exposed as “atomic” read and write operations, and it’s understood by the
+compiler and CPU that memory operations cannot be reordered across atomic operations.</p>
+
+<p>So going back to our <code class="language-plaintext highlighter-rouge">instance_variable_set</code> implementation, we can fix two of the three race conditions by using an atomic
+write:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+      <span class="c1"># The variable already exists, we replace its value</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">else</span>
+      <span class="c1"># The variable doesn't exist, we have to make a shape transition</span>
+      <span class="n">next_shape</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">add_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+      <span class="k">if</span> <span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span> <span class="o">&gt;</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">capacity</span>
+        <span class="c1"># @fields is full, we need to allocate a larger one</span>
+        <span class="n">new_fields</span> <span class="o">=</span> <span class="no">Memory</span><span class="p">.</span><span class="nf">allocate</span><span class="p">(</span><span class="ss">size: </span><span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span><span class="p">)</span>
+        <span class="n">new_fields</span><span class="p">.</span><span class="nf">replace</span><span class="p">(</span><span class="vi">@fields</span><span class="p">)</span> <span class="c1"># copy content</span>
+        <span class="n">old_fields</span> <span class="o">=</span> <span class="vi">@fields</span>
+        <span class="c1"># Ensure `@fields` isn't updated before its content has been filled</span>
+        <span class="no">Atomic</span><span class="p">.</span><span class="nf">write</span> <span class="p">{</span> <span class="vi">@fields</span> <span class="o">=</span> <span class="n">new_fields</span> <span class="p">}</span>
+
+        <span class="c1"># The fields array is manually managed memory, so it needs to be freed explicitly</span>
+        <span class="no">Memory</span><span class="p">.</span><span class="nf">free</span><span class="p">(</span><span class="n">old_fields</span><span class="p">)</span>
+      <span class="k">end</span>
+
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+      <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>With this simple change, we now guarantee that the new <code class="language-plaintext highlighter-rouge">@fields</code> will be visible to other threads before the new <code class="language-plaintext highlighter-rouge">@shape</code> is.</p>
+
+<p>They may still see the old <code class="language-plaintext highlighter-rouge">@shape</code> with the new <code class="language-plaintext highlighter-rouge">@fields</code>, but that’s acceptable because all the offsets <code class="language-plaintext highlighter-rouge">@shape</code> may point to
+contain the same values. Pretty neat. Now we only need to find a solution for the use-after-free problem.</p>
+
+<h2 id="our-friend-the-garbage-collector">Our Friend The Garbage Collector</h2>
+
+<p>So our problem is that after we swap the old <code class="language-plaintext highlighter-rouge">@fields</code> array for the new one, we must free the old array to not leak memory.
+But if there is no synchronization, we can’t guarantee that another thread doesn’t have a reference to the old array in its
+registers or caches, so it may try to read from it after it was freed, and that might lead to a segmentation fault.</p>
+
+<p>Hence, we must wait until there’s no longer any reference to the old array before freeing it, and if you think about it
+that’s exactly what a garbage collector does, and lucky for us, Ruby already has one.</p>
+
+<p>So the solution to avoid use-after-free is to use an actual Ruby <code class="language-plaintext highlighter-rouge">Array</code> instead of manually allocated memory,
+this way we no longer have to free it explicitly, the garbage collected will take care of it later:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+      <span class="c1"># The variable already exists, we replace its value</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">else</span>
+      <span class="c1"># The variable doesn't exist, we have to make a shape transition</span>
+      <span class="n">next_shape</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">add_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+      <span class="k">if</span> <span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span> <span class="o">&gt;</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">capacity</span>
+        <span class="c1"># @fields is full, we need to allocate a larger one</span>
+        <span class="n">new_fields</span> <span class="o">=</span> <span class="no">Array</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span><span class="p">)</span>
+        <span class="n">new_fields</span><span class="p">.</span><span class="nf">replace</span><span class="p">(</span><span class="vi">@fields</span><span class="p">)</span> <span class="c1"># copy content</span>
+        <span class="n">old_fields</span> <span class="o">=</span> <span class="vi">@fields</span>
+        <span class="c1"># Ensure `@fields` isn't updated before its content has been filled</span>
+        <span class="no">Atomic</span><span class="p">.</span><span class="nf">write</span> <span class="p">{</span> <span class="vi">@fields</span> <span class="o">=</span> <span class="n">new_fields</span> <span class="p">}</span>
+      <span class="k">end</span>
+
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+      <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Now, if another thread is currently reading inside the old <code class="language-plaintext highlighter-rouge">@fields</code>, it doesn’t matter because it will remain valid
+memory until the garbage collector notices it’s no longer referenced by anyone.</p>
+
+<p>And just like that, we now have fully lock-free class instance variable reads and writes!</p>
+
+<p>Well… no. Because we overlooked two complications.</p>
+
+<h2 id="removing-instance-variables">Removing Instance Variables</h2>
+
+<p>Perhaps you don’t know about it, because it’s quite a rare thing to do, but in Ruby, you can remove an object’s instance variables:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Test</span>
+  <span class="nb">p</span> <span class="n">instance_variable_defined?</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span> <span class="c1"># =&gt; false</span>
+  <span class="vi">@foo</span> <span class="o">=</span> <span class="mi">1</span>
+  <span class="nb">p</span> <span class="n">instance_variable_defined?</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span> <span class="c1"># =&gt; true</span>
+
+  <span class="n">remove_instance_variable</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span>
+  <span class="nb">p</span> <span class="n">instance_variable_defined?</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span> <span class="c1"># =&gt; false</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>And while this is an extremely rare operation, it can happen, hence we must handle it in a thread safe way.</p>
+
+<p>Let’s look at its pseudo-implementation:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">remove_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="n">removed_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+    <span class="c1"># The variable didn't exist in the first place</span>
+    <span class="k">return</span> <span class="k">unless</span> <span class="n">removed_index</span>
+
+    <span class="n">next_shape</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">remove_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+    <span class="c1"># Shift fields left</span>
+    <span class="n">removed_index</span><span class="p">.</span><span class="nf">upto</span><span class="p">(</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">fields_count</span><span class="p">)</span> <span class="k">do</span> <span class="o">|</span><span class="n">index</span><span class="o">|</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="vi">@fields</span><span class="p">[</span><span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+    <span class="k">end</span>
+
+    <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So when removing an instance variable, we get a new shape that is shorter than the previous one, which means that
+all the variables indexed after the one we removed are now lower, so we need to shift all the fields.</p>
+
+<p>To better illustrate, consider the following code:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="vi">@a</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="vi">@b</span> <span class="o">=</span> <span class="mi">2</span>
+<span class="vi">@c</span> <span class="o">=</span> <span class="mi">3</span>
+<span class="n">remove_instance_variable</span><span class="p">(</span><span class="ss">:@b</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>In the snippet above, <code class="language-plaintext highlighter-rouge">@fields</code> will change from <code class="language-plaintext highlighter-rouge">[1, 2, 3]</code> to <code class="language-plaintext highlighter-rouge">[1, 3]</code>, and that’s not really possible to do this in a thread-safe way.</p>
+
+<p>We could, of course, do this shifting in a copy of <code class="language-plaintext highlighter-rouge">@fields</code>, and then swap <code class="language-plaintext highlighter-rouge">@fields</code> atomically, but one major problem would remain: the old shape and the new
+shape are fundamentally incompatible.</p>
+
+<p>If you are accessing <code class="language-plaintext highlighter-rouge">@c</code> using the old fields with the new shape, you will get <code class="language-plaintext highlighter-rouge">2</code> which is incorrect.</p>
+
+<p>If you are accessing <code class="language-plaintext highlighter-rouge">@c</code> using new fields with the old shape, you will get whatever is outside the array, or perhaps a segmentation fault.</p>
+
+<p>So in this case, we can’t rely on clever ordering of writes to keep a consistent view of the instance variables for all ractors.</p>
+
+<p>For the anecdote, this isn’t how the initial implementation of object shapes in Ruby worked.</p>
+
+<p>Early in Ruby 3.2 development, <code class="language-plaintext highlighter-rouge">#remove_instance_variable</code> wouldn’t produce a shorter shape, but instead
+a child shape of type <code class="language-plaintext highlighter-rouge">UNDEF</code> that would record that the variable at offset <code class="language-plaintext highlighter-rouge">1</code> needs to be considered not defined.</p>
+
+<p>However it was found that this could cause an infinite amount of shapes to be created by misbehaving code:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">obj</span> <span class="o">=</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span>
+<span class="kp">loop</span> <span class="k">do</span>
+  <span class="n">obj</span><span class="p">.</span><span class="nf">instance_variable_set</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span>
+  <span class="n">obj</span><span class="p">.</span><span class="nf">remove_instance_variable</span><span class="p">(</span><span class="ss">:@foo</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So instead <a href="https://github.com/ruby/ruby/pull/6866">the implementation was changed to rebuild the shape tree</a>.</p>
+
+<p>That previous implementation would have been useful in this case, as it would have prevented this race condition.
+But ultimately it doesn’t matter, because there is another complication I didn’t mention.</p>
+
+<h2 id="complex-shape">Complex Shape</h2>
+
+<p>The other major complication I deliberately overlooked in my explanation thus far, is the existence of complex shapes.</p>
+
+<p>Since shapes are append-only, Ruby code that defines instance variables in random order or often removes instance variables
+can potentially generate an infinite combination of shapes, and each shape uses some amount of memory.</p>
+
+<p>That’s why Ruby keeps track of how many shape variations a given class causes, and after a specific threshold (currently 8),
+Ruby gives up and marks the class as “too complex”.</p>
+
+<p>If you run this script on a recent Ruby, you will see a performance warning:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Warning</span><span class="p">[</span><span class="ss">:performance</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+
+<span class="k">class</span> <span class="nc">TooComplex</span>
+  <span class="k">def</span> <span class="nf">initialize</span>
+    <span class="mi">10</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span>
+      <span class="nb">instance_variable_set</span><span class="p">(</span><span class="s2">"@iv_</span><span class="si">#{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span>
+      <span class="n">remove_instance_variable</span><span class="p">(</span><span class="s2">"@iv_</span><span class="si">#{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="no">TooComplex</span><span class="p">.</span><span class="nf">new</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/tmp/complex.rb:6: warning: The class TooComplex reached 8 shape variations,
+instance variables accesses will be slower and memory usage increased.
+It is recommended to define instance variables in a consistent order,
+for instance by eagerly defining them all in the #initialize method.
+</code></pre></div></div>
+
+<p>When this happens, any operation on an instance of that class that would result in a new shape being created instead results
+in some sort of “singleton” shape, known as the complex shape, and in that case instance variables are stored in a Hash
+instead of being stored in an array. It’s slower and uses more memory, but limits the creation of new shapes.</p>
+
+<p>So the real <code class="language-plaintext highlighter-rouge">#instance_variable_get</code> and <code class="language-plaintext highlighter-rouge">#instance_variable_set</code> implementations are more complicated than what I described at the start of the post.
+In reality, they look more like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_get</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="k">if</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">too_complex?</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">variable_name</span><span class="p">]</span> <span class="c1"># @fields is is Hash</span>
+    <span class="k">elsif</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span> <span class="c1"># @fields is an Array</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="k">if</span> <span class="n">shape</span><span class="p">.</span><span class="nf">too_complex?</span>
+      <span class="k">return</span> <span class="vi">@field_index</span><span class="p">[</span><span class="n">variable_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">end</span>
+
+    <span class="k">if</span> <span class="n">field_index</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">field_index_for</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+      <span class="c1"># The variable already exists, we replace its value</span>
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+    <span class="k">else</span>
+      <span class="c1"># The variable doesn't exist, we have to make a shape transition</span>
+      <span class="n">next_shape</span> <span class="o">=</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">add_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+
+      <span class="k">if</span> <span class="n">next_shape</span><span class="p">.</span><span class="nf">too_complex?</span>
+        <span class="n">new_fields</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="vi">@shape</span><span class="p">.</span><span class="nf">each_ancestor</span> <span class="k">do</span> <span class="o">|</span><span class="n">shape</span><span class="o">|</span>
+          <span class="n">new_fields</span><span class="p">[</span><span class="n">shape</span><span class="p">.</span><span class="nf">variable_name</span><span class="p">]</span> <span class="o">=</span> <span class="vi">@fields</span><span class="p">[</span><span class="n">shape</span><span class="p">.</span><span class="nf">field_index</span><span class="p">]</span>
+        <span class="k">end</span>
+
+        <span class="vi">@fields</span> <span class="o">=</span> <span class="n">new_fields</span>
+        <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+
+        <span class="k">return</span> <span class="vi">@fields</span><span class="p">[</span><span class="n">variable_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+      <span class="k">end</span>
+
+      <span class="k">if</span> <span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span> <span class="o">&gt;</span> <span class="vi">@shape</span><span class="p">.</span><span class="nf">capacity</span>
+        <span class="c1"># @fields is full, we need to allocate a larger one</span>
+        <span class="n">new_fields</span> <span class="o">=</span> <span class="no">Array</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">capacity</span><span class="p">)</span>
+        <span class="n">new_fields</span><span class="p">.</span><span class="nf">replace</span><span class="p">(</span><span class="vi">@fields</span><span class="p">)</span> <span class="c1"># copy content</span>
+        <span class="n">old_fields</span> <span class="o">=</span> <span class="vi">@fields</span>
+        <span class="c1"># Ensure `@fields` isn't updated before its content has been filled</span>
+        <span class="no">Atomic</span><span class="p">.</span><span class="nf">write</span> <span class="p">{</span> <span class="vi">@fields</span> <span class="o">=</span> <span class="n">new_fields</span> <span class="p">}</span>
+      <span class="k">end</span>
+
+      <span class="vi">@fields</span><span class="p">[</span><span class="n">next_shape</span><span class="p">.</span><span class="nf">field_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+      <span class="vi">@shape</span> <span class="o">=</span> <span class="n">next_shape</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>And this code is now riddled with race conditions because regular and complex shapes are radically different,
+even in the happy path case where we’re adding a new instance variable, we might turn <code class="language-plaintext highlighter-rouge">@fields</code> from an array into
+a <code class="language-plaintext highlighter-rouge">Hash</code>.
+So if <code class="language-plaintext highlighter-rouge">@shape</code> and <code class="language-plaintext highlighter-rouge">@fields</code> aren’t perfectly synchronized together, we might end up trying to access a Hash
+like an Array, and vice-versa, which will likely end up in a VM crash.</p>
+
+<h2 id="128bit-atomics">128bit Atomics</h2>
+
+<p>One solution could have been to ensure <code class="language-plaintext highlighter-rouge">@shape</code> and <code class="language-plaintext highlighter-rouge">@fields</code> are written atomically together, but unfortunately in this case
+it isn’t really possible.</p>
+
+<p>First, because it would require to write two pointer-sized (64bit) values in a single atomic operation, which is possible
+on some modern CPUs using SIMD instruction, but Ruby supports many different platforms, and there is no way all of them
+would have support for it.</p>
+
+<p>And second, because the constraint with this is that both fields need to be contiguous.
+You can’t atomically write two pointer-sized values that are distant from each other.
+Semantically you are treating two contiguous 64bit values are a single 128bit one, and for reasons I won’t get into here,
+<code class="language-plaintext highlighter-rouge">@shape</code> and <code class="language-plaintext highlighter-rouge">@fields</code> can’t be made contiguous.</p>
+
+<h2 id="delegation">Delegation</h2>
+
+<p>That’s where it came to me that we could instead bundle the <code class="language-plaintext highlighter-rouge">@shape</code> and <code class="language-plaintext highlighter-rouge">@fields</code> in their own GC-managed object,
+so that when we have to update both atomically, we can work on a copy and then swap the pointer:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Module</span>
+  <span class="k">def</span> <span class="nf">instance_variable_get</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="vi">@fields_object</span><span class="o">&amp;</span><span class="p">.</span><span class="nf">instance_variable_get</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="n">new_fields_object</span> <span class="o">=</span> <span class="vi">@fields_object</span> <span class="p">?</span> <span class="vi">@fields_object</span><span class="p">.</span><span class="nf">dup</span> <span class="p">:</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span>
+    <span class="n">new_fields_object</span><span class="p">.</span><span class="nf">instance_variable_set</span><span class="p">(</span><span class="n">variable_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="no">Atomic</span><span class="p">.</span><span class="nf">write</span> <span class="p">{</span> <span class="vi">@fields_object</span> <span class="o">=</span> <span class="n">new_fields_object</span> <span class="p">}</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">remove_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="no">FrozenError</span> <span class="k">if</span> <span class="nb">frozen?</span>
+    <span class="c1"># The main ractor is the only one allowed to write instance variables</span>
+    <span class="k">raise</span> <span class="no">Ractor</span><span class="o">::</span><span class="no">IsolationError</span> <span class="k">unless</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">main_ractor?</span>
+
+    <span class="n">new_fields_object</span> <span class="o">=</span> <span class="vi">@fields_object</span> <span class="p">?</span> <span class="vi">@fields_object</span><span class="p">.</span><span class="nf">dup</span> <span class="p">:</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span>
+    <span class="n">new_fields_object</span><span class="p">.</span><span class="nf">remove_instance_variable</span><span class="p">(</span><span class="n">variable_name</span><span class="p">)</span>
+    <span class="no">Atomic</span><span class="p">.</span><span class="nf">write</span> <span class="p">{</span> <span class="vi">@fields_object</span> <span class="o">=</span> <span class="n">new_fields_object</span> <span class="p">}</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>It really is that trivial. Instead of storing instance variables in the class or module, we store them in a regular <code class="language-plaintext highlighter-rouge">Object</code>,
+and on mutation, we first clone the current state, do our unsafe mutation, and finally atomically swap the <code class="language-plaintext highlighter-rouge">@fields_object</code> reference.</p>
+
+<p>Of course, doing it exactly like this would cause a huge increase in object allocation, so in the actual code I added lots
+of special cases to directly mutate the existing object rather than to copy it when it is safe to do so, but conceptually
+this is <a href="https://github.com/byroot/ruby/commit/989bce8eef24c6dc6aeb7495d7c57c4324016e72">exactly what my current patch is doing</a>.</p>
+
+<p>That patch is mostly a proof of concept, in the end, I don’t think we should use an actual <code class="language-plaintext highlighter-rouge">T_OBJECT</code> for various reasons,
+but I already have a follow-up patch that replaces it with a <code class="language-plaintext highlighter-rouge">T_IMEMO</code>, which is an internal type invisible to Ruby users.</p>
+
+<p>With this solution I was able to remove the locks around class instance variables, and now the ractor version
+of the micro-benchmark runs almost 3 times faster than the single-threaded version:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ hyperfine -w 1 './miniruby --yjit ../test.rb' './miniruby --yjit ../test.rb ractor'
+Benchmark 1: ./miniruby --yjit ../test.rb
+  Time (mean ± σ):     166.3 ms ±   1.1 ms    [User: 164.4 ms, System: 1.5 ms]
+  Range (min … max):   164.0 ms … 168.5 ms    18 runs
+
+Benchmark 2: ./miniruby --yjit ../test.rb ractor
+  Time (mean ± σ):      59.3 ms ±   2.6 ms    [User: 211.4 ms, System: 1.5 ms]
+  Range (min … max):    57.9 ms …  67.7 ms    48 runs
+
+Summary
+  ./miniruby --yjit ../test.rb ractor ran
+    2.80 ± 0.12 times faster than ./miniruby --yjit ../test.rb
+</code></pre></div></div>
+
+<p>That’s still far from the 8 times faster you might expect, but profiling indicates that it’s now a scheduling problem,
+which we’ll eventually fix too, and it’s still over 13 times faster than on Ruby 3.4:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ hyperfine -w 1 'ruby --disable-all --yjit ../test.rb ractor' './ruby --disable-all --yjit ../test.rb ractor'
+Benchmark 1: ruby --disable-all --yjit ../test.rb ractor
+  Time (mean ± σ):     772.3 ms ±   9.0 ms    [User: 1023.8 ms, System: 1325.6 ms]
+  Range (min … max):   759.3 ms … 790.5 ms    10 runs
+
+Benchmark 2: ./ruby --disable-all --yjit ../test.rb ractor
+  Time (mean ± σ):      56.8 ms ±   1.4 ms    [User: 205.7 ms, System: 1.6 ms]
+  Range (min … max):    55.8 ms …  65.6 ms    50 runs
+
+Summary
+  ./ruby --disable-all --yjit ../test.rb ractor ran
+   13.59 ± 0.36 times faster than ruby --disable-all --yjit ../test.rb ractor
+</code></pre></div></div>
+
+<p>Hopefully, I’ll get this merged in the next couple of weeks.</p>
+
+<h2 id="wont-this-increase-memory-usage">Won’t This Increase Memory Usage?</h2>
+
+<p>You may be thinking that this is all well and good, but that using another object to store classes and modules instance
+variables in another object will increase Ruby’s memory usage.</p>
+
+<p>Well, probably not. Previously the <code class="language-plaintext highlighter-rouge">@fields</code> memory was managed by <code class="language-plaintext highlighter-rouge">malloc</code>, and while it depends on which implementation
+of <code class="language-plaintext highlighter-rouge">malloc</code> you are using, most of them will have an overhead of <code class="language-plaintext highlighter-rouge">16B</code> per allocated pointer, which is exactly the overhead
+of a Ruby object.</p>
+
+<p>So overall it shouldn’t cause memory usage to increase.</p>
+
+<h2 id="cherry-on-top">Cherry On Top</h2>
+
+<p>This solution has another incidental benefit, which is that it fixes both a bug and a performance regression recently introduced
+when <a href="https://bugs.ruby-lang.org/issues/21311">the new Namespace feature was merged</a>.</p>
+
+<p>Under namespaces, core classes are supposed to have a different set of instance variables, and frozen status, in each namespace,
+but this doesn’t work well at all with shapes because right now the shape is stored in the object header, hence all objects
+including classes and modules, only have a single shape.</p>
+
+<p>By delegating instance variable management to another object, classes can now have one <code class="language-plaintext highlighter-rouge">@fields_object</code> per namespace,
+encompassing both the shape and the fields, hence properly namespace class instance variables.</p>
+
+<p>It wasn’t at all a motivation for this change, but it’s a nice side effect.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[In a previous post about ractors, I explained why I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.]]></summary></entry><entry><title type="html">Unlocking Ractors: object_id</title><link href="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html" rel="alternate" type="text/html" title="Unlocking Ractors: object_id" /><published>2025-04-26T10:03:51+00:00</published><updated>2025-04-26T10:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/04/26/unlocking-ractors-object-id.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could
 still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.</p>
 
 <p>But as I mentioned, this is unfortunately not yet viable because there are many known implementation bugs that can lead
@@ -4151,195 +4829,4 @@ too many processes in our containers.</p>
 that can help you have a better pitcture of how much “thread stalling” your application is experiencing.</p>
 
 <p>Also, I don’t keep a close eye on the various application performance monitoring services out there, but my hope when
-adding these new APIs was that they would eventually integrate it in their offering. Not sure if some did already.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[Recent Ruby releases added some nice tools to better instrument applications]]></summary></entry><entry><title type="html">The Mythical IO-Bound Rails App</title><link href="https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html" rel="alternate" type="text/html" title="The Mythical IO-Bound Rails App" /><published>2025-01-23T10:17:51+00:00</published><updated>2025-01-23T10:17:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
-is like it is, and how I see its future.
-But before I can get to that, I think I need to explain a few things.</p>
-
-<p>When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck,
-so Rails applications are <a href="https://en.wikipedia.org/wiki/I/O_bound">IO-bound</a> anyway, hence Ruby performance doesn’t
-matter that much, and all you need is a healthy dose of concurrency to make your service scale.</p>
-
-<p>But how true is this in general?</p>
-
-<h2 id="conflating-scale-and-performance">Conflating scale and performance</h2>
-
-<p>First, it is true that when scaling a Rails application, the first major bottleneck you will encounter will generally
-be the database.</p>
-
-<p>Rails, like the overwhelming majority of modern web frameworks, is stateless, hence it is trivial to scale it
-horizontally to handle as much load as you want.
-As long as you can keep adding server capacity, Rails will keep scaling. It might not be the cheapest stack to scale,
-but it will scale as well as any other stateless web framework.
-To handle 10x more traffic, you need roughly 10x more server capacity, that’s simple and not what teams who need to
-scale a Rails application will struggle with.</p>
-
-<p>Relational databases, however, are much harder to scale. By default, you can’t scale them horizontally unless you
-implement data sharding in some way, and depending on your
-data model, it can sometimes be very challenging, so generally relational databases are initially scaled vertically,
-meaning migrating to increasingly more powerful servers.
-Vertical scaling allows you to scale pretty far, much farther than most Rails users will ever need, but the cost
-increase won’t be linear, and if you are successful enough, it won’t be viable anymore and you’ll have to shard or use
-another type of data store.</p>
-
-<p>That’s what the database being the bottleneck means. Not that querying the database is slow, nor that it is the most significant factor in overall service latency, but that it’s the part of your infrastructure you’ll have to care about
-the most when your service witnesses increasingly more usage.</p>
-
-<p>That’s what a lot of public discourse gets wrong, they conflate scale and performance, or more precisely, throughput and latency.</p>
-
-<p>Being able to scale means maintaining some level of service while serving more users with close-to-linear costs.
-It doesn’t mean being particularly fast, cheap, or efficient, it simply means being able to grow without hitting a
-bottleneck, and without costing you exponentially more money.</p>
-
-<p>As such, the database being the bottleneck is true, but it doesn’t imply that the application is spending the majority
-of its time waiting on IO.</p>
-
-<h2 id="most-rails-performance-issues-are-database-issues">Most Rails performance issues are database issues</h2>
-
-<p>Another fact that is often stated to explain how Rails applications are IO-bound,
-is that the most common performance issues with Rails applications are missing database indexes, N+1 queries and other
-data access issues.</p>
-
-<p>From my personal observations, that definitely rings true, but these are bugs, not a given property of the system.
-They’re supposed to be identified and fixed, as such, it doesn’t really make sense to design your infrastructure to
-accomodate that characteristic.</p>
-
-<p>When properly indexed, and assuming the database isn’t overloaded, the vast majority of queries, especially the mundane
-lookups by primary key, take less than a couple of milliseconds, often just a fraction of a millisecond.
-If the application does any substantial amount of transformations on that data to render it in HTML or JSON, it will
-without a doubt spend as much or more time executing Ruby code than waiting for IOs.</p>
-
-<h2 id="evidence-yjit-effectiveness">Evidence: YJIT effectiveness</h2>
-
-<p>Now of course, every application is different, and I can only really speak with confidence about the ones I’ve worked on.</p>
-
-<p>However, over the last couple of years, many people reported how YJIT reduced their application latency by 15 to 30%.
-Like Discourse seeing a <a href="https://blog.discourse.org/2023/05/running-ruby-3-2s-yjit-in-production-at-discourse/">15.8-19.6% speedup with JIT 3.2</a>,
-<a href="https://lobste.rs/s/m9ivcf/we_turned_lobste_rs_into_rails_benchmark#c_fkud5w">Lobsters seeing a 26% speedup</a>,
-<a href="https://xcancel.com/dhh/status/1711422643256303867">Basecamp and Hey seeing a 26% speedup</a>
-or <a href="https://railsatscale.com/2025-01-10-yjit-3-4-even-faster-and-more-memory-efficient/">Shopify’s Storefront Renderer app seeing a 17% speedup</a>.</p>
-
-<p>If these applications were really spending the overwhelming majority of their time waiting on IO, it would be impossible
-for YJIT to perform this well overall.</p>
-
-<p>Even on very JIT-friendly benchmarks with no IO at all, YJIT <em>only</em> speeds up Ruby by 2 or 3x.
-On more realistic benchmarks like <code class="language-plaintext highlighter-rouge">lobsters</code>, it’s more around 1.7x.
-Based on this, we can assume with fairly good confidence that all these applications are certainly not spending 80%
-of their time waiting on IO.</p>
-
-<p>To me, that’s enough to consider that most Rails applications aren’t IO-bound.
-Some applications out there most definitely are IO-bound, and I spoke with a few people maintaining such applications.
-But just like flying fishes, they exist, yet they don’t constitute the majority of the genus.</p>
-
-<h2 id="cpu-starvation-looks-like-io-to-most-eyes">CPU starvation looks like IO to most eyes</h2>
-
-<p>One thing that can cause people to overestimate how much IO their app is doing is that, in most cases, CPU starvation
-will look like Ruby is waiting on IO.</p>
-
-<p>If you look at how the overwhelming majority of IO durations are measured, including in Rails logs and in all the
-most popular application performance managers, it’s generally done in a very simple, obvious way:</p>
-
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">start</span> <span class="o">=</span> <span class="no">Time</span><span class="p">.</span><span class="nf">now</span>
-<span class="n">database_connection</span><span class="p">.</span><span class="nf">execute</span><span class="p">(</span><span class="s2">"SELECT ..."</span><span class="p">)</span>
-<span class="n">query_duration</span> <span class="o">=</span> <span class="p">(</span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span> <span class="o">-</span> <span class="n">start</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1000.0</span>
-<span class="nb">puts</span> <span class="s2">"Query took: </span><span class="si">#{</span><span class="n">query_duration</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
-</code></pre></div></div>
-
-<p>Logically, if this code logs: <code class="language-plaintext highlighter-rouge">Query took: 20.0ms</code>, you might legitimately think it took 20 milliseconds to perform
-the SQL query, but that’s not necessarily true.</p>
-
-<p>It actually means that performing the query <strong>and</strong> getting the thread scheduled again took 20 milliseconds, and you
-cannot possibly tell how much each part took individually (Edit: At John Duff’s request, I wrote <a href="/ruby/performance/2025/01/23/io-instrumentation.html">a very quick guide
-on how you can tell if your application is experiencing some form of CPU starvation</a>).</p>
-
-<p>So for all you know, the query might have been performed in under a millisecond, and all the remaining time was spent
-waiting to acquire the GVL, running GC, or waiting for the operating system scheduler to resume your process.</p>
-
-<p>Knowing which is which is crucial:</p>
-
-<ul>
-  <li>If all this time was spent performing the query, it suggests that your application is IO-heavy and that you may be
-able to use more concurrency (processes, threads, or fibers) to get some extra throughput.</li>
-  <li>If all this time was spent waiting on the scheduler, then you might want to do the absolute opposite and use
-less concurrency to reduce latency.</li>
-</ul>
-
-<p>This issue can often lead people to believe their application is more IO-heavy than it really is, and it’s
-particularly vicious because it’s a self-fulfilling prophecy.
-If you assume your application is IO-bound, given that it is commonplace to hear so, you’ll logically run it in
-production with a threaded or async server using a decent amount of concurrency,
-and production logs will confirm your assumption by showing large amounts of time waiting on IO.</p>
-
-<p>This problem is even more common on shared hosting platforms because they don’t always guarantee that you can use
-the “virtual CPU” at 100%. On these platforms, your application has to share the physical CPU cores with other
-applications, and depending on what these other applications are doing and how busy they are, you may be able to use
-substantially more or substantially less than the one “virtual CPU” you are paying for.</p>
-
-<p>This issue is not unique to Ruby, whenever you have a workload that mixes IO and CPU work, you have to arbitrate
-between allowing more concurrency and risk degrading latency, or reducing concurrency to ensure a low latency but
-decrease utilization.
-The more heterogeneous your workload is, as typical in a monolith, the harder it is to find the best compromise.
-That’s one of the benefits of micro-services, getting more homogenous workloads, making it easier to achieve
-higher server utilization without impacting latency too much.</p>
-
-<p>However, given that the default implementation of Ruby has a GVL, this problem is even more pronounced.
-Instead of all threads on the server having to share all CPU cores, you end up with multiple small buckets of threads
-that each have to share one CPU, hence you can end up with threads that can’t be resumed even though there are some
-free cores or the server.</p>
-
-<p>The thing to keep in mind is that, as a general rule that doesn’t only apply to Ruby, CPU-bound and IO-bound work
-loads don’t mix well, and should ideally be handled by distinct systems.
-For small projects, you can likely tolerate the latency impact of collocating all your workloads in a one-size-fits-all
-system, but as you scale you will increasingly need to segregate IO-intensive workloads from CPU-intensive ones.</p>
-
-<h2 id="job-queues-are-different">Job Queues Are Different</h2>
-
-<p>One important thing to note is that what I’m saying above is only aimed at the web server part of Rails applications.
-Most apps also use a background job runner, Sidekiq being the most popular, and background jobs often take care of
-lots of slow IO operations, such as sending e-mails, performing API calls, etc.</p>
-
-<p>As such job runners are generally much more IO intensive, and latency is generally a bit less important for them,
-so they usually can get away with higher concurrency than web servers.</p>
-
-<p>But even then, it’s common for users to crank their job runner concurrency too high and cause all IOs to appear much slower.
-A good example of that is how <a href="https://github.com/redis/hiredis-rb/issues/74">Sidekiq’s maintainer asked me to implement a way to measure the round trip delay in C
-so that it’s not skewed by GVL contention</a>.</p>
-
-<h2 id="why-does-it-matter">Why does it matter?</h2>
-
-<p>At that point, you might wonder why it matters how much time Rails applications spend waiting on IO.</p>
-
-<p>For the average Rails user, it is important to know this, because it is what defines which execution model is best
-suited to deploy their application:</p>
-
-<ul>
-  <li>If an application is truly IO-bound, as in spending more than 95% of its time waiting for IO, then using an
-asynchronous execution model is likely what will get you the best results.</li>
-  <li>If an application isn’t fully IO-bound, but still is quite IO-heavy, then using a threaded server, with a
-reasonable number of threads per process, is probably what will get you the best tradeoff between latency and
-throughput.</li>
-  <li>If an application doesn’t spend significantly more than half its time on IO, then it might be preferable to use a
-purely process-based solution.</li>
-</ul>
-
-<p>What the ratio of IO to CPU is likely to be like in an average Rails app is also what drove <a href="https://github.com/rails/rails/issues/50450">Rails to change the
-default generated Puma configuration from 5 threads to only 3</a>.</p>
-
-<p>But also for the Ruby community at large, I think it’s important not to disregard Ruby’s performance under the pretext
-that it doesn’t matter since it’s all about the database anyway.
-This isn’t to say that Ruby is slow, it is without a doubt more than fast enough for writing web applications that
-provide a good user experience.</p>
-
-<p>But it is also possible to write Ruby code in a way that doesn’t perform well at all, be it for the sake of usability
-or just because it’s fun to use meta-programing or that no one took the time to use a profiler to see if it is possible
-to do the same thing more efficiently.</p>
-
-<p>As someone who spends a considerable amount of time looking at production profiles of Rails applications, I can say
-with confidence, there are a number of things in Rails and other commonly used gems that could be significantly faster,
-but can’t because their public API prevents any further optimization.</p>
-
-<p>As Ruby developers, we naturally have the tendency to put developer happiness first, which is great, but we should also
-make sure not to disregard performance. Usability and performance don’t have to be mutually exclusive.
-APIs can be both very convenient and performant, but both have to be considered right from the start for it to happen.
-Once a public API has been defined and is widely used, there’s only so much you can do to make it perform faster
-unless you are willing to deprecate it in favor of a more performant one, but the community appetite for deprecations
-and breaking change is no longer what it used to be.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[When the topic of Rails performance comes up, it is commonplace to hear that the database is the bottleneck, so Rails applications are IO-bound anyway, hence Ruby performance doesn't matter that much, and all you need is a healthy dose of concurrency to make your service scale. But how true is this in general?]]></summary></entry></feed>
+adding these new APIs was that they would eventually integrate it in their offering. Not sure if some did already.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[Recent Ruby releases added some nice tools to better instrument applications]]></summary></entry></feed>
