@@ -121,7 +121,7 @@ You need to know Ruby internals a bit to understand it all, but almost immediate
 spent in JSON's own `isLegalUTF8`, and also `1.9%` in `rb_enc_str_asciionly_p`, which is the `C` API version of `String#ascii_only?`.
 
 The reason this is surprising is that Ruby string have some internal property called a `coderange`. For most string operations, Ruby does need to
-known if it's properly encoded, and for some operations, it can take shortcuts if the string only contains ASCII.
+know if it's properly encoded, and for some operations, it can take shortcuts if the string only contains ASCII.
 
 Since scanning a string to validate its encoding is somewhat costly, it keeps that property around so a string is only scanned once as long as it's not mutated.
 
