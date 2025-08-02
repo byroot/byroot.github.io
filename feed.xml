@@ -1,4 +1,476 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-05-24T18:11:14+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: class instance variables</title><link href="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html" rel="alternate" type="text/html" title="Unlocking Ractors: class instance variables" /><published>2025-05-24T09:03:51+00:00</published><updated>2025-05-24T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-08-02T16:01:14+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">What’s wrong with the JSON gem API?</title><link href="https://byroot.github.io/ruby/json/2025/08/02/whats-wrong-with-the-json-gem-api.html" rel="alternate" type="text/html" title="What’s wrong with the JSON gem API?" /><published>2025-08-02T09:03:51+00:00</published><updated>2025-08-02T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/json/2025/08/02/whats-wrong-with-the-json-gem-api</id><content type="html" xml:base="https://byroot.github.io/ruby/json/2025/08/02/whats-wrong-with-the-json-gem-api.html"><![CDATA[<p>As I mentioned at the start of my <a href="/ruby/json/2024/12/15/optimizing-ruby-json-part-1.html">Optimizing Ruby’s JSON</a> series of posts,
+performance isn’t why I candidated to be the new gem’s maintainer.</p>
+
+<p>The actual reason is that the gem has many APIs that I think aren’t very good, and some that are outright dangerous.</p>
+
+<p>As a gem user, it’s easy to be annoyed at deprecations and breaking changes.
+It’s noisy and creates extra work, so I entirely understand that people may suffer from deprecation fatigue.
+But while it occasionally happens to run into mostly cosmetic deprecations that aren’t really worth the churn they cause (and that annoys me a lot too),
+most of the time there’s a good reason for them, it just is very rarely conveyed to the users, and even more rarely discussed,
+so let’s do that for once.</p>
+
+<p>So I’d like to go over some of the API changes and deprecations I already implemented or will likely implement soon,
+given it’s a good occasion to explain why the change is valuable, and to talk about API design more broadly.</p>
+
+<h2 id="dealing-with-deprecations-in-ruby">Dealing With Deprecations in Ruby</h2>
+
+<p>But before I delve into deprecated API, I’d like to mention how to effectively deal with deprecations in modern Ruby.</p>
+
+<p>Since Ruby 2.7, warning messages emitted with <code class="language-plaintext highlighter-rouge">Kernel#warn</code> are categorized, and one of the available categories is <code class="language-plaintext highlighter-rouge">:deprecated</code>.
+By default, deprecation warnings are silenced; to display them, you must enable the <code class="language-plaintext highlighter-rouge">:deprecated</code> category like so:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Warning</span><span class="p">[</span><span class="ss">:deprecated</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+</code></pre></div></div>
+
+<p>It is very highly recommended to do so in your test suite, so much so that Rails and Minitest will do it by default.</p>
+
+<p>However, if you are using RSpec, you’ll have to do it yourself in your <code class="language-plaintext highlighter-rouge">spec_helper.rb</code> file, because we’ve tried to get
+<a href="https://github.com/rspec/rspec/issues/37">RSpec to do it too for over four years now, but without success</a>.
+But I’m still hopeful <a href="https://github.com/rspec/rspec/pull/161">it will eventually happen</a>.</p>
+
+<p>Another useful thing to know about Ruby’s <code class="language-plaintext highlighter-rouge">Kernel#warn</code> method is that under the hood, it calls the <code class="language-plaintext highlighter-rouge">Warning.warn</code> method,
+allowing you to redefine it and customize its behavior.</p>
+
+<p>For instance, you could turn warnings into errors like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Warning</span>
+  <span class="k">def</span> <span class="nf">warn</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="n">message</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Doing so both ensures warnings aren’t missed, and helps tracking them down as you’ll get an exception with a full backtrace
+rather than a warning that points at a single call-site that may not necessarily help you find the problem.</p>
+
+<p>This is a pattern I use in most of my own projects, and that <a href="https://github.com/rails/rails/blob/add5a73b26e78d6b13945525874749ae40af21c7/tools/strict_warnings.rb">I also included into Rails’ own test suite</a>.
+For larger projects, where being deprecation-free all the time may be complicated, there’s also the more sophisticated [<code class="language-plaintext highlighter-rouge">deprecation_toolkit</code> gem].</p>
+
+<h2 id="the-create_additions-option">The create_additions Option</h2>
+
+<p>Now, let’s start with the API that convinced me to request maintainership.</p>
+
+<p>Do you know the difference between <code class="language-plaintext highlighter-rouge">JSON.load</code> and <code class="language-plaintext highlighter-rouge">JSON.parse</code>?</p>
+
+<p>There’s more than one, but the main difference is that it has a different set of options enabled by default, and notably
+one that is a massive footgun: <code class="language-plaintext highlighter-rouge">create_additions: true</code>.</p>
+
+<p>This option is so bad that <a href="https://github.com/rubocop/rubocop/pull/3448">Rubocop’s default set of rules bans <code class="language-plaintext highlighter-rouge">JSON.load</code> outright for security reasons</a>,
+and it has been involved in more than one <a href="https://discuss.rubyonrails.org/t/cve-2023-27531-possible-deserialization-of-untrusted-data-vulnerability-in-kredis-json/82467">security vulnerabilities</a>.</p>
+
+<p>Let’s dig into what it does:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"json"</span>
+
+<span class="k">class</span> <span class="nc">Point</span>
+  <span class="k">class</span> <span class="o">&lt;&lt;</span> <span class="nb">self</span>
+    <span class="k">def</span> <span class="nf">json_create</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+      <span class="n">new</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"x"</span><span class="p">],</span> <span class="n">data</span><span class="p">[</span><span class="s2">"y"</span><span class="p">])</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
+    <span class="vi">@x</span> <span class="o">=</span> <span class="n">x</span>
+    <span class="vi">@y</span> <span class="o">=</span> <span class="n">y</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="n">document</span> <span class="o">=</span> <span class="o">&lt;&lt;~</span><span class="no">'JSON'</span><span class="sh">
+  {
+    "json_class": "Point",
+    "x": 123.456,
+    "y": 789.321
+  }
+</span><span class="no">JSON</span>
+
+<span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="n">document</span><span class="p">)</span>
+<span class="c1"># =&gt; {"json_class" =&gt; "Point", "x" =&gt; 123.456, "y" =&gt; 789.321}</span>
+
+<span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="n">document</span><span class="p">)</span>
+<span class="c1"># =&gt; #&lt;Point:0x00000001007f6d08 @x=123.456, @y=789.321&gt;</span>
+</code></pre></div></div>
+
+<p>So what the <code class="language-plaintext highlighter-rouge">create_additions: true</code> parsing option does is that when it notices an object with the special key <code class="language-plaintext highlighter-rouge">"json_class"</code>,
+It resolves the constant and calls <code class="language-plaintext highlighter-rouge">#json_create</code> on it with the object.</p>
+
+<p>By itself, this isn’t really a security vulnerability, as only classes with a <code class="language-plaintext highlighter-rouge">.json_create</code> method can be instantiated this way.
+But if you’ve been using Ruby for a long time, this may remind you of similar issues with gems like <code class="language-plaintext highlighter-rouge">YAML</code> where similar capabilities
+were exploited.</p>
+
+<p>That’s the problem with these sorts of duck-typed APIs: they are way too global.</p>
+
+<p>You can have a piece of code using <code class="language-plaintext highlighter-rouge">JSON.load</code> that is perfectly safe on its own, but then if it’s embedded in an application
+that also loads some other piece of code that defines some <code class="language-plaintext highlighter-rouge">.json_create</code> methods you weren’t expecting, you may end up with
+an unforeseen vulnerability.</p>
+
+<p>But even if you don’t define any <code class="language-plaintext highlighter-rouge">json_create</code> methods, the gem will always define one on <code class="language-plaintext highlighter-rouge">String</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">require</span> <span class="s2">"json"</span>
+<span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="s1">'{"json_class": "String", "raw": [112, 119, 110, 101, 100]}'</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="s2">"pwned"</span>
+</code></pre></div></div>
+
+<p>Here again, you probably need to find some specific circumstances to exploit that, but you can probably see how this
+trick can be used to bypass a validation check of some sort.</p>
+
+<p>So what do I plan to do about it? Several things.</p>
+
+<p>First, I deprecated the implicit <code class="language-plaintext highlighter-rouge">create_additions: true</code> option. If you use <code class="language-plaintext highlighter-rouge">JSON.load</code> for that feature, a deprecation
+warning will be emitted, asking to use <code class="language-plaintext highlighter-rouge">JSON.unsafe_load</code> instead:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"json"</span>
+<span class="no">Warning</span><span class="p">[</span><span class="ss">:deprecated</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+<span class="no">JSON</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="s1">'{"json_class": "String", "raw": [112, 119, 110, 101, 100]}'</span><span class="p">)</span>
+<span class="c1"># /tmp/j.rb:3: warning: JSON.load implicit support for `create_additions: true`</span>
+<span class="c1"># is deprecated and will be removed in 3.0,</span>
+<span class="c1"># use JSON.unsafe_load or explicitly pass `create_additions: true`</span>
+</code></pre></div></div>
+
+<p>That being said, considering how wonky this feature is, I’m also considering extracting it into another gem.</p>
+
+<p>This used to be impossible, as it was baked deep into the both the C and the Java parsers,
+but <a href="https://github.com/ruby/json/pull/774">I recently refactored it to be pure Ruby code using a callback exposed by the parsers</a>.</p>
+
+<p>Now you can provide a <code class="language-plaintext highlighter-rouge">Proc</code> to <code class="language-plaintext highlighter-rouge">JSON.load</code>, the parser will invoke it for every parsed value, allowing you to substitute
+a value by another:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">cb</span> <span class="o">=</span> <span class="o">-&gt;</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span> <span class="k">do</span>
+  <span class="k">case</span> <span class="n">obj</span>
+  <span class="k">when</span> <span class="no">String</span>
+    <span class="n">obj</span><span class="p">.</span><span class="nf">upcase</span>
+  <span class="k">else</span>
+    <span class="n">obj</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="s1">'["a", {"b": 1}]'</span><span class="p">,</span> <span class="n">cb</span><span class="p">)</span>
+<span class="c1"># =&gt; ["A", {"B" =&gt; 1}]</span>
+</code></pre></div></div>
+
+<p>Prior to that change, <code class="language-plaintext highlighter-rouge">JSON.load</code> already accepted a Proc, but its return value was ignored.</p>
+
+<p>The nice thing is that this callback also now serves as a much safer and flexible way to handle the serialization of rich objects.
+For instance, you could implement something like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">types</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="s2">"range"</span> <span class="o">=&gt;</span> <span class="no">MyRangeType</span>
+<span class="p">}</span>
+<span class="n">cb</span> <span class="o">=</span> <span class="o">-&gt;</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span> <span class="k">do</span>
+  <span class="k">case</span> <span class="n">obj</span>
+  <span class="k">when</span> <span class="no">Hash</span>
+    <span class="k">if</span> <span class="n">type</span> <span class="o">=</span> <span class="n">types</span><span class="p">[</span><span class="n">obj</span><span class="p">[</span><span class="s2">"__type"</span><span class="p">]]</span>
+      <span class="n">type</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+    <span class="k">else</span>
+      <span class="n">obj</span>
+    <span class="k">end</span>
+  <span class="k">else</span>
+    <span class="n">obj</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">load</span><span class="p">(</span><span class="s1">'["a", {"b": 1}]'</span><span class="p">,</span> <span class="n">cb</span><span class="p">)</span>
+<span class="c1"># =&gt; ["A", {"B" =&gt; 1}]</span>
+</code></pre></div></div>
+
+<p>While this requires more code from the user, it gives much tighter control over the deserialization,
+but more importantly, it isn’t global anymore.
+If a library uses this feature to deserialize trusted data, its callback is never going to be invoked by another library
+like it’s the case with the old <code class="language-plaintext highlighter-rouge">Class#json_create</code> API.</p>
+
+<p>The obvious solution would have been to follow the same route as <code class="language-plaintext highlighter-rouge">YAML</code>, with its <code class="language-plaintext highlighter-rouge">permitted_classes</code> argument, but
+in my opinion, it wouldn’t have addressed the root of the problem, and it makes for a very unpleasant API to use.</p>
+
+<p>Instead, I believe this Proc interface provides the same functionality as before, but in a way that is both more
+flexible and safer.</p>
+
+<p>I think this is a clear case for deprecation, given it is very rarely needed, has security implications, and surprises users.</p>
+
+<h2 id="parsing-of-duplicate-keys">Parsing of Duplicate Keys</h2>
+
+<p>Another behavior of the parser I recently deprecated is the treatment of duplicate keys.
+Consider the following code:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="s1">'{"a": 1, "a": 2}'</span><span class="p">)[</span><span class="s2">"a"</span><span class="p">]</span>
+</code></pre></div></div>
+
+<p>What do you think it should return? You could argue that the first key or the last key should win, or that this should
+result in a parse error.</p>
+
+<p>Unfortunately, JSON is a bit of a “post-specified” format, as in it started as <a href="https://www.json.org/json-en.html">an extremely simple document</a>.
+All it says about “objects” is:</p>
+
+<blockquote>
+  <p>An object is an unordered set of name/value pairs.
+An object begins with <code class="language-plaintext highlighter-rouge">{</code> and ends with <code class="language-plaintext highlighter-rouge">}</code>.
+Each name is followed by <code class="language-plaintext highlighter-rouge">:</code> and the name/value pairs are separated by <code class="language-plaintext highlighter-rouge">,</code>.</p>
+</blockquote>
+
+<p>That’s it, that’s the extent of the specification, as you can see, there is no mention of what a parser should do if it encounters a duplicate key.</p>
+
+<p>Later on, various standardisation bodies tried to specify JSON based on the implementations out there.</p>
+
+<p>Hence, we now have IETF’s STD 90, also known as <a href="https://datatracker.ietf.org/doc/html/rfc8259">RFC 8259</a>, which states:</p>
+
+<blockquote>
+  <p>Many implementations report the last name/value pair only.
+Other implementations report an error or fail to parse the object,
+and some implementations report all of the name/value pairs, including duplicates.</p>
+</blockquote>
+
+<p>In other words, it acknowledges most implementations return the last seen pair, but doesn’t prescribe any particular behavior.</p>
+
+<p>There’s also the <a href="https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf">ECMA-404 standard</a></p>
+
+<blockquote>
+  <p>The JSON syntax does not impose any restrictions on the strings used as names,
+does not require that name strings be unique, and does not assign any significance to the ordering of name/value pairs.
+These are all semantic considerations that may be defined by
+JSON processors or in specifications defining specific uses of JSON for data interchange.</p>
+</blockquote>
+
+<p>Which is pretty much the specification language equivalent of: 🤷‍♂️.</p>
+
+<p>The problem with under-specified formats is that they can sometimes be exploited, the classic example being
+<a href="https://en.wikipedia.org/wiki/HTTP_request_smuggling">HTTP request smuggling</a>.</p>
+
+<p>And while it wasn’t an exploitation per se, <a href="https://hackerone.com/reports/3000510#activity-32819479">a security issue happened to Hacker One</a>,
+in part because of that behavior.
+Technically, the bug was on the JSON generation side, but if the JSON’s gem parser didn’t silently accept duplicated keys,
+they would have caught it early in development.</p>
+
+<p>That’s why starting from version <code class="language-plaintext highlighter-rouge">2.13.0</code>, <code class="language-plaintext highlighter-rouge">JSON.parse</code> <a href="https://github.com/ruby/json/pull/818">now accepts a new <code class="language-plaintext highlighter-rouge">allow_duplicate_key:</code> keyword argument</a>,
+and if not explicitly allowed, a deprecation warning is emitted if a duplicate key is encountered:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"json"</span>
+<span class="no">Warning</span><span class="p">[</span><span class="ss">:deprecated</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+
+<span class="nb">p</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="s1">'{"a": 1, "a": 2}'</span><span class="p">)</span>
+<span class="c1"># =&gt; {"a" =&gt; 2}</span>
+
+<span class="c1"># /tmp/j.rb:4: warning: detected duplicate key "a" in JSON object.</span>
+<span class="c1"># This will raise an error in json 3.0 unless enabled via `allow_duplicate_key: true`</span>
+<span class="c1">#at line 1 column 1</span>
+</code></pre></div></div>
+
+<p>As mentioned in the warning message, I plan to change the default behavior to be an error in the next major version, but of course
+it will always be possible to explicitly allow for duplicate keys, for the rare cases where it’s needed.</p>
+
+<p>Here again, I think this deprecation is justified because duplicated keys are rare, but also almost always a mistake,
+hence I expect few people to need to change anything, and the ones who do will likely learn about a previously unnoticed
+mistake in their application.</p>
+
+<h2 id="the-to_json-and-to_s-methods">The to_json And to_s Methods</h2>
+
+<p>Before you gasp in horror, don’t worry, I don’t plan on deprecating the <code class="language-plaintext highlighter-rouge">Object#to_json</code> method, ever.
+It is way too widespread for this to ever be acceptable.</p>
+
+<p>But that doesn’t mean this API is good, nor that nothing should be done about it.</p>
+
+<p>At the center of the <code class="language-plaintext highlighter-rouge">json</code> gem API, there’s the notion that objects can define themselves how they should be
+serialized into JSON by responding to the <code class="language-plaintext highlighter-rouge">to_json</code> method.</p>
+
+<p>At first sight, it seems like a perfectly fine API, it’s an interface that objects can implement, fairly classic object-oriented design.</p>
+
+<p>Here’s an example that changes how <code class="language-plaintext highlighter-rouge">Time</code> objects are serialized.</p>
+
+<p>By default, <code class="language-plaintext highlighter-rouge">json</code> will call <code class="language-plaintext highlighter-rouge">#to_s</code> on objects it doesn’t know how to handle:</p>
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">generate</span><span class="p">({</span> <span class="ss">created_at: </span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span> <span class="p">})</span>
+<span class="p">{</span><span class="s2">"created_at"</span><span class="ss">:"2025-08-02 13:03:32 +0200"</span><span class="p">}</span>
+</code></pre></div></div>
+
+<p>But we can instruct it to instead serialize <code class="language-plaintext highlighter-rouge">Time</code> using the ISO8601 / <a href="https://datatracker.ietf.org/doc/html/rfc3339">RFC 3339</a>
+format:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Time</span>
+  <span class="k">def</span> <span class="nf">to_json</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">iso8601</span><span class="p">(</span><span class="mi">3</span><span class="p">).</span><span class="nf">to_json</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">generate</span><span class="p">({</span> <span class="ss">created_at: </span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span> <span class="p">})</span>
+<span class="p">{</span><span class="s2">"created_at"</span><span class="ss">:"2025-08-02T13:05:04.160+02:00"</span><span class="p">}</span>
+</code></pre></div></div>
+
+<p>This seems all well and good, but the problem, like for the <code class="language-plaintext highlighter-rouge">.json_create</code> method, is that this is a global behavior.
+An application may very well need to serialize dates in different ways in different contexts.</p>
+
+<p>Worse, in the context of a library, say an API client that needs to serialize <code class="language-plaintext highlighter-rouge">Time</code> in a specific way, it’s not really
+possible to use this API, you can’t assume it’s acceptable to change such a global behavior, given you know nothing about the application in which you’ll run.</p>
+
+<p>So to me, there are two problems here. First, using <code class="language-plaintext highlighter-rouge">#to_s</code> as a fallback works for a few types, like date, but it is really not helpful
+for the overwhelming majority of other objects:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="no">Object</span><span class="p">.</span><span class="nf">new</span><span class="p">)</span>
+<span class="s2">"#&lt;Object:0x000000011ce214a0&gt;"</span>
+</code></pre></div></div>
+
+<p>I really can’t think of a situation in which this is the behavior that you want. If <code class="language-plaintext highlighter-rouge">JSON.generate</code> ends up calling <code class="language-plaintext highlighter-rouge">to_s</code> on an object, I’m willing to bet that in 99% of the time, the developer didn’t intend for that object to be serialized, or forgot to implement a <code class="language-plaintext highlighter-rouge">#to_json</code> on it.</p>
+
+<p>Either way, it would be way more useful to raise an error, and requires that an explicit method to serialize that unknown object be provided.</p>
+
+<p>The second is that it should be possible to customize a given type serialization locally, instead of globally.</p>
+
+<p>In addition, returning a String as a JSON fragment is also not great, because it means recursively calling generators, and
+allows to generate invalid documents:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Broken</span>
+  <span class="k">def</span> <span class="nf">to_json</span>
+    <span class="nb">to_s</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="o">&gt;&gt;</span> <span class="no">Broken</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">to_json</span>
+<span class="o">=&gt;</span> <span class="s2">"#&lt;Broken:0x0000000123054050&gt;"</span>
+<span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="no">Broken</span><span class="p">.</span><span class="nf">new</span><span class="p">.</span><span class="nf">to_json</span><span class="p">)</span>
+<span class="c1">#&gt; JSON::ParserError: unexpected character: '#&lt;Broken:0x000000011c9377a0&gt;'</span>
+<span class="c1"># &gt; at line 1 column 1 </span>
+</code></pre></div></div>
+
+<p>That’s the problems the new <code class="language-plaintext highlighter-rouge">JSON::Coder</code> API is meant to solve.</p>
+
+<p>By default, <code class="language-plaintext highlighter-rouge">JSON::Coder</code> only accepts to serialize types that have a direct JSON equivalent, so <code class="language-plaintext highlighter-rouge">Hash</code>, <code class="language-plaintext highlighter-rouge">Array</code>, <code class="language-plaintext highlighter-rouge">String</code> / <code class="language-plaintext highlighter-rouge">Symbol</code>,
+<code class="language-plaintext highlighter-rouge">Integer</code>, <code class="language-plaintext highlighter-rouge">Float</code>, <code class="language-plaintext highlighter-rouge">true</code>, <code class="language-plaintext highlighter-rouge">false</code> and <code class="language-plaintext highlighter-rouge">nil</code>. Any type that doesn’t have a direct JSON equivalent produces an error:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">MY_JSON</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">Coder</span><span class="p">.</span><span class="nf">new</span>
+<span class="o">&gt;&gt;</span> <span class="no">MY_JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">})</span>
+<span class="o">=&gt;</span> <span class="s2">"{</span><span class="se">\"</span><span class="s2">a</span><span class="se">\"</span><span class="s2">:1}"</span>
+<span class="o">&gt;&gt;</span> <span class="no">MY_JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({</span><span class="ss">a: </span><span class="no">Time</span><span class="p">.</span><span class="nf">new</span><span class="p">})</span>
+<span class="c1">#&gt; JSON::GeneratorError: Time not allowed in JSON</span>
+</code></pre></div></div>
+
+<p>But it does allow you to provide a <code class="language-plaintext highlighter-rouge">Proc</code> to define the serialization of all other types:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">MY_JSON</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">Coder</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span> <span class="o">|</span><span class="n">obj</span><span class="o">|</span>
+  <span class="k">case</span> <span class="n">obj</span>
+  <span class="k">when</span> <span class="no">Time</span>
+    <span class="n">obj</span><span class="p">.</span><span class="nf">iso8601</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span>
+  <span class="k">else</span>
+    <span class="n">obj</span> <span class="c1"># return `obj` to fail serialization</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="o">&gt;&gt;</span> <span class="no">MY_JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">({</span><span class="ss">a: </span><span class="no">Time</span><span class="p">.</span><span class="nf">new</span><span class="p">})</span>
+<span class="o">=&gt;</span> <span class="s2">"{</span><span class="se">\"</span><span class="s2">a</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">2025-08-02T14:03:15.091+02:00</span><span class="se">\"</span><span class="s2">}"</span>
+</code></pre></div></div>
+
+<p>Contrary to the <code class="language-plaintext highlighter-rouge">#to_json</code> method, here the Proc is expected to return a JSON primitive object, so you don’t have to
+concern yourself with JSON escaping rules and such, which is much safer.</p>
+
+<p>But if for some reason you do need to, you still can using <code class="language-plaintext highlighter-rouge">JSON::Fragment</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">MY_JSON</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">Coder</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span> <span class="o">|</span><span class="n">obj</span><span class="o">|</span>
+  <span class="k">case</span> <span class="n">obj</span>
+  <span class="k">when</span> <span class="no">SomeRecord</span>
+    <span class="no">JSON</span><span class="o">::</span><span class="no">Fragment</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="n">obj</span><span class="p">.</span><span class="nf">json_blob</span><span class="p">)</span>
+  <span class="k">else</span>
+    <span class="n">obj</span> <span class="c1"># return `obj` to fail serialization</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>With this new API, it’s now much easier for a gem to customize JSON generation in a local way.</p>
+
+<p>Now, as I said before, I absolutely don’t plan to deprecate <code class="language-plaintext highlighter-rouge">#to_json</code>, nor even the behavior that calls <code class="language-plaintext highlighter-rouge">#to_s</code> on unknown objects.
+Even though I think it’s a bad API, and that its replacement is way superior, the <code class="language-plaintext highlighter-rouge">#to_json</code> method has been at the center of the <code class="language-plaintext highlighter-rouge">json</code>
+gem from the beginning and would require a massive amount of work from the community to migrate out of.</p>
+
+<p>The decision to deprecate an API should always weigh the benefits against the costs.
+Here, the cost is so massive that it is unimaginable for me to even consider it.</p>
+
+<h2 id="load_default_options--dump_default_options">load_default_options / dump_default_options</h2>
+
+<p>Another set of APIs I’ve marked as deprecated are the various <code class="language-plaintext highlighter-rouge">_default_options</code> accessors.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="s2">"http://example.com"</span><span class="p">)</span>
+<span class="s2">"http://example.com"</span>
+<span class="o">&gt;&gt;</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump_default_options</span><span class="p">[</span><span class="ss">:script_safe</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="s2">"http://example.com"</span><span class="p">)</span>
+<span class="s2">"http:</span><span class="se">\/\/</span><span class="s2">example.com"</span>
+</code></pre></div></div>
+
+<p>The concept is simple: you can globally change the default options received by certain methods.</p>
+
+<p>At first sight, this might seem like a convenience, it allows you to set some option without having to pass it around
+at potentially dozens of different call sites.</p>
+
+<p>But just like <code class="language-plaintext highlighter-rouge">#to_json</code> and other APIs, this change applies to the entire application, including some dependencies that may
+not expect standard JSON methods to behave differently.</p>
+
+<p>And that’s not a hypothetical, I personally ran into a gem that was using JSON to fingerprint some object graphs, e.g.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">fingerpint</span>
+  <span class="no">Digest</span><span class="o">::</span><span class="no">SHA1</span><span class="p">.</span><span class="nf">hexdigest</span><span class="p">(</span><span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">some_object_graph</span><span class="p">))</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>That fingerprinting method was well tested in the gem, and was working well in a few dozen applications until one
+day someone reported a bug in the gem. After some investigation, I figured the host application in question
+had modified <code class="language-plaintext highlighter-rouge">JSON.dump_default_options</code>, causing the fingerprints to be different.</p>
+
+<p>If you think about it, these sorts of global settings aren’t very different from monkey patching:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">JSON</span><span class="p">.</span><span class="nf">singleton_class</span><span class="p">.</span><span class="nf">prepend</span><span class="p">(</span><span class="no">Module</span><span class="p">.</span><span class="nf">new</span> <span class="p">{</span>
+  <span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="nb">proc</span> <span class="o">=</span> <span class="kp">nil</span><span class="p">,</span> <span class="n">opts</span> <span class="o">=</span> <span class="p">{})</span>
+    <span class="n">opts</span> <span class="o">=</span> <span class="n">opts</span><span class="p">.</span><span class="nf">merge</span><span class="p">(</span><span class="ss">script_safe: </span><span class="kp">true</span><span class="p">)</span>
+    <span class="k">super</span>
+  <span class="k">end</span>
+<span class="p">})</span>
+</code></pre></div></div>
+
+<p>The overwhelming majority of Rubyists are very aware of the potential pitfalls of monkey patching, and some absolutely loathe it,
+yet, these sorts of global configuration APIs don’t get frowned upon as much for some reason.</p>
+
+<p>In some cases, they make sense. e.g. if the configuration is for an application, or a framework (a framework essentially being an application skeleton),
+there’s not really a need for local configuration, and a global one is simpler and easier to reason about.
+But in a library, that may in turn be used by multiple other libraries with different configuration needs, they’re a problem.</p>
+
+<p>Amusingly, <a href="https://bugs.ruby-lang.org/issues/21311#Avoiding-unexpected-globally-shared-modulesobjects">this sort of API was one of the justifications for the currently experimental namespace feature in Ruby 3.5.0dev</a>,
+which shows the <code class="language-plaintext highlighter-rouge">json</code> gem is not the only one with this problem.</p>
+
+<p>Here again, a better solution is the <code class="language-plaintext highlighter-rouge">JSON::Coder</code> API, if you want to centralize your JSON generation configuration across
+your codebase, you can allocate a singleton with your desired options:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">MyLibrary</span>
+  <span class="no">JSON_CODER</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">Coder</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="ss">script_safe: </span><span class="kp">true</span><span class="p">)</span>
+
+  <span class="k">def</span> <span class="nf">do_things</span>
+    <span class="no">JSON_CODER</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>As a library author, you can even allow your users to substitute the configuration for one of their choosing:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">MyLibrary</span>
+  <span class="k">class</span> <span class="o">&lt;&lt;</span> <span class="nb">self</span>
+    <span class="nb">attr_accessor</span> <span class="ss">:json_coder</span>
+  <span class="k">end</span>
+  <span class="vi">@json_coder</span> <span class="o">=</span> <span class="no">JSON</span><span class="o">::</span><span class="no">Coder</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="ss">script_safe: </span><span class="kp">true</span><span class="p">)</span>
+
+  <span class="k">def</span> <span class="nf">do_things</span>
+    <span class="no">MyLibrary</span><span class="p">.</span><span class="nf">json_coder</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Thankfully, from what I can see of the gem’s usage, these API were very rarely used, so while they’re not a major hindrance,
+I figured the cost vs benefit is positive. And if someone really needs to set an option globally, they can monkey-patch JSON,
+the effect is the same, and at least it’s more honest.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>As mentioned previously, the decision to deprecate shouldn’t be taken lightly.
+It’s important to have empathy for the users who will have to deal with the fallout,
+and there are a few things more annoying than cosmetic deprecations.</p>
+
+<p>Yet it is also important to recognize when an API is error-prone or even outright dangerous,
+and deprecations are sometimes a necessary evil to correct course.</p>
+
+<p>Also, as you probably noticed, a common theme in most of the APIs I don’t like in the <code class="language-plaintext highlighter-rouge">json</code> gem, is global behavior and configuration.
+I’m not certain why that is. A part of it might be that as Rubyists we value simplicity and conciseness, and that historically
+the community has built its ethos as a reaction against overly verbose and ceremonial enterprise Java APIs, with their dependency injection frameworks and whatnot.</p>
+
+<p>A bit of global state or behavior can sometimes bring a lot of simplicity, but it’s a very sharp tool that needs to be handled with extreme care.</p>]]></content><author><name></name></author><category term="ruby" /><category term="json" /><summary type="html"><![CDATA[As I mentioned at the start of my Optimizing Ruby’s JSON series of posts, performance isn’t why I candidated to be the new gem’s maintainer.]]></summary></entry><entry><title type="html">Unlocking Ractors: class instance variables</title><link href="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html" rel="alternate" type="text/html" title="Unlocking Ractors: class instance variables" /><published>2025-05-24T09:03:51+00:00</published><updated>2025-05-24T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/05/24/unlocking-ractors-class-variables.html"><![CDATA[<p>In <a href="/ruby/performance/2025/02/27/whats-the-deal-with-ractors.html">a previous post about ractors</a>, I explained why
 I think it’s really unlikely you’d ever be able to run an entire application inside a ractor, but that they could
 still be situationally very useful to move CPU-bound work out of the main thread, and to unlock some parallel algorithm.</p>
 
@@ -4674,159 +5146,4 @@ lazily upon the first request.</p>
       <p>Yes, there are also Ractors to some extent, but that will be the subject of the next post. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
     </li>
   </ol>
-</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to explain a few things, namely why in many circles fork is seen as a relic of the past, if not outright the devil’s creation. And yet, it’s ubiquitous in the Ruby ecosystem.]]></summary></entry><entry><title type="html">Instrumenting Thread Stalling in Ruby Applications</title><link href="https://byroot.github.io/ruby/performance/2025/01/23/io-instrumentation.html" rel="alternate" type="text/html" title="Instrumenting Thread Stalling in Ruby Applications" /><published>2025-01-23T13:50:51+00:00</published><updated>2025-01-23T13:50:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/01/23/io-instrumentation</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/01/23/io-instrumentation.html"><![CDATA[<p>In <a href="https://byroot.github.io/ruby/performance/2025/01/23/the-mythical-io-bound-rails-app.html">my previous post about how IO-bound Rails applications really are</a>,
-I pointed at a common pitfall, how CPU starvation can look like slow IOs.</p>
-
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">start</span> <span class="o">=</span> <span class="no">Time</span><span class="p">.</span><span class="nf">now</span>
-<span class="n">database_connection</span><span class="p">.</span><span class="nf">execute</span><span class="p">(</span><span class="s2">"SELECT ..."</span><span class="p">)</span>
-<span class="n">query_duration</span> <span class="o">=</span> <span class="p">(</span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span> <span class="o">-</span> <span class="n">start</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1000.0</span>
-<span class="nb">puts</span> <span class="s2">"Query took: </span><span class="si">#{</span><span class="n">query_duration</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
-</code></pre></div></div>
-
-<p>In the above example, the instrumentation tells you how long it took for the database to answer your query, but may
-also include the time needed for the Ruby thread to re-acquire the GVL, or perhaps the Ruby GC to run, or even the
-operating system’s scheduler to resume the process.</p>
-
-<p>Thankfully, in recent years Ruby added some new APIs that help measure these things.</p>
-
-<h2 id="gctotal_time">GC.total_time</h2>
-
-<p>Database queries and other IOs can often result in lots of allocations. For instance, if you select 100 database rows,
-with a dozen columns each, you can probably expect a thousand or more allocations and any of these might trigger a GC
-run inside the code block you are timing.</p>
-
-<p>As such it can be a good idea to keep an eye on how much time Ruby is spending in GC. To help with that, <a href="https://bugs.ruby-lang.org/issues/10917#note-4">back in 2021
-I resurrected an old feature request on the Ruby bug tracker</a> and
-convinced <a href="https://github.com/ruby/ruby/pull/4757">Koichi Sadasa to implement the new <code class="language-plaintext highlighter-rouge">GC.total_time</code> API</a>.</p>
-
-<p>This accessor is a monotonic counter, that represents the number of nanoseconds spent in the GC. So to tell how much
-time a particular block of code spent in GC, you can do a simple subtraction:</p>
-
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">time_in_gc</span>
-  <span class="n">before</span> <span class="o">=</span> <span class="no">GC</span><span class="p">.</span><span class="nf">total_time</span>
-  <span class="k">yield</span>
-  <span class="n">diff_ms</span> <span class="o">=</span> <span class="p">(</span><span class="no">GC</span><span class="p">.</span><span class="nf">total_time</span> <span class="o">-</span> <span class="n">before</span><span class="p">)</span> <span class="o">/</span> <span class="mf">1_000_000.0</span>
-
-  <span class="nb">puts</span> <span class="s2">"gc_time: </span><span class="si">#{</span><span class="n">diff_ms</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
-<span class="k">end</span>
-
-<span class="n">time_in_gc</span> <span class="k">do</span>
-  <span class="mi">2_000_000</span><span class="p">.</span><span class="nf">times</span> <span class="p">{</span> <span class="no">Object</span><span class="p">.</span><span class="nf">new</span> <span class="p">}</span>
-<span class="k">end</span>
-</code></pre></div></div>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>gc_time: 24.18ms
-</code></pre></div></div>
-
-<p>Now of course, if you are running a multi-threaded application, you can’t just subtract the time spent in GC from the
-measured IO time, because another thread might be responsible for it. But it’s still a good idea to instrument it
-and display it next to the IO duration.</p>
-
-<p>That’s why starting from Rails 7.2, <a href="https://github.com/rails/rails/pull/51770">I added this measurement into Rails instrumentation API</a>.
-Every <code class="language-plaintext highlighter-rouge">ActiveSupport::Notifications</code> event now has an associated <code class="language-plaintext highlighter-rouge">gc_time</code>, and Rails request logs include the overall time spent in GC.</p>
-
-<h2 id="gvl-instrumentation-api">GVL Instrumentation API</h2>
-
-<p>Even more common than GC, is GVL contention. If you configured your application to use too many threads, it can cause
-long delays for a thread to resume after finishing some IOs.</p>
-
-<p>That’s why <a href="https://bugs.ruby-lang.org/issues/18339">in Ruby 3.2 I added a new C API to allow instrumenting the GVL</a>.</p>
-
-<p>This is quite a low-level API, and you need a C extension to integrate with it, but I wrote
-<a href="https://github.com/Shopify/gvltools"><code class="language-plaintext highlighter-rouge">gvltools</code></a> for that, and John Hawthorn wrote the
-<a href="https://github.com/jhawthorn/gvl_timing"><code class="language-plaintext highlighter-rouge">gvl_timing</code> gem</a>, and there’s
-also <a href="https://github.com/ivoanjo/gvl-tracing"><code class="language-plaintext highlighter-rouge">gvl-tracing</code></a> from Ivo Anjo.</p>
-
-<p>Here’s how <code class="language-plaintext highlighter-rouge">gvltools</code> can be used to distinguish actual IO time from GVL wait time:</p>
-
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"bundler/inline"</span>
-
-<span class="n">gemfile</span> <span class="k">do</span>
-  <span class="n">gem</span> <span class="s2">"bigdecimal"</span> <span class="c1"># for trilogy</span>
-  <span class="n">gem</span> <span class="s2">"trilogy"</span>
-  <span class="n">gem</span> <span class="s2">"gvltools"</span>
-<span class="k">end</span>
-
-<span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">enable</span>
-
-<span class="k">def</span> <span class="nf">measure_time</span>
-  <span class="n">realtime_start</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">clock_gettime</span><span class="p">(</span><span class="no">Process</span><span class="o">::</span><span class="no">CLOCK_MONOTONIC</span><span class="p">,</span> <span class="ss">:float_millisecond</span><span class="p">)</span>
-  <span class="n">gvl_time_start</span> <span class="o">=</span> <span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">monotonic_time</span>
-  <span class="k">yield</span>
-
-  <span class="n">realtime</span> <span class="o">=</span> <span class="no">Process</span><span class="p">.</span><span class="nf">clock_gettime</span><span class="p">(</span><span class="no">Process</span><span class="o">::</span><span class="no">CLOCK_MONOTONIC</span><span class="p">,</span> <span class="ss">:float_millisecond</span><span class="p">)</span> <span class="o">-</span> <span class="n">realtime_start</span>
-  <span class="n">gvl_time</span> <span class="o">=</span> <span class="no">GVLTools</span><span class="o">::</span><span class="no">LocalTimer</span><span class="p">.</span><span class="nf">monotonic_time</span> <span class="o">-</span> <span class="n">gvl_time_start</span>
-  <span class="n">gvl_time_ms</span> <span class="o">=</span> <span class="n">gvl_time</span> <span class="o">/</span> <span class="mf">1_000_000.0</span>
-  <span class="n">io_time</span> <span class="o">=</span> <span class="n">realtime</span> <span class="o">-</span> <span class="n">gvl_time_ms</span>
-  <span class="nb">puts</span> <span class="s2">"io: </span><span class="si">#{</span><span class="n">io_time</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="si">}</span><span class="s2">ms, gvl_wait: </span><span class="si">#{</span><span class="n">gvl_time_ms</span><span class="p">.</span><span class="nf">round</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="si">}</span><span class="s2">ms"</span>
-<span class="k">end</span>
-
-<span class="n">trilogy</span> <span class="o">=</span> <span class="no">Trilogy</span><span class="p">.</span><span class="nf">new</span>
-
-<span class="c1"># Measure a first time with just the main thread</span>
-<span class="n">measure_time</span> <span class="k">do</span>
-  <span class="n">trilogy</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span>
-<span class="k">end</span>
-
-<span class="k">def</span> <span class="nf">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="p">)</span>
-  <span class="k">return</span>  <span class="n">n</span>  <span class="k">if</span> <span class="p">(</span> <span class="mi">0</span><span class="o">..</span><span class="mi">1</span> <span class="p">).</span><span class="nf">include?</span> <span class="n">n</span>
-  <span class="p">(</span> <span class="n">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">1</span> <span class="p">)</span> <span class="o">+</span> <span class="n">fibonacci</span><span class="p">(</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">2</span> <span class="p">)</span> <span class="p">)</span>
-<span class="k">end</span>
-
-<span class="c1"># Spawn 5 CPU-heavy threads</span>
-<span class="n">threads</span> <span class="o">=</span> <span class="mi">5</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="k">do</span>
-  <span class="no">Thread</span><span class="p">.</span><span class="nf">new</span> <span class="k">do</span>
-    <span class="kp">loop</span> <span class="k">do</span>
-      <span class="n">fibonacci</span><span class="p">(</span><span class="mi">25</span><span class="p">)</span>
-    <span class="k">end</span>
-  <span class="k">end</span>
-<span class="k">end</span>
-
-<span class="c1"># Measure again with the background threads</span>
-<span class="n">measure_time</span> <span class="k">do</span>
-  <span class="n">trilogy</span><span class="p">.</span><span class="nf">query</span><span class="p">(</span><span class="s2">"SELECT 1"</span><span class="p">)</span>
-<span class="k">end</span>
-</code></pre></div></div>
-
-<p>If you run this example, you can see that on the first measurement, the GVL wait time is pretty much zero,
-but on the second, it adds a massive half-a-second overhead:</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>realtime: 0.22ms, gvl_wait: 0.0ms, io: 0.2ms
-realtime: 549.29ms, gvl_wait: 549.22ms, io: 0.1ms
-</code></pre></div></div>
-
-<p>The downside of this API however, is that it adds some overhead to Ruby’s thread scheduler. I never really managed to
-come up with a precise figure of how much overhead, perhaps it’s negligible, but until then, it’s a bit hard to justify
-integrating it as a Rails default.</p>
-
-<p>That being said, recently <a href="https://github.com/speedshop/gvl_metrics_middleware/tree/main">Yuki Nishijima from Speedshop open-sourced a middleware</a>
-to hook this new instrumentation API into various APM services, so it might progressively see broader usage.</p>
-
-<h2 id="operating-system-scheduler">Operating System Scheduler</h2>
-
-<p>The one remaining thing that could cause IO operations to appear longer than they really are is the operating scheduler.
-Unless you are running your application on dedicated hardware, and spawn no more than one Ruby process per core, then
-it can happen that the operating system doesn’t immediately resume a process after it is done blocking on some IO.</p>
-
-<p>I’m unfortunately not aware of a really good way to measure this.</p>
-
-<p>The best I’ve found is <code class="language-plaintext highlighter-rouge">/proc/&lt;pid&gt;/schedstat</code> on Linux:</p>
-
-<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># cat /proc/1/schedstat</span>
-40933713 1717706 178
-</code></pre></div></div>
-
-<p>The second number in that list is the amount of nanosecond the given process spent in the “runqueue”, in other words,
-waiting to be assigned a CPU core so it can resume work.</p>
-
-<p>But reading <code class="language-plaintext highlighter-rouge">/proc</code> around every IO would be a bit heavy-handed, so it’s not something I’ve ever integrated into an
-application monitoring. Instead, we monitor it more globally on a per-machine basis as an indication that we’re running
-too many processes in our containers.</p>
-
-<h2 id="conclusion">Conclusion</h2>
-
-<p>So while it’s very hard to measure exactly how long a particular IO operation took, there are a few general metrics
-that can help you have a better pitcture of how much “thread stalling” your application is experiencing.</p>
-
-<p>Also, I don’t keep a close eye on the various application performance monitoring services out there, but my hope when
-adding these new APIs was that they would eventually integrate it in their offering. Not sure if some did already.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[Recent Ruby releases added some nice tools to better instrument applications]]></summary></entry></feed>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to explain a few things, namely why in many circles fork is seen as a relic of the past, if not outright the devil’s creation. And yet, it’s ubiquitous in the Ruby ecosystem.]]></summary></entry></feed>

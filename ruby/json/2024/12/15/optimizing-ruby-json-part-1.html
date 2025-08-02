@@ -158,7 +158,7 @@ which has the nice property of outputting Firefox Profiler compatible reports th
 spent in JSON’s own <code class="language-plaintext highlighter-rouge">isLegalUTF8</code>, and also <code class="language-plaintext highlighter-rouge">1.9%</code> in <code class="language-plaintext highlighter-rouge">rb_enc_str_asciionly_p</code>, which is the <code class="language-plaintext highlighter-rouge">C</code> API version of <code class="language-plaintext highlighter-rouge">String#ascii_only?</code>.</p>
 
 <p>The reason this is surprising is that Ruby string have some internal property called a <code class="language-plaintext highlighter-rouge">coderange</code>. For most string operations, Ruby does need to
-known if it’s properly encoded, and for some operations, it can take shortcuts if the string only contains ASCII.</p>
+know if it’s properly encoded, and for some operations, it can take shortcuts if the string only contains ASCII.</p>
 
 <p>Since scanning a string to validate its encoding is somewhat costly, it keeps that property around so a string is only scanned once as long as it’s not mutated.</p>
 
