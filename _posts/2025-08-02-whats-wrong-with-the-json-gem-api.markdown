@@ -53,7 +53,7 @@ Doing so both ensures warnings aren't missed, and helps tracking them down as yo
 rather than a warning that points at a single call-site that may not necessarily help you find the problem.
 
 This is a pattern I use in most of my own projects, and that [I also included into Rails' own test suite](https://github.com/rails/rails/blob/add5a73b26e78d6b13945525874749ae40af21c7/tools/strict_warnings.rb).
-For larger projects, where being deprecation-free all the time may be complicated, there's also the more sophisticated [`deprecation_toolkit` gem].
+For larger projects, where being deprecation-free all the time may be complicated, there's also the more sophisticated [`deprecation_toolkit` gem](https://github.com/Shopify/deprecation_toolkit).
 
 ## The create_additions Option
 
