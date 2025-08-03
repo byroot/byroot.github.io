@@ -417,7 +417,7 @@ not expect standard JSON methods to behave differently.
 And that's not a hypothetical, I personally ran into a gem that was using JSON to fingerprint some object graphs, e.g.
 
 ```ruby
-def fingerpint
+def fingerprint
   Digest::SHA1.hexdigest(JSON.dump(some_object_graph))
 end
 ```
