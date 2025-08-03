@@ -448,7 +448,7 @@ not expect standard JSON methods to behave differently.</p>
 
 <p>And that’s not a hypothetical, I personally ran into a gem that was using JSON to fingerprint some object graphs, e.g.</p>
 
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">fingerpint</span>
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">fingerprint</span>
   <span class="no">Digest</span><span class="o">::</span><span class="no">SHA1</span><span class="p">.</span><span class="nf">hexdigest</span><span class="p">(</span><span class="no">JSON</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">some_object_graph</span><span class="p">))</span>
 <span class="k">end</span>
 </code></pre></div></div>
