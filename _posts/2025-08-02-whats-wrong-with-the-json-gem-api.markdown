@@ -181,9 +181,6 @@ cb = ->(obj) do
     obj
   end
 end
-
-p JSON.load('["a", {"b": 1}]', cb)
-# => ["A", {"B" => 1}]
 ```
 
 While this requires more code from the user, it gives much tighter control over the deserialization,
