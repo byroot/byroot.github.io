@@ -632,7 +632,7 @@ That's where `typed_flag` comes in. It's at the same offset in the `RTypedData`s
 That's why `typed_flag` is always `1`, it allows us to check if a `T_DATA` is typed by checking `rdata->dfree == 1`.
 
 Now you might wonder why I'm telling you all of this.
-Well, it's because that `typed_flag` field is using `8B` of space to store exactly `1bit` of information, and that has buggered me for several years.
+Well, it's because that `typed_flag` field is using `8B` of space to store exactly `1bit` of information, and that has bugged me for several years.
 
 Even though truth be told, the comment is outdated, and the field can also sometimes be `3` as [we piggy-backed on it with Peter Zhu last year to implement embedded TypedData objects](https://railsatscale.com/2025-06-03-implementing-embedded-typeddata-objects/).
 But that's still 32 times more than needed, so if someone could think of a better place to store these two bits, that would free and entire `8B` to store a direct reference to the `T_IMEMO/fields`.
