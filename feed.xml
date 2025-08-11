@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-08-11T22:03:30+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: generic instance variables</title><link href="https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables.html" rel="alternate" type="text/html" title="Unlocking Ractors: generic instance variables" /><published>2025-08-11T09:03:51+00:00</published><updated>2025-08-11T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables.html"><![CDATA[<p>In two previous posts, I explained that one of the big blockers for Ractors’ viability is that while they’re supposed
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-08-11T22:08:11+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Unlocking Ractors: generic instance variables</title><link href="https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables.html" rel="alternate" type="text/html" title="Unlocking Ractors: generic instance variables" /><published>2025-08-11T09:03:51+00:00</published><updated>2025-08-11T09:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/08/11/unlocking-ractors-generic-variables.html"><![CDATA[<p>In two previous posts, I explained that one of the big blockers for Ractors’ viability is that while they’re supposed
 to run fully in parallel, in many cases, they’d perform worse than a single thread because there were numerous codepaths
 in the Ruby virtual machine and runtime that were still protected by the global VM lock.</p>
 
@@ -339,10 +339,26 @@ Struct objects are laid out very similarly to <code class="language-plaintext hi
 
 <p>Would be laid out as is:</p>
 
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>| flags    | klass   | field_1 | field_2 | - |
-|----------|---------|---------|---------|---|
-| T_STRUCT | 0xbbeaa | 1       | 2       |   |
-</code></pre></div></div>
+<table>
+  <thead>
+    <tr>
+      <th>flags</th>
+      <th>klass</th>
+      <th>field_1</th>
+      <th>field_2</th>
+      <th>-</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>T_STRUCT</td>
+      <td>0xbbeaa</td>
+      <td>1</td>
+      <td>2</td>
+      <td> </td>
+    </tr>
+  </tbody>
+</table>
 
 <p>Hence, my initial idea was that if we were to encode the struct’s layout using shapes like we do for instance variables, we’d
 be able to collocate members and variables together so that:</p>
