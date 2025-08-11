@@ -308,11 +308,9 @@ struct = Struct.new(:field_1, :field_2).new(1, 2)
 
 Would be laid out as is:
 
-```
 | flags    | klass   | field_1 | field_2 | - |
 |----------|---------|---------|---------|---|
 | T_STRUCT | 0xbbeaa | 1       | 2       |   |
-```
 
 Hence, my initial idea was that if we were to encode the struct's layout using shapes like we do for instance variables, we'd
 be able to collocate members and variables together so that:
