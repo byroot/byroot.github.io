@@ -175,7 +175,7 @@ And I think that's how it should be.
 
 To be clear, I'm not saying open source should be free of any monetary exchanges, just that it's crucial to do it in a way that doesn't let these sorts of suspicions arise.
 
-## Not Every Projects Are Equally Forkable
+## Not Every Project Is Equally Forkable
 
 I know some people will object to the above, arguing that this is all open source, so if you are not happy with the direction of the project, you can always fork, ergo: shut up!
 And while this is true in most cases, in practice, there are some projects that aren't as easily forked because of their position.
