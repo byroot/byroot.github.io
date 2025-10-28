@@ -295,7 +295,7 @@ For instance, you can see this idiom in <a href="https://github.com/rack/rack/co
 <span class="k">end</span>
 </code></pre></div></div>
 
-<p>It’s this pattern that led Charlie Somerville from GitHub to open <a href="https://bugs.ruby-lang.org/issues/8579">a feature request to propose a new syntax for frozen string literals</a>: <code class="language-plaintext highlighter-rouge">%f</code>.</p>
+<p>It’s this pattern that led <a href="https://github.com/haileys">Hailey Somerville</a> from GitHub to open <a href="https://bugs.ruby-lang.org/issues/8579">a feature request to propose a new syntax for frozen string literals</a>: <code class="language-plaintext highlighter-rouge">%f</code>.</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">req</span><span class="o">.</span><span class="no">POST</span><span class="p">[</span><span class="o">%</span><span class="n">f</span><span class="p">(</span><span class="n">_method</span><span class="p">)]</span> <span class="o">||</span> <span class="n">env</span><span class="p">[</span><span class="o">%</span><span class="n">f</span><span class="p">(</span><span class="no">HTTP_X_HTTP_METHOD_OVERRIDE</span><span class="p">)]</span>
 </code></pre></div></div>
@@ -378,7 +378,7 @@ Its implementation in pseudo-Ruby would be something like:</p>
 
 <h2 id="further-optimizations">Further Optimizations</h2>
 
-<p>To further reduce string allocations, in 2014, Aman Karmani (tmm1) and Charlie Somerville (charliesome) from GitHub submitted <a href="https://bugs.ruby-lang.org/issues/9382">a patch to add two more optimized instructions, <code class="language-plaintext highlighter-rouge">opt_aref_with</code> and <code class="language-plaintext highlighter-rouge">opt_aset_with</code></a>.</p>
+<p>To further reduce string allocations, in 2014, Aman Karmani (tmm1) and Hailey Somerville (haileys) from GitHub submitted <a href="https://bugs.ruby-lang.org/issues/9382">a patch to add two more optimized instructions, <code class="language-plaintext highlighter-rouge">opt_aref_with</code> and <code class="language-plaintext highlighter-rouge">opt_aset_with</code></a>.</p>
 
 <p>Before their patch, accessing a hash with a string key would cause a string allocation:</p>
 
