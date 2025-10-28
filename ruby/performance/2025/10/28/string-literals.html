@@ -255,12 +255,18 @@ But if <code class="language-plaintext highlighter-rouge">str</code> was frozen,
 <p>Similarly, when I was listing some of the pros and cons of mutable strings, I mentioned how mutable strings are a problem when used as hash table keys.
 Perhaps you’ve never noticed it, but to avoid this problem, Ruby automatically freezes string keys in Hash:</p>
 
-<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">str</span> <span class="o">=</span> <span class="s2">"test"</span>
-<span class="nb">p</span> <span class="n">str</span><span class="p">.</span><span class="nf">frozen?</span> <span class="c1"># =&gt; false</span>
-<span class="nb">hash</span> <span class="o">=</span> <span class="p">{</span> <span class="n">str</span> <span class="o">=&gt;</span> <span class="mi">1</span> <span class="p">}</span>
-<span class="nb">p</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span> <span class="c1"># =&gt; "test"</span>
-<span class="nb">p</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">frozen?</span> <span class="c1"># =&gt; true</span>
-<span class="nb">p</span> <span class="p">[</span><span class="n">str</span><span class="p">.</span><span class="nf">object_id</span><span class="p">,</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">object_id</span><span class="p">]</span> <span class="c1"># =&gt; [16, 24]</span>
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="n">str</span> <span class="o">=</span> <span class="s2">"test"</span>
+<span class="o">=&gt;</span> <span class="s2">"test"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span><span class="p">.</span><span class="nf">frozen?</span>
+<span class="o">=&gt;</span> <span class="kp">false</span>
+<span class="o">&gt;&gt;</span> <span class="nb">hash</span> <span class="o">=</span> <span class="p">{</span> <span class="n">str</span> <span class="o">=&gt;</span> <span class="mi">1</span> <span class="p">}</span>
+<span class="o">=&gt;</span> <span class="p">{</span><span class="s2">"test"</span> <span class="o">=&gt;</span> <span class="mi">1</span><span class="p">}</span>
+<span class="o">&gt;&gt;</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span>
+<span class="o">=&gt;</span> <span class="s2">"test"</span>
+<span class="o">&gt;&gt;</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">frozen?</span>
+<span class="o">=&gt;</span> <span class="kp">true</span>
+<span class="o">&gt;&gt;</span> <span class="p">[</span><span class="n">str</span><span class="p">.</span><span class="nf">object_id</span><span class="p">,</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">object_id</span><span class="p">]</span>
+<span class="o">=&gt;</span> <span class="p">[</span><span class="mi">16</span><span class="p">,</span> <span class="mi">24</span><span class="p">]</span>
 </code></pre></div></div>
 
 <p>As you can see, here Ruby couldn’t directly use the <code class="language-plaintext highlighter-rouge">str</code> string as a Hash key, it first had to make a frozen copy of it.
