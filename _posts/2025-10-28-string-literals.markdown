@@ -224,12 +224,18 @@ Similarly, when I was listing some of the pros and cons of mutable strings, I me
 Perhaps you've never noticed it, but to avoid this problem, Ruby automatically freezes string keys in Hash:
 
 ```ruby
-str = "test"
-p str.frozen? # => false
-hash = { str => 1 }
-p hash.keys.first # => "test"
-p hash.keys.first.frozen? # => true
-p [str.object_id, hash.keys.first.object_id] # => [16, 24]
+>> str = "test"
+=> "test"
+>> str.frozen?
+=> false
+>> hash = { str => 1 }
+=> {"test" => 1}
+>> hash.keys.first
+=> "test"
+>> hash.keys.first.frozen?
+=> true
+>> [str.object_id, hash.keys.first.object_id]
+=> [16, 24]
 ```
 
 As you can see, here Ruby couldn't directly use the `str` string as a Hash key, it first had to make a frozen copy of it.
