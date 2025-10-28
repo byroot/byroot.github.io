@@ -265,7 +265,7 @@ module Rack
 end
 ```
 
-It's this pattern that led Charlie Somerville from GitHub to open [a feature request to propose a new syntax for frozen string literals](https://bugs.ruby-lang.org/issues/8579): `%f`.
+It's this pattern that led [Hailey Somerville](https://github.com/haileys) from GitHub to open [a feature request to propose a new syntax for frozen string literals](https://bugs.ruby-lang.org/issues/8579): `%f`.
 
 ```ruby
 req.POST[%f(_method)] || env[%f(HTTP_X_HTTP_METHOD_OVERRIDE)]
@@ -356,7 +356,7 @@ This is the feature Ruby 2.1.0 ultimately shipped with in December 2013.
 
 ## Further Optimizations
 
-To further reduce string allocations, in 2014, Aman Karmani (tmm1) and Charlie Somerville (charliesome) from GitHub submitted [a patch to add two more optimized instructions, `opt_aref_with` and `opt_aset_with`](https://bugs.ruby-lang.org/issues/9382).
+To further reduce string allocations, in 2014, Aman Karmani (tmm1) and Hailey Somerville (haileys) from GitHub submitted [a patch to add two more optimized instructions, `opt_aref_with` and `opt_aset_with`](https://bugs.ruby-lang.org/issues/9382).
 
 Before their patch, accessing a hash with a string key would cause a string allocation:
 
