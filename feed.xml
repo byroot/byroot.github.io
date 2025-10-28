@@ -1,4 +1,589 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-10-10T07:02:11+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Dear Rubyists: Shopify Isn’t Your Enemy</title><link href="https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists.html" rel="alternate" type="text/html" title="Dear Rubyists: Shopify Isn’t Your Enemy" /><published>2025-10-09T05:03:51+00:00</published><updated>2025-10-09T05:03:51+00:00</updated><id>https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists</id><content type="html" xml:base="https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists.html"><![CDATA[<p>I’ve been meaning to write a post about my perspective on Open Source and corporate entities.
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2025-10-28T12:01:23+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Frozen String Literals: Past, Present, Future?</title><link href="https://byroot.github.io/ruby/performance/2025/10/28/string-literals.html" rel="alternate" type="text/html" title="Frozen String Literals: Past, Present, Future?" /><published>2025-10-28T08:03:51+00:00</published><updated>2025-10-28T08:03:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/10/28/string-literals</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/10/28/string-literals.html"><![CDATA[<p>If you are a Rubyist, you’ve likely been writing <code class="language-plaintext highlighter-rouge"># frozen_string_literal: true</code> at the top of most of your Ruby
+source code files, or at the very least, that you’ve seen it in some other projects.</p>
+
+<p>Based on informal discussions at conferences and online, it seems that what this magic comment really is about is not always well understood,
+so I figured it would be worth talking about why it’s there, what it does exactly, and what its future might look like.</p>
+
+<h2 id="ruby-strings-are-mutable">Ruby Strings Are Mutable</h2>
+
+<p>Before we can delve into what makes frozen string literals special, we first need to talk about the Ruby String type,
+because it’s quite different from the equivalent type in other popular languages.</p>
+
+<p>In the overwhelming majority of popular languages, strings are immutable.
+That’s the case in Java, JavaScript, Python, PHP, Go, etc.</p>
+
+<p>There are a few exceptions, though, like Perl, C++, and of course Ruby:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="n">str</span> <span class="o">=</span> <span class="no">String</span><span class="p">.</span><span class="nf">new</span>
+<span class="o">=&gt;</span> <span class="s2">""</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span><span class="p">.</span><span class="nf">object_id</span>
+<span class="o">=&gt;</span> <span class="mi">24952</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span> <span class="o">&lt;&lt;</span> <span class="s2">"foo"</span>
+<span class="o">=&gt;</span> <span class="s2">"foo"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span>
+<span class="o">=&gt;</span> <span class="s2">"foo"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span><span class="p">.</span><span class="nf">capitalize!</span>
+<span class="o">=&gt;</span> <span class="s2">"Foo"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span><span class="p">.</span><span class="nf">upcase!</span>
+<span class="o">=&gt;</span> <span class="s2">"FOO"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span>
+<span class="o">=&gt;</span> <span class="s2">"FOO"</span>
+<span class="o">&gt;&gt;</span> <span class="n">str</span><span class="p">.</span><span class="nf">object_id</span>
+<span class="o">=&gt;</span> <span class="mi">24952</span>
+</code></pre></div></div>
+
+<p>Implementation-wise, they’re just an array of bytes, with an associated encoding to know how these bytes should be interpreted:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">String</span>
+  <span class="nb">attr_reader</span> <span class="ss">:encoding</span>
+
+  <span class="k">def</span> <span class="nf">initialize</span>
+    <span class="vi">@bytes</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="vi">@encoding</span> <span class="o">=</span> <span class="no">Encoding</span><span class="o">::</span><span class="no">UTF_8</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>That too is quite unusual.</p>
+
+<h2 id="string-encoding">String Encoding</h2>
+
+<p>Most languages, especially the ones I listed above, instead have chosen a specific internal encoding, and all strings are encoded that way.
+For instance, in Java and JavaScript, strings are encoded in UTF-16 because they were created somewhat at the same time as the first Unicode specification, and at that time, many people thought that surely 16 bits should be enough to encode all possible characters, but that later turned out to be wrong.
+Most other languages, like Python 3, use UTF-8.</p>
+
+<p>In these languages, whenever you have to handle text in another encoding, you start by re-encoding it into the internal representation.
+In Ruby however, strings with different internal encodings can exist in the same program, and Ruby supports over a hundred different encodings:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">Encoding</span><span class="p">.</span><span class="nf">list</span><span class="p">.</span><span class="nf">size</span>
+<span class="o">=&gt;</span> <span class="mi">103</span>
+</code></pre></div></div>
+
+<p>While I’m not 100% percent certain of why Ruby went that way, I highly suspect it is in big part due to Ruby’s Japanese origin.
+In the early days of the Unicode specification, there was an attempt at unifying some of the “common” Chinese, Korean, and Japanese characters,
+as what is now called the <a href="https://en.wikipedia.org/wiki/Han_unification">Han unification</a>.
+Because of that character unification attempt, Unicode had lots of problems for Japanese text, hence the Japanese IT industry didn’t adopt Unicode as fast as the Western IT industry did, and for a very long time, Japanese-specific encoding such as <a href="https://en.wikipedia.org/wiki/Shift_JIS">Shift JIS</a> remained widespread.</p>
+
+<p>As such, being able to work with Japanese text without going through a forced Unicode conversion was an important feature for a large part of Ruby’s core contributors.</p>
+
+<p>But let’s go back to mutability.</p>
+
+<h2 id="pros-and-cons">Pros And Cons</h2>
+
+<p>Like most things in engineering, both immutable and mutable strings have pros and cons, so it’s not like one choice is inherently superior to the other.</p>
+
+<p>One of the advantages of immutable strings is that you can more easily share them, for instance:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">sliced_string</span> <span class="o">=</span> <span class="n">very_long_string</span><span class="p">[</span><span class="mi">1</span><span class="o">..-</span><span class="mi">1</span><span class="p">]</span>
+</code></pre></div></div>
+
+<p>In the above case, if strings are mutable, you need to copy all but one of the bytes of <code class="language-plaintext highlighter-rouge">very_long_string</code> into <code class="language-plaintext highlighter-rouge">sliced_string</code>, which can be costly.
+But if strings are immutable, you can instead have <code class="language-plaintext highlighter-rouge">sliced_string</code> internally be pointing at the content of <code class="language-plaintext highlighter-rouge">very_long_string</code> with just an offset.
+That is what some languages call String Views, or String slices.</p>
+
+<p>Another advantage of immutable strings is that they allow for <a href="https://en.wikipedia.org/wiki/String_interning">interning</a>.
+The idea is simple, if strings can’t be mutated, whenever you have multiple instances of strings with identical content, you can coalesce them into a single instance.
+This deduplication can be done more or less aggressively, as it’s always a tradeoff in how much CPU time you want to spend searching for duplicates in the hope of saving some memory.</p>
+
+<p>Some other advantages include not having to worry about mutation in multi-threaded code, as well as dictionary keys.
+Strings are used a lot as dictionary keys.
+If you mutate a string, you change its hash code, and that basically breaks hash tables.</p>
+
+<p>On the other hand, mutable strings are very handy in some scenarios, like to iteratively build a final string:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">buffer</span> <span class="o">=</span> <span class="s2">""</span>
+<span class="mi">10</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
+  <span class="n">buffer</span> <span class="o">&lt;&lt;</span> <span class="s2">"hello"</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Whereas in a language with immutable strings like Java, concatenating strings in a loop is known as a classic performance gotcha:</p>
+
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nc">String</span> <span class="n">buffer</span> <span class="o">=</span> <span class="s">""</span><span class="o">;</span>
+<span class="k">for</span> <span class="o">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="mi">10</span><span class="o">;</span> <span class="n">i</span><span class="o">++)</span> <span class="o">{</span>
+  <span class="n">buffer</span> <span class="o">+=</span> <span class="s">"hello"</span><span class="o">;</span>
+<span class="o">}</span>
+</code></pre></div></div>
+
+<p>In the above example, on every loop, the <code class="language-plaintext highlighter-rouge">+=</code> operator causes a new string to be allocated, and the content to be copied, which gets exponentially more expensive as the string grows.
+Instead, you are supposed to use a different object as a buffer: <code class="language-plaintext highlighter-rouge">StringBuilder</code>:</p>
+
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nc">StringBuilder</span> <span class="n">buffer</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">StringBuilder</span><span class="o">();</span>
+<span class="k">for</span> <span class="o">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="mi">10</span><span class="o">;</span> <span class="n">i</span><span class="o">++)</span> <span class="o">{</span>
+  <span class="n">buffer</span><span class="o">.</span><span class="na">append</span><span class="o">(</span><span class="s">"hello"</span><span class="o">);</span>
+<span class="o">}</span>
+<span class="n">buffer</span><span class="o">.</span><span class="na">toString</span><span class="o">();</span>
+</code></pre></div></div>
+
+<p>That’s the Java equivalent of appending strings to an array and then calling <code class="language-plaintext highlighter-rouge">array.join("")</code>.
+It’s a common enough mistake that at some point the Java compiler gained the ability to <a href="https://docs.oracle.com/javase/specs/jls/se8/html/jls-15.html#jls-15.18.1">detect that pattern and automatically replace it with the equivalent code using <code class="language-plaintext highlighter-rouge">StringBuilder</code></a>.</p>
+
+<p>While having to use a different buffer type isn’t the end of the world, I do very much like that it’s not necessary in Ruby.</p>
+
+<p>But more generally, the advantage of mutable strings is that for some algorithms, being able to modify the string in place saves a lot of memory allocations and copying.</p>
+
+<h2 id="ruby-actually-has-both">Ruby Actually Has Both</h2>
+
+<p>Earlier in this post, I said Ruby had mutable strings, but it’s not quite true.
+Ruby actually has both mutable and immutable strings, because in Ruby, every mutable object can be frozen, hence, Ruby has both mutable and immutable strings, and it takes advantage of this.</p>
+
+<p>A fun way to poke at Ruby internals is through <a href="https://docs.ruby-lang.org/en/3.4/ObjectSpace.html#method-i-dump">the <code class="language-plaintext highlighter-rouge">ObjectSpace.dump</code> method</a>.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"json"</span>
+<span class="nb">require</span> <span class="s2">"objspace"</span>
+
+<span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+  <span class="no">JSON</span><span class="p">.</span><span class="nf">pretty_generate</span><span class="p">(</span><span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">)))</span>
+<span class="k">end</span>
+
+<span class="n">str</span> <span class="o">=</span> <span class="s2">"Hello World"</span> <span class="o">*</span> <span class="mi">80</span>
+<span class="nb">puts</span> <span class="n">dump</span><span class="p">(</span><span class="n">str</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>The above script will output something like:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"address"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0x105068e10"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"STRING"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"slot_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"bytesize"</span><span class="p">:</span><span class="w"> </span><span class="mi">880</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"memsize"</span><span class="p">:</span><span class="w"> </span><span class="mi">921</span><span class="p">,</span><span class="w">
+  </span><span class="err">...</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>It tells us the string content is <code class="language-plaintext highlighter-rouge">880B</code> (<code class="language-plaintext highlighter-rouge">bytesize</code>) and that Ruby allocated a <code class="language-plaintext highlighter-rouge">40B</code> wide slot (<code class="language-plaintext highlighter-rouge">slot_size</code>),
+hence the string content is stored in an external buffer for a total of <code class="language-plaintext highlighter-rouge">921B</code> (<code class="language-plaintext highlighter-rouge">memsize</code>).</p>
+
+<p>Now, look what happens if we slice that string:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"json"</span>
+<span class="nb">require</span> <span class="s2">"objspace"</span>
+
+<span class="k">def</span> <span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+  <span class="no">JSON</span><span class="p">.</span><span class="nf">pretty_generate</span><span class="p">(</span><span class="no">JSON</span><span class="p">.</span><span class="nf">parse</span><span class="p">(</span><span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">)))</span>
+<span class="k">end</span>
+
+<span class="n">str</span> <span class="o">=</span> <span class="s2">"Hello World"</span> <span class="o">*</span> <span class="mi">80</span>
+<span class="nb">puts</span> <span class="s2">"initial str: </span><span class="si">#{</span><span class="n">dump</span><span class="p">(</span><span class="n">str</span><span class="p">)</span><span class="si">}</span><span class="se">\n</span><span class="s2">"</span>
+
+<span class="n">slice</span> <span class="o">=</span> <span class="n">str</span><span class="p">[</span><span class="mi">40</span><span class="o">..-</span><span class="mi">1</span><span class="p">]</span>
+
+<span class="nb">puts</span> <span class="s2">"str after:</span><span class="se">\n</span><span class="si">#{</span><span class="n">dump</span><span class="p">(</span><span class="n">str</span><span class="p">)</span><span class="si">}</span><span class="se">\n</span><span class="s2">"</span>
+<span class="nb">puts</span> <span class="s2">"slice:</span><span class="se">\n</span><span class="si">#{</span><span class="n">dump</span><span class="p">(</span><span class="n">slice</span><span class="p">)</span><span class="si">}</span><span class="se">\n</span><span class="s2">"</span>
+</code></pre></div></div>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">str</span><span class="w"> </span><span class="err">after:</span><span class="w">
+</span><span class="p">{</span><span class="w">
+  </span><span class="nl">"address"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0x105178e18"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"STRING"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"slot_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"shared"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"references"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"0x1051786c0"</span><span class="w"> </span><span class="p">],</span><span class="w">
+  </span><span class="nl">"memsize"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w">
+  </span><span class="err">...</span><span class="w">
+</span><span class="p">}</span><span class="w">
+
+</span><span class="err">slice:</span><span class="w">
+</span><span class="p">{</span><span class="w">
+  </span><span class="nl">"address"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0x1051786e8"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"STRING"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"slot_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"shared"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"references"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"0x1051786c0"</span><span class="w"> </span><span class="p">],</span><span class="w">
+  </span><span class="nl">"memsize"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w">
+  </span><span class="err">...</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>Now, both <code class="language-plaintext highlighter-rouge">str</code> and <code class="language-plaintext highlighter-rouge">slice</code> have the <code class="language-plaintext highlighter-rouge">shared: true</code> attribute, which indicates that they’re not actually owning their content, they are pointing inside another String object.
+You can also see that both <code class="language-plaintext highlighter-rouge">str</code> and <code class="language-plaintext highlighter-rouge">slice</code> have a reference to the same object at address: <code class="language-plaintext highlighter-rouge">0x1051786c0</code>.
+So even though it has mutable strings, Ruby is still able to optimize some operations using “string views” like languages with immutable strings.
+However, since <code class="language-plaintext highlighter-rouge">str</code> is mutable, Ruby couldn’t directly create a string view that references <code class="language-plaintext highlighter-rouge">str</code>, it first had to transfer the buffer ownership to a third String object, and that one is immutable.
+But if <code class="language-plaintext highlighter-rouge">str</code> was frozen, Ruby would have been able to directly create <code class="language-plaintext highlighter-rouge">slice</code> as a view inside <code class="language-plaintext highlighter-rouge">str</code>.</p>
+
+<p>Similarly, when I was listing some of the pros and cons of mutable strings, I mentioned how mutable strings are a problem when used as hash table keys.
+Perhaps you’ve never noticed it, but to avoid this problem, Ruby automatically freezes string keys in Hash:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">str</span> <span class="o">=</span> <span class="s2">"test"</span>
+<span class="nb">p</span> <span class="n">str</span><span class="p">.</span><span class="nf">frozen?</span> <span class="c1"># =&gt; false</span>
+<span class="nb">hash</span> <span class="o">=</span> <span class="p">{</span> <span class="n">str</span> <span class="o">=&gt;</span> <span class="mi">1</span> <span class="p">}</span>
+<span class="nb">p</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span> <span class="c1"># =&gt; "test"</span>
+<span class="nb">p</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">frozen?</span> <span class="c1"># =&gt; true</span>
+<span class="nb">p</span> <span class="p">[</span><span class="n">str</span><span class="p">.</span><span class="nf">object_id</span><span class="p">,</span> <span class="nb">hash</span><span class="p">.</span><span class="nf">keys</span><span class="p">.</span><span class="nf">first</span><span class="p">.</span><span class="nf">object_id</span><span class="p">]</span> <span class="c1"># =&gt; [16, 24]</span>
+</code></pre></div></div>
+
+<p>As you can see, here Ruby couldn’t directly use the <code class="language-plaintext highlighter-rouge">str</code> string as a Hash key, it first had to make a frozen copy of it.
+Here, too, if <code class="language-plaintext highlighter-rouge">str</code> was frozen, Ruby could have saved the extra work of duplicating this string.</p>
+
+<p>I believe that illustrates the common tradeoffs at play with mutable strings.
+On one hand, they can be much more efficient, allowing for in-place modifications, but on the other hand, they impose extra allocations and copying to protect yourself from mutations.</p>
+
+<h2 id="the-history-of-frozen-string-literal">The History Of Frozen String Literal</h2>
+
+<p>To avoid this extra copying overhead, it used to be a fairly common optimization technique to store string literals in constants.
+For instance, you can see this idiom in <a href="https://github.com/rack/rack/commit/8b8690bcb7762cde729088c2abdacb610ebea1f7">a 17 years old patch to rack</a>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">module</span> <span class="nn">Rack</span>
+  <span class="k">class</span> <span class="nc">MethodOverride</span>
+    <span class="no">METHOD_OVERRIDE_PARAM_KEY</span> <span class="o">=</span> <span class="s2">"_method"</span><span class="p">.</span><span class="nf">freeze</span>
+    <span class="no">HTTP_METHOD_OVERRIDE_HEADER</span> <span class="o">=</span> <span class="s2">"HTTP_X_HTTP_METHOD_OVERRIDE"</span><span class="p">.</span><span class="nf">freeze</span>
+
+    <span class="k">def</span> <span class="nf">call</span><span class="p">(</span><span class="n">env</span><span class="p">)</span>
+      <span class="c1"># ...</span>
+      <span class="nb">method</span> <span class="o">=</span> <span class="n">req</span><span class="o">.</span><span class="no">POST</span><span class="p">[</span><span class="no">METHOD_OVERRIDE_PARAM_KEY</span><span class="p">]</span> <span class="o">||</span>
+        <span class="n">env</span><span class="p">[</span><span class="no">HTTP_METHOD_OVERRIDE_HEADER</span><span class="p">]</span>
+      <span class="c1"># ...</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>It’s this pattern that led Charlie Somerville from GitHub to open <a href="https://bugs.ruby-lang.org/issues/8579">a feature request to propose a new syntax for frozen string literals</a>: <code class="language-plaintext highlighter-rouge">%f</code>.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">req</span><span class="o">.</span><span class="no">POST</span><span class="p">[</span><span class="o">%</span><span class="n">f</span><span class="p">(</span><span class="n">_method</span><span class="p">)]</span> <span class="o">||</span> <span class="n">env</span><span class="p">[</span><span class="o">%</span><span class="n">f</span><span class="p">(</span><span class="no">HTTP_X_HTTP_METHOD_OVERRIDE</span><span class="p">)]</span>
+</code></pre></div></div>
+
+<p>This syntax wasn’t accepted, but as a counter proposal, <a href="https://github.com/mame">Yusuke Endoh (mame)</a> suggested an “f suffix”:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">req</span><span class="o">.</span><span class="no">POST</span><span class="p">[</span><span class="s2">"_method"</span><span class="n">f</span><span class="p">]</span> <span class="o">||</span> <span class="n">env</span><span class="p">[</span><span class="s2">"HTTP_X_HTTP_METHOD_OVERRIDE"</span><span class="n">f</span><span class="p">]</span>
+</code></pre></div></div>
+
+<p>This one was accepted and implemented in Ruby <code class="language-plaintext highlighter-rouge">2.1.0dev</code>.</p>
+
+<p>However, many core developers didn’t like this new syntax, so even after its implementation, multiple counterproposals were made.
+Notably, <a href="https://bugs.ruby-lang.org/issues/8976">Akira Tanaka (akr), proposed a file-based directive</a>: <code class="language-plaintext highlighter-rouge"># freeze_string: true</code>, but it didn’t catch on.</p>
+
+<p>However before the final 2.1.0 release, <a href="https://github.com/headius">Charles Nutter</a> <a href="https://bugs.ruby-lang.org/issues/8992">opened another feature request</a>,
+and suggested to instead implement a compiler optimization for <code class="language-plaintext highlighter-rouge">String#freeze</code>, so as to provide the same feature but without introducing a new syntax.</p>
+
+<p>If you aren’t familiar with how the Ruby virtual machine works, or virtual machines in general, you may be surprised to hear that Ruby has a compiler, but it absolutely does.</p>
+
+<p>Prior to Ruby 2.1, the program <code class="language-plaintext highlighter-rouge">"Hello World".freeze</code> would be compiled by Ruby into a sequence of two instructions:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{"Hello World".freeze}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,19)&gt;</span>
+<span class="mo">0000</span> <span class="n">putstring</span>                              <span class="s2">"Hello World"</span>             <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0002</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:freeze</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
+<span class="mo">0004</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>First, a <code class="language-plaintext highlighter-rouge">putstring</code> instruction to put <code class="language-plaintext highlighter-rouge">"Hello World"</code> on the VM stack, followed by an <code class="language-plaintext highlighter-rouge">opt_send_without_block</code> to call the <code class="language-plaintext highlighter-rouge">#freeze</code> method on it.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">putstring</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">)</span>
+  <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">.</span><span class="nf">dup</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>When invoked, the instruction receives a reference to a frozen String object that has been created by the Ruby compiler.
+But since the semantics is that the string <code class="language-plaintext highlighter-rouge">#freeze</code> will be called on must be mutable, it has to duplicate it, and it’s the mutable copy that is put on the stack.</p>
+
+<p>In my opinion, the <code class="language-plaintext highlighter-rouge">putstring</code> instruction isn’t correctly named, because its name suggests it just puts the frozen string directly on the stack.
+This isn’t consistent with other <code class="language-plaintext highlighter-rouge">put*</code> instructions like <code class="language-plaintext highlighter-rouge">putobject</code>, which directly puts an object on the stack without duping it:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">putobject</span><span class="p">(</span><span class="n">object</span><span class="p">)</span>
+  <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">object</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>But also inconsistent with some other instructions like <code class="language-plaintext highlighter-rouge">duparray</code> and <code class="language-plaintext highlighter-rouge">duphash</code>, which actually behave like <code class="language-plaintext highlighter-rouge">putstring</code> does:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">duparray</span><span class="p">(</span><span class="n">array</span><span class="p">)</span>
+  <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">array</span><span class="p">.</span><span class="nf">dup</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So it would be much clearer if it had been named <code class="language-plaintext highlighter-rouge">dupstring</code> instead of <code class="language-plaintext highlighter-rouge">putstring</code>.</p>
+
+<p>But anyways, Charles’ suggestion was to have the compiler generate a different set of VM instructions when the <code class="language-plaintext highlighter-rouge">#freeze</code> method is called
+on a string literal:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{"Hello World".freeze}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,20)&gt;</span>
+<span class="mo">0000</span> <span class="n">opt_str_freeze</span>                         <span class="s2">"Hello World"</span><span class="p">,</span> <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:freeze</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span><span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0003</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>As you can see, on more recent rubies, the <code class="language-plaintext highlighter-rouge">putstring</code> and <code class="language-plaintext highlighter-rouge">opt_send_without_block</code> instructions have been replaced by a single <code class="language-plaintext highlighter-rouge">opt_str_freeze</code>.
+Its implementation in pseudo-Ruby would be something like:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">opt_str_freeze</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">)</span>
+  <span class="k">if</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">string_freeze_was_redefined?</span>
+    <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">.</span><span class="nf">dup</span><span class="p">.</span><span class="nf">freeze</span><span class="p">)</span>
+  <span class="k">else</span>
+    <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>As you can see, to not break semantics, the instruction has to check that <code class="language-plaintext highlighter-rouge">String#freeze</code> hasn’t been redefined, but apart from that cheap precondition, the instruction does strictly less work than before.</p>
+
+<p>This is the feature Ruby 2.1.0 ultimately shipped with in December 2013.</p>
+
+<h2 id="further-optimizations">Further Optimizations</h2>
+
+<p>To further reduce string allocations, in 2014, Aman Karmani (tmm1) and Charlie Somerville (charliesome) from GitHub submitted <a href="https://bugs.ruby-lang.org/issues/9382">a patch to add two more optimized instructions, <code class="language-plaintext highlighter-rouge">opt_aref_with</code> and <code class="language-plaintext highlighter-rouge">opt_aset_with</code></a>.</p>
+
+<p>Before their patch, accessing a hash with a string key would cause a string allocation:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{some_hash["str"]}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">...</span>
+<span class="mo">0003</span> <span class="n">putstring</span>                              <span class="s2">"str"</span>
+<span class="mo">0005</span> <span class="n">opt_aref</span>                               <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:[]</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span><span class="p">[</span><span class="no">CcCr</span><span class="p">]</span>
+<span class="mo">0007</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>After the patch, these two instructions were replaced by a single <code class="language-plaintext highlighter-rouge">opt_aref_with</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{some_hash["str"]}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">...</span>
+<span class="mo">0003</span> <span class="n">opt_aref_with</span>                          <span class="s2">"str"</span><span class="p">,</span> <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:[]</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
+<span class="mo">0006</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>Similar to <code class="language-plaintext highlighter-rouge">opt_str_freeze</code>, these instructions would check if the method is being called on a Hash, and if <code class="language-plaintext highlighter-rouge">Hash#[]</code> hadn’t been redefined.
+When both conditions are true, the instruction would be able to look up in the hash without first copying the string.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">opt_aref_with</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">)</span>
+  <span class="k">if</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">hash_aref_was_redefined?</span> <span class="o">||</span> <span class="o">!</span><span class="vi">@stack</span><span class="p">.</span><span class="nf">last</span><span class="p">.</span><span class="nf">is_a?</span><span class="p">(</span><span class="no">Hash</span><span class="p">)</span>
+    <span class="c1"># fallback</span>
+    <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">frozen_string</span><span class="p">.</span><span class="nf">dup</span><span class="p">)</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="no">RubyVM</span><span class="p">.</span><span class="nf">call_method</span><span class="p">(</span><span class="ss">:[]</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+  <span class="k">else</span>
+    <span class="c1"># fast path</span>
+    <span class="nb">hash</span> <span class="o">=</span> <span class="vi">@stack</span><span class="p">.</span><span class="nf">pop</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">[</span><span class="n">frozen_string</span><span class="p">]</span>
+    <span class="vi">@stack</span><span class="p">.</span><span class="nf">push</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>According to Aman Karmani, this reduced allocations in GitHub by 3%, which is quite massive for what is a relatively small patch.</p>
+
+<p>As a sidenote, this optimized instruction has <a href="https://bugs.ruby-lang.org/issues/21553">just been removed by Aaron Paterson</a> on the Ruby trunk, because given most performance-sensitive code already uses the magic comment, this optimization no longer yields much benefit.</p>
+
+<h2 id="ruby-30-and-frozen-string-literals">Ruby 3.0 And Frozen String Literals</h2>
+
+<p>Perhaps in part because of that new feature, or perhaps because of other reasons.
+The knowledge of the performance impact of all these useless string duplication in Ruby applications started to spread around 2014,
+and some community members, notably Richard Scheenman, started to submit <a href="https://github.com/rails/rails/pull/21057">pull requests in Rails</a>,
+<a href="https://github.com/rack/rack/pull/737">rack</a> and a bunch of other gems, with some pretty significant results, such as an 11.9% latency reduction on <a href="https://www.codetriage.com/">codetriage.com</a>.</p>
+
+<p>These performance gains were generally too good to pass up, but regardless, many people felt that the resulting code was much more ugly.
+So the question of freezing string by default came back regularly, but was always rejected.</p>
+
+<p>Until <a href="https://github.com/ruby/dev-meeting-log/blob/master/2015/DevMeeting-2015-08-20.md#magic-comment-for-frozen-string-literal-by-default">Akira Matsuda (amatsuda) brought the issue again at the Ruby core developer meeting in August 2015</a>,
+and there <a href="https://xcancel.com/yukihiro_matz/status/634386185507311616">Matz decided that Ruby string literals would be frozen in Ruby 3.0</a>.</p>
+
+<p>A number of other features to ease the transition were also decided.
+First, the <code class="language-plaintext highlighter-rouge"># frozen_string_literal: true</code> magic comment was introduced to help gems prepare for Ruby 3.0.</p>
+
+<p>Then, to ensure that any code that wouldn’t have been made compatible with Ruby 3.0 would remain usable, two Ruby command line options were added: <code class="language-plaintext highlighter-rouge">--enable-frozen-string-literal</code> and <code class="language-plaintext highlighter-rouge">--disable-frozen-string-literal</code>.</p>
+
+<p>This way, once Ruby 3.0 would be released, if your code or one of your dependencies wasn’t compatible yet, you could just set
+<code class="language-plaintext highlighter-rouge">RUBYOPT="--disable-frozen-string-literal"</code> and keep going.</p>
+
+<p>And also a <code class="language-plaintext highlighter-rouge">--debug-frozen-string-literal</code> command line option, to help developers.</p>
+
+<p>All these new features were released with Ruby 2.3 in December 2015.</p>
+
+<p>What happens when you run Ruby with <code class="language-plaintext highlighter-rouge">--enable-frozen-string-literal</code> or with the <code class="language-plaintext highlighter-rouge"># frozen_string_literal: true</code> magic comment is that the compiler generates a different bytecode:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{# frozen_string_literal: true</span><span class="se">\n</span><span class="sx">"Hello World"}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:2 (2,0)-(2,13)&gt;</span>
+<span class="mo">0000</span> <span class="n">putobject</span>                              <span class="s2">"Hello World"</span>             <span class="p">(</span>   <span class="mi">2</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0002</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>Now, instead of the <code class="language-plaintext highlighter-rouge">putstring</code> instruction, the compiler generates a <code class="language-plaintext highlighter-rouge">putobject</code> instruction.
+As I mentioned above, this instruction directly puts the frozen string that was created during compilation on the stack, with no extra duplication.</p>
+
+<p>So it’s important to understand that frozen string literals are strictly less work for Ruby than mutable string literals.</p>
+
+<h2 id="community-usage">Community Usage</h2>
+
+<p>Following the release of Ruby 2.3, the Rubocop project added <a href="https://github.com/rubocop/rubocop/pull/2542/commits/425b7469f109f2eae0648b600aa3ad24e85f6e21">a new cop to enforce the use of the <code class="language-plaintext highlighter-rouge"># frozen_string_literal: true</code> comment</a>,
+with the intent of helping projects be ready for Ruby 3.0 in the future.</p>
+
+<p>Over the following years, many projects migrated to frozen string literals, <a href="https://github.com/rails/rails/pull/29506">including Rails</a> and <a href="https://github.com/ruby/rake/pull/209">rake</a> in 2017, <a href="https://github.com/rack/rack/pull/1250">Rack in 2018</a>,
+and of course a long tail of other projects.</p>
+
+<p>It’s always hard to say with certainty how much a feature is used, but I think it’s safe to say that, aside from a few projects that deliberately chose not to follow suit, a large majority of the actively developed gems did migrate to frozen string literals.
+However, many of the more stable and less actively developed gems didn’t.</p>
+
+<p>There was no indication of when Ruby 3.0 would be released, and the lack of compatibility with it wasn’t advertised by warnings or any other methods, hence, few people even knew whether any of their dependencies needed to be updated.</p>
+
+<p>Over time, the magic comment slowly became an incantation most Rubyists follow, in big part because of rubocop, but as far as I know, basically no one was trying to run their application with <code class="language-plaintext highlighter-rouge">--enable-frozen-string-literal</code>, and few even knew about it.</p>
+
+<h2 id="abandoned-plan">Abandoned Plan</h2>
+
+<p>However, <a href="https://bugs.ruby-lang.org/issues/11473#note-53">in October 2019, just before the release of Ruby 2.7, Matz abandoned the plan to make frozen string literal the default for Ruby 3.0</a>.</p>
+
+<blockquote>
+  <p>I consider this for years. I REALLY like the idea but I am sure introducing this could cause HUGE compatibility issue, even bigger than Ruby 1.9.
+So I officially abandon making frozen-string-literals default (for Ruby3).</p>
+
+  <p>–
+Matz</p>
+</blockquote>
+
+<p>I must say this decision did surprise me at the time.
+I definitely understand not wanting to cause a Python 3 sort of moment, but I don’t think frozen string literals would have caused it,
+because ultimately you could always have set <code class="language-plaintext highlighter-rouge">RUBYOPT="--disable-frozen-string-literal"</code> and kept running your applications unchanged if necessary.</p>
+
+<p>I’m pretty sure if Python 3 had a way of running Python 2 code, the migration would have been much less of a big deal.</p>
+
+<p>It was even more surprising to me because Ruby 2.7 also introduced new deprecation warnings in preparation for the keyword argument change in Ruby 3.0, and from my point of view, this breaking change was way bigger than frozen string literals would ever have been.
+It caused so many deprecations that a <a href="https://www.ruby-lang.org/en/news/2020/10/02/ruby-2-7-2-released/">Ruby 2.7.2 was later released specifically to turn deprecation warnings off</a>.
+And arguably, updating code to support the new keyword argument logic was way more involved than for frozen string literals.
+If you have a look at <a href="https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-keyword-arguments-in-ruby-3-0/">the migration guide</a>, it’s fairly long and complex,
+whereas frozen string literals only need a few strategically placed <code class="language-plaintext highlighter-rouge">.dup</code> there and there.</p>
+
+<p>As a datapoint, I personally handled the migration of Shopify’s monolith and roughly 700 gem dependencies for both the Ruby 3.0 keyword arguments and for <code class="language-plaintext highlighter-rouge">--enable-frozen-string-literal</code>.
+For keyword arguments, I had to send pull requests to almost a hundred gems, as well as change a lot of code in the monolith itself, and some of them were really non-trivial to fix.
+For frozen string literals, I only had to send pull requests to 12 gems, and it was just a matter of adding a few <code class="language-plaintext highlighter-rouge">.dup</code> calls.</p>
+
+<p>But anyway, by the time of the Ruby 3.0 release, it had been almost 5 years since the initial plan had been laid out, and most of the performance-sensitive code had migrated to use the magic comment, so this abandonment didn’t spark much discussion, and few people noticed.</p>
+
+<h2 id="new-standards">New Standards</h2>
+
+<p>Until four years later, in January 2024, I started hearing about <code class="language-plaintext highlighter-rouge">standardrb</code> and how <a href="https://github.com/standardrb/standard/pull/181">it doesn’t enforce the presence of the frozen string literal magic comment</a>.
+I also saw a few projects starting to remove them, or new projects deliberately not adding them, because this extra comment at the top is seen as cruft.</p>
+
+<p>And I must say I agree.
+I hate that comment.</p>
+
+<p>Back when I started with Ruby, in version 1.8, the default encoding of source files was ASCII, so we frequently had to add a magic comment
+at the top of the file to tell Ruby they were encoded in UTF-8.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># encoding: utf-8</span>
+</code></pre></div></div>
+
+<p>I hated that comment back then, because what I always loved about Ruby is that the source code is almost entirely free of boilerplate.
+So when Ruby 2.0 made UTF-8 the default encoding, and we could finally get rid of all this cruft, it made me extremely happy.</p>
+
+<p>I would love to do the same with the frozen string literal comment, but once you are aware of all these useless allocations and copies, it’s really hard to unsee.
+I’m now familiar enough with the VM that when I look at code without the magic comment, I pretty much visualize the implicit <code class="language-plaintext highlighter-rouge">dup</code> calls.</p>
+
+<p>When I look at code like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">env</span><span class="p">[</span><span class="s2">"HTTPS"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"on"</span> <span class="p">?</span> <span class="s2">"https"</span> <span class="p">:</span> <span class="s2">"http"</span>
+</code></pre></div></div>
+
+<p>I can’t help but see this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">env</span><span class="p">[</span><span class="s2">"HTTPS"</span><span class="p">.</span><span class="nf">dup</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"on"</span><span class="p">.</span><span class="nf">dup</span> <span class="p">?</span> <span class="s2">"https"</span><span class="p">.</span><span class="nf">dup</span> <span class="p">:</span> <span class="s2">"http"</span><span class="p">.</span><span class="nf">dup</span>
+</code></pre></div></div>
+
+<p>Which drives me nuts.
+And yes, these are small strings, and the GC got faster in the last few years, but still, string literals are everywhere, so these allocations add up and cause a death by a thousand cuts.</p>
+
+<p>So seeing that the community was slowly unlearning this lesson pained me, and I decided I’d try to revive the initiative.</p>
+
+<h2 id="chilled-string-literals">Chilled String Literals</h2>
+
+<p>In my opinion, what the initial plan lacked was a proper deprecation path.
+Many Ruby users had heard the default would change with Ruby 3.0, but Ruby itself never emitted any deprecation to warn users that code would need to be updated, so very little work happened to prepare for it.</p>
+
+<p>Hence, if I wanted to convince Matz to try again, I needed to come up with a way to emit useful deprecation warnings whenever some code would mutate a literal string.
+That’s where I came up with <a href="https://bugs.ruby-lang.org/issues/20205">the concept of <em>chilled strings</em></a>.</p>
+
+<p>Starting from Ruby 3.4, when a source file has no <code class="language-plaintext highlighter-rouge">frozen_string_literal</code> comment (either <code class="language-plaintext highlighter-rouge">true</code> or <code class="language-plaintext highlighter-rouge">false</code>), instead of generating <code class="language-plaintext highlighter-rouge">putstring</code> instructions, the compiler now generates <code class="language-plaintext highlighter-rouge">putchilledstring</code> instructions:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="sx">%{puts "Hello World"}</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,18)&gt;</span>
+<span class="mo">0000</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0001</span> <span class="n">putchilledstring</span>                       <span class="s2">"Hello World"</span>
+<span class="mo">0003</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:puts</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
+<span class="mo">0005</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>This new instruction is identical to <code class="language-plaintext highlighter-rouge">putstring</code>, except it additionally marks the newly allocated string with the <code class="language-plaintext highlighter-rouge">STR_CHILLED</code> flag.
+Then I modified the <code class="language-plaintext highlighter-rouge">rb_check_frozen</code> function, which is responsible for raising <code class="language-plaintext highlighter-rouge">FrozenError</code> when a frozen object is mutated, to also check for that flag.
+When a chilled string is mutated, a deprecation warning is emitted, and the flag is removed so that only the very first mutation emits a warning:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">Warning</span><span class="p">[</span><span class="ss">:deprecated</span><span class="p">]</span> <span class="o">=</span> <span class="kp">true</span>
+<span class="o">=&gt;</span> <span class="kp">true</span>
+<span class="o">&gt;&gt;</span> <span class="s2">"test"</span> <span class="o">&lt;&lt;</span> <span class="s2">"a"</span> <span class="o">&lt;&lt;</span> <span class="s2">"b"</span>
+<span class="p">(</span><span class="n">irb</span><span class="p">):</span><span class="mi">3</span><span class="p">:</span> <span class="ss">warning: </span><span class="n">literal</span> <span class="n">string</span> <span class="n">will</span> <span class="n">be</span> <span class="n">frozen</span> <span class="k">in</span> <span class="n">the</span> <span class="n">future</span> <span class="p">(</span><span class="n">run</span> <span class="n">with</span> <span class="o">--</span><span class="n">debug</span><span class="o">-</span><span class="n">frozen</span><span class="o">-</span><span class="n">string</span><span class="o">-</span><span class="n">literal</span> <span class="k">for</span> <span class="n">more</span> <span class="n">information</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="s2">"testab"</span>
+</code></pre></div></div>
+
+<p>The migration plan is that in a yet to be defined future version, these deprecation warnings would be visible by default, and then in a further version, frozen string literals would become the default.</p>
+
+<h2 id="mesuring-the-performance-impact">Mesuring The Performance Impact</h2>
+
+<p>Just like in the previous discussions back in 2014, <a href="https://github.com/mame">Yusuke Endoh (mame)</a> objected to the change, arguing that the performance benefits of frozen string literals were never properly measured because back in 2014, lots of code wasn’t compatible so it wasn’t possible to measure.</p>
+
+<blockquote>
+  <p>how much would the performance degrade if we removed <code class="language-plaintext highlighter-rouge"># frozen_string_literal: true</code> from all code used in yjit-bench?</p>
+</blockquote>
+
+<p>So I went ahead and built a modified Ruby interpreter on which the magic comment had no effect, and <a href="https://bugs.ruby-lang.org/issues/20205#note-34">benchmarked it against mainline Ruby</a>.</p>
+
+<p>The results were that frozen string literals make Lobsters, an open source discussion board in Rails, 8-9% faster.
+It also made <code class="language-plaintext highlighter-rouge">railsbench</code>, a synthetic Rails application, 4-6% faster, and <code class="language-plaintext highlighter-rouge">liquid-render</code> 11% faster.</p>
+
+<p>And one thing to note is that the benchmarked codebase and its dependencies, like Rack, still contain lots of code that was hand-optimized from the pre-frozen string literal days to avoid allocations.
+So the difference would be certainly larger if mutable string literals weren’t already worked around.</p>
+
+<p>Similarly, back then I was surprised to only see a meager 1-2% gain on the <code class="language-plaintext highlighter-rouge">erubi-rails</code> benchmark, given it’s quite string-heavy.
+But in retrospect, it’s very much expected because one of the biggest performance tricks of erubi is that it works around mutable string literals in its code generation by leveraging <code class="language-plaintext highlighter-rouge">opt_str_freeze</code> instructions:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">Erubi</span><span class="o">::</span><span class="no">Engine</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="s2">"Hello &lt;% name%&gt;!"</span><span class="p">).</span><span class="nf">src</span>
+<span class="n">_buf</span> <span class="o">=</span> <span class="o">::</span><span class="no">String</span><span class="p">.</span><span class="nf">new</span><span class="p">;</span> <span class="n">_buf</span> <span class="o">&lt;&lt;</span> <span class="s1">'Hello '</span><span class="p">.</span><span class="nf">freeze</span><span class="p">;</span> <span class="nb">name</span><span class="p">;</span> <span class="n">_buf</span> <span class="o">&lt;&lt;</span> <span class="s1">'!'</span><span class="p">.</span><span class="nf">freeze</span><span class="p">;</span>
+<span class="n">_buf</span><span class="p">.</span><span class="nf">to_s</span>
+</code></pre></div></div>
+
+<p>All this makes it hard to come up with a clear measure of the performance benefits of freezing string literals.
+At this point, making them the default is more to allow Rubyists to write nicer and less contrived code, not so much about improving performance.</p>
+
+<p>After some more rounds of discussion, Matz <a href="https://bugs.ruby-lang.org/issues/20205#note-35">accepted the proposal</a> but without committing to any specific timeline,
+and I implemented the feature with <a href="https://github.com/etiennebarrie">Étienne Barrié</a>, which shipped with Ruby 3.4.0.</p>
+
+<h2 id="so-its-done">So It’s Done?</h2>
+
+<p>So at this point, it may look like a done deal.
+The deprecations are in place, it’s just a matter of deciding when to flip the switch.</p>
+
+<p>But as we’ve seen in the past, that doesn’t mean much.
+Matz may still change his mind at any point, and there are still a few Ruby core members actively campaigning against frozen string literals.</p>
+
+<p>Personally, I’m quite tired of arguing about it.
+It might be a personal bias, given the overwhelming majority of the code I interact with has been frozen string literal compatible for a decade, but it seems to me that the Ruby community very largely adopted frozen string literals, so for me it seems obvious to make it the default.</p>
+
+<p>But not everyone in Ruby core has the same view of the community.
+Some members like Mame are very involved in <a href="https://en.wikipedia.org/wiki/Quine_(computing)">quines</a> and other forms of <a href="https://github.com/tric/trick2025">artistic programming like TRICK</a>,
+in which mutable string literals are used a lot.
+So I understand that for him, switching the default means breaking a number of historical programs he cares about.</p>
+
+<p>Ultimately, as always with Ruby’s direction, it will come down to what Matz decides.
+For now, he has publicly accepted the migration plan, but not yet committed to any timeline, and I’m not sure Matz really has a vision of what the community at large desires on this topic.
+With Ruby 4.0 being likely released this year, it’s very possible this migration stays in limbo for years and is ultimately abandoned again.</p>
+
+<h2 id="alternatives">Alternatives</h2>
+
+<p>At the end of the day, I don’t care so much about frozen string literals being the default.
+I just want to be able to stop adding this ugly comment at the top of my files, without losing the performance benefit and without having to explicitly freeze my constants.</p>
+
+<p>An alternative to changing the default could be to allow setting compiler options for entire directories.
+This would allow Rubyists to enable frozen string literals in a single place, typically the <code class="language-plaintext highlighter-rouge">gemspec</code> or Rails config.</p>
+
+<p>However, this would fragment Ruby more, because it means a given code snippet may or may not work based on where it is located.
+This was already a concern with the magic comment, it would be an even bigger one with directory-based compiler options.
+So I’m not sure Matz would be ok with that.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>I can’t predict what the future of string literals in Ruby will be.
+I do hope they’ll be frozen a few years from now, but I’m not holding my breath.</p>
+
+<p>In the meantime I do encourage gem authors to tes<a href="https://github.com/asciidoctor/asciimath/pull/78">t their gems with <code class="language-plaintext highlighter-rouge">--enable-frozen-string-literal</code></a></p>
+
+<p>What is certain, however, is that performance-wise, they only have upsides, as they’re strictly less work for the Ruby VM, but your performance-sensitive dependencies likely already use them, or at least work around mutable string literals in the hot paths.
+Hence, you are unlikely to notice a big difference if you were to run your application with <code class="language-plaintext highlighter-rouge">RUBYOPT="--enable-frozen-string-literal"</code>.
+However, if you do measure a negative performance impact, there is no doubt you are measuring incorrectly.</p>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[If you are a Rubyist, you’ve likely been writing # frozen_string_literal: true at the top of most of your Ruby source code files, or at the very least, that you’ve seen it in some other projects.]]></summary></entry><entry><title type="html">Dear Rubyists: Shopify Isn’t Your Enemy</title><link href="https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists.html" rel="alternate" type="text/html" title="Dear Rubyists: Shopify Isn’t Your Enemy" /><published>2025-10-09T05:03:51+00:00</published><updated>2025-10-09T05:03:51+00:00</updated><id>https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists</id><content type="html" xml:base="https://byroot.github.io/opensource/ruby/2025/10/09/dear-rubyists.html"><![CDATA[<p>I’ve been meaning to write a post about my perspective on Open Source and corporate entities.
 I already got the rough outline of it; however, I’m suffering from writer’s block,
 but more importantly, the whole post is a praise of how Shopify engages with Open Source communities.
 Hence, given the current climate, I don’t think I could publish it without addressing the elephant in the room first anyway.</p>
@@ -4989,165 +5574,4 @@ niche use cases, but overall, the lack of it isn’t hindering much of anything.
       <p>The RFC doesn’t actually requires encryption, but all browser implementations do. <a href="#fnref:3" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
     </li>
   </ol>
-</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, HTTP/2.]]></summary></entry><entry><title type="html">Guardrails Are Not Code Smells</title><link href="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html" rel="alternate" type="text/html" title="Guardrails Are Not Code Smells" /><published>2025-02-09T09:47:51+00:00</published><updated>2025-02-09T09:47:51+00:00</updated><id>https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2025/02/09/guard-rails-are-not-code-smells.html"><![CDATA[<p>I want to write a post about <a href="https://rubygems.org/gems/pitchfork">Pitchfork</a>, explaining where it comes from, why it
-is like it is, and how I see its future.
-But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.</p>
-
-<p>A few years ago, I read a tweet calling out <a href="https://github.com/kzk/unicorn-worker-killer"><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code></a> as a
-major code smell.
-I don’t quite remember who or when it was, it doesn’t matter anyway, but I think it is an interesting topic because,
-depending on how that gem is used, I can either strongly agree with or vehemently oppose this tweet.</p>
-
-<h2 id="what-does-it-do">What Does It Do?</h2>
-
-<p><code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code> provides two optional features for <a href="https://yhbt.net/unicorn/README.html">Unicorn</a>.</p>
-
-<p>The first one allows to set a number of requests after which a Unicorn worker should be recycled, as in shutdown and
-replaced by a fresh one, and the second allows to set the memory usage threshold after which a worker should be recycled.</p>
-
-<p>In my opinion, the first setting is indeed a terrible code smell and there’s absolutely no valid reason to use it.
-However the second one is absolutely essential, and in my opinion, it’s borderline irresponsible to deploy code to
-production without something akin to it.</p>
-
-<p>Both features are meant as ways to deal with memory leaks or bloat, so you may wonder why I have such radically different
-opinions on what seem to be two fairly similar features.
-It is because the former sweeps memory leaks under the rug, while the latter gracefully handles them.</p>
-
-<h2 id="why-maxrequests-is-bad">Why MaxRequests is Bad</h2>
-
-<p>One of the reasons why memory leaks are such a painful bug to deal with in Ruby applications is that unless they
-are really bad, they’ll often take hours or days to bloat your process enough for the system OOM killer to trigger.
-So contrary to most bugs, they’re not easy to correlate with an application deployment.
-Assuming you deploy several times a day, you may only notice something went wrong over the weekend after you haven’t
-deployed for a day or two. In some cases, you may even only notice it months later when most of the team is away for summer
-or winter vacations and no deployment happens for a week.</p>
-
-<p><code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> “solves” that by essentially continuously restarting your application on a regular
-schedule, making it impossible to even know you are suffering from a memory leak.</p>
-
-<p>And not only is it sweeping issues under the rug, but it also negatively impacts the performance of your application.
-While restarting a Unicorn worker is a relatively cheap operation, Ruby processes need some warmup time.
-Even if we ignore JIT warmup, the regular interpreter has lots of inline caches, so the first time a code path is
-executed it needs to do some extra work, and that work tends to cause Copy-on-Write invalidations, further impacting latency.
-And beyond the VM itself, while it’s a bad pattern, it’s very common for Ruby application to have some lazily initialized state.</p>
-
-<p>That is why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::MaxRequests</code> is a major code smell.
-It is an indication that it was acknowledged that a memory leak exists, but that the team has given up on trying to fix it.</p>
-
-<p>Even if you are aware of this, you may think it’s an acceptable tradeoff for your use case, but it may only be a matter
-of time until you don’t have one but two or ten memory leaks and then need to face the problem or keep lowering the
-<code class="language-plaintext highlighter-rouge">max_requests</code> setting.</p>
-
-<h2 id="why-maxmemory-is-good">Why MaxMemory is Good</h2>
-
-<p>On the other hand, having a <code class="language-plaintext highlighter-rouge">max_memory</code> setting that gracefully restarts workers when they reach a given memory threshold
-is an essential resiliency feature.</p>
-
-<p>If your application doesn’t enforce a max memory policy by itself, the operating system will do it for you, and it won’t
-be pretty.
-What happens when there is no more available memory depends on the operating system and how it is configured but in the
-context of Ruby programs, the most likely case is that you’ll run into the Linux OOM Killer.
-In short, when Linux can no longer hand memory to a program, it looks at all the running processes on the machine, and
-use a few heuristics to find a process to kill to free some memory.
-Nothing guarantees that the process that will be killed is the one leaking, and the process will receive a <code class="language-plaintext highlighter-rouge">SIGKILL</code> so
-it won’t be able to shut down cleanly and may cause huge problems.</p>
-
-<p>For the anecdote, over a decade ago, I worked for a startup that had a PHP and Backbone.js application.
-All of it, including the MySQL server, was running on a single machine.
-One day there was a spike of traffic and the number of PHP processes caused the Linux OOM Killer to trigger, and its
-heuristics thought that the big <code class="language-plaintext highlighter-rouge">mysqld</code> process was a much more attractive target than the hundreds of 30 MB PHP processes,
-hence it decided to SIGKILL <code class="language-plaintext highlighter-rouge">mysqld</code> bringing the entire website to the ground.</p>
-
-<p>That’s why if you don’t enforce a max memory policy yourself, you will be subject to the overall system memory limits
-and if you ever reach them it won’t be pretty.</p>
-
-<p>That’s why I believe <code class="language-plaintext highlighter-rouge">Unicorn::WorkerKiller::Oom</code> is an essential resiliency feature, even though it needs to be used
-correctly.
-It is crucial that every OOM event is reported somewhere and that there is alerting in place if it becomes
-a frequent occurrence. If no one notices that suddenly OOM events are through the roof, then it’s no better than <code class="language-plaintext highlighter-rouge">max_request</code>.</p>
-
-<p>You can even go farther than that.
-Something I implemented in Shopify’s monolith, is that for a sample of OOM events before the worker is recycled,
-the heap is first dumped using <a href="https://docs.ruby-lang.org/en/3.4/ObjectSpace.html#method-i-dump_all"><code class="language-plaintext highlighter-rouge">ObjectSpace.dump_all</code></a>
-and uploaded in an object store, allowing us to investigate the root cause and identify leaks if any.</p>
-
-<p>This is the best of both worlds.
-OOM events are gracefully handled, any significant increase in such events is reported, and debugging is facilitated.</p>
-
-<p>It might be that your application legitimately started using more memory and you just need to increase the threshold,
-but it is preferable to have to review the policy once in a while than to be paged at night because a hard-to-diagnose
-memory leak was introduced and started causing havoc.</p>
-
-<p>On another note, I’m not a big fan of the exact implementation provided by <code class="language-plaintext highlighter-rouge">unicorn-worker-killer</code>, because it uses
-<a href="https://en.wikipedia.org/wiki/Resident_set_size">RSS</a> as its memory metric, and I believe
-<a href="https://en.wikipedia.org/wiki/Proportional_set_size">PSS</a> is a much better memory metrics for preforking applications<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.</p>
-
-<p>In any case, cleanly shutting down workers on your own terms outside of the request cycle is much preferable to letting
-the operating system sends <code class="language-plaintext highlighter-rouge">SIGKILL</code> to somewhat random processes.</p>
-
-<h2 id="accept-it-bugs-will-happen">Accept It: Bugs Will Happen</h2>
-
-<p>Here I used memory as an example because I think it’s a good illustration of where to draw the line.
-But the point I’m trying to make is much more general.</p>
-
-<p>Another example could be Unicorn’s built-in request timeout setting.
-Whenever a worker is assigned a request, it is allotted a fixed amount of time to complete, if not, the worker will be
-shut down and replaced.</p>
-
-<p>You may think this is bad design and is working around a bug, but that’s the key to building resilient systems.
-You must accept that bugs and other catastrophic events will happen eventually, hence systems should be designed in a
-way that limits the blast radius of such events.</p>
-
-<p>This isn’t to say bugs are acceptable.
-You absolutely should strive to prevent as many bugs as reasonably possible upfront through testing, code reviews and what not.
-Having a resilient system is in no way a license to be complacent and ship crap software.</p>
-
-<p>But it is fanciful to believe you can prevent all bugs via sheer competency or process.</p>
-
-<p>If you are telling me your car doesn’t have seatbelts because you are such a good driver that you don’t need them,
-I will run in the opposite direction as fast as I can.</p>
-
-<p>This attitude can function for a while at a small scale but is untenable whenever a project grows to have
-a larger team, hence a faster rate of change.</p>
-
-<h2 id="the-resilient-nature-of-share-nothing-architecture">The Resilient Nature of Share-Nothing Architecture</h2>
-
-<p>This is why as an infrastructure engineer, I’m quite a fan of “share-nothing” architecture: it has inherent resiliency benefits.</p>
-
-<p>Take PHP for instance.
-As much as I dislike it as a programming language, I have to admit its classic execution model is really nice.
-Every request starts with a fresh new process, making it close to impossible to leak state between requests.</p>
-
-<p>That model wouldn’t perform well with Ruby though, because of the necessary warmup I mentioned previously,
-but Unicorn’s model is somewhat halfway through.
-Workers do process more than one request, but never concurrently, hence you still benefit from quite a high level of
-isolation, and if something goes really wrong, killing the worker is always an option and the operating system will take
-care of reclaiming the resources.</p>
-
-<p>Whereas cleanly interrupting a thread is basically impossible.
-You probably heard how <a href="https://jvns.ca/blog/2015/11/27/why-rubys-timeout-is-dangerous-and-thread-dot-raise-is-terrifying/">Ruby’s <code class="language-plaintext highlighter-rouge">Timeout</code> module should be avoided like the plague</a>,
-well that’s because it is trying to interrupt a thread, and that can go really wrong.</p>
-
-<p>If you look at <a href="https://github.com/zombocom/rack-timeout"><code class="language-plaintext highlighter-rouge">rack-timeout</code></a>, which is the Puma equivalent to Unicorn’s
-request timeout.
-You’ll see that whenever it has to timeout a request, it shutdowns the entire Puma worker because there’s no way to
-cleanly shut down a single thread.</p>
-
-<h2 id="conclusion">Conclusion</h2>
-
-<p>As I tried to explain here, even if <a href="/ruby/performance/2025/01/29/so-you-want-to-remove-the-gvl.html">Ruby didn’t have a GVL</a>,
-and even considering <a href="/ruby/performance/2025/01/25/why-does-everyone-hate-fork.html">fork has its share of problems</a>,
-I strongly believe that this execution model has some very attractive properties that aren’t easily replaced.</p>
-
-<p>As with everything, it’s of course a tradeoff, you gain some and lose some, but it shouldn’t be lazily discarded as some
-sort of deprecated model for badly written applications.</p>
-
-<p>It also has its benefits, and resiliency is just one of them.</p>
-
-<div class="footnotes" role="doc-endnotes">
-  <ol>
-    <li id="fn:1">
-      <p>I wrote about the difference between RSS and PSS in <a href="https://shopify.engineering/ruby-execution-models">a post on Shopify’s engineering blog</a>. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
-    </li>
-  </ol>
-</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, resiliency.]]></summary></entry></feed>
+</div>]]></content><author><name></name></author><category term="ruby" /><category term="performance" /><summary type="html"><![CDATA[I want to write a post about Pitchfork, explaining where it comes from, why it is like it is, and how I see its future. But before I can get to that, I think I need to share my mental model on a few things, in this case, HTTP/2.]]></summary></entry></feed>
