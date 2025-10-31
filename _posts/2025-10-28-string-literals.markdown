@@ -553,7 +553,7 @@ When a chilled string is mutated, a deprecation warning is emitted, and the flag
 
 The migration plan is that in a yet to be defined future version, these deprecation warnings would be visible by default, and then in a further version, frozen string literals would become the default.
 
-## Mesuring The Performance Impact
+## Measuring The Performance Impact
 
 Just like in the previous discussions back in 2014, [Yusuke Endoh (mame)](https://github.com/mame) objected to the change, arguing that the performance benefits of frozen string literals were never properly measured because back in 2014, lots of code wasn't compatible so it wasn't possible to measure.
 
