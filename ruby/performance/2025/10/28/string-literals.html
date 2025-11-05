@@ -60,9 +60,9 @@ so I figured it would be worth talking about why it’s there, what it does exac
 because it’s quite different from the equivalent type in other popular languages.</p>
 
 <p>In the overwhelming majority of popular languages, strings are immutable.
-That’s the case in Java, JavaScript, Python, PHP, Go, etc.</p>
+That’s the case in Java, JavaScript, Python, Go, etc.</p>
 
-<p>There are a few exceptions, though, like Perl, C++, and of course Ruby:</p>
+<p>There are a few exceptions, though, like Perl, PHP<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>, C/C++ (except for literals), and of course Ruby:</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="n">str</span> <span class="o">=</span> <span class="no">String</span><span class="p">.</span><span class="nf">new</span>
 <span class="o">=&gt;</span> <span class="s2">""</span>
@@ -100,7 +100,11 @@ That’s the case in Java, JavaScript, Python, PHP, Go, etc.</p>
 
 <p>Most languages, especially the ones I listed above, instead have chosen a specific internal encoding, and all strings are encoded that way.
 For instance, in Java and JavaScript, strings are encoded in UTF-16 because they were created somewhat at the same time as the first Unicode specification, and at that time, many people thought that surely 16 bits should be enough to encode all possible characters, but that later turned out to be wrong.
-Most other languages, like Python 3, use UTF-8.</p>
+Most newer languages uses UTF-8, or a limited set of internal encodings.</p>
+
+<p>For instance, in Python, strings can be encoded in either <code class="language-plaintext highlighter-rouge">ISO-8859-1</code> (AKA Latin 1), UTF-16 or UtF-32.
+But from a user perspective, it’s an implementation detail, and you can’t really tell what encoding a particular string is using.
+Semantically, strings are Unicode sequences, how that sequence is encoded in memory is abstracted away.</p>
 
 <p>In these languages, whenever you have to handle text in another encoding, you start by re-encoding it into the internal representation.
 In Ruby however, strings with different internal encodings can exist in the same program, and Ruby supports over a hundred different encodings:</p>
@@ -641,6 +645,13 @@ I do hope they’ll be frozen a few years from now, but I’m not holding my bre
 Hence, you are unlikely to notice a big difference if you were to run your application with <code class="language-plaintext highlighter-rouge">RUBYOPT="--enable-frozen-string-literal"</code>.
 However, if you do measure a negative performance impact, there is no doubt you are measuring incorrectly.</p>
 
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>A previous version of the post wrongly listed PHP as a language with immutable strings. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
 
   </div><a class="u-url" href="/ruby/performance/2025/10/28/string-literals.html" hidden></a>
 </article>
