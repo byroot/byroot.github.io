@@ -17,9 +17,9 @@ Before we can delve into what makes frozen string literals special, we first nee
 because it's quite different from the equivalent type in other popular languages.
 
 In the overwhelming majority of popular languages, strings are immutable.
-That's the case in Java, JavaScript, Python, PHP, Go, etc.
+That's the case in Java, JavaScript, Python, Go, etc.
 
-There are a few exceptions, though, like Perl, C++, and of course Ruby:
+There are a few exceptions, though, like Perl, PHP[^1], C/C++ (except for literals), and of course Ruby:
 
 ```ruby
 >> str = String.new
@@ -59,7 +59,11 @@ That too is quite unusual.
 
 Most languages, especially the ones I listed above, instead have chosen a specific internal encoding, and all strings are encoded that way.
 For instance, in Java and JavaScript, strings are encoded in UTF-16 because they were created somewhat at the same time as the first Unicode specification, and at that time, many people thought that surely 16 bits should be enough to encode all possible characters, but that later turned out to be wrong.
-Most other languages, like Python 3, use UTF-8.
+Most newer languages uses UTF-8, or a limited set of internal encodings.
+
+For instance, in Python, strings can be encoded in either `ISO-8859-1` (AKA Latin 1), UTF-16 or UtF-32.
+But from a user perspective, it's an implementation detail, and you can't really tell what encoding a particular string is using.
+Semantically, strings are Unicode sequences, how that sequence is encoded in memory is abstracted away.
 
 In these languages, whenever you have to handle text in another encoding, you start by re-encoding it into the internal representation.
 In Ruby however, strings with different internal encodings can exist in the same program, and Ruby supports over a hundred different encodings:
@@ -625,3 +629,4 @@ What is certain, however, is that performance-wise, they only have upsides, as t
 Hence, you are unlikely to notice a big difference if you were to run your application with `RUBYOPT="--enable-frozen-string-literal"`.
 However, if you do measure a negative performance impact, there is no doubt you are measuring incorrectly.
 
+[^1]: A previous version of the post wrongly listed PHP as a language with immutable strings.
