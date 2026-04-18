@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Optimizing Ruby Path Methods | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Optimizing Ruby Path Methods" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Back in November last year, I started a new job at Intercom, and one of the first projects I got to work on was improving the Intercom monolith CI with some of my new colleagues." />
+<meta property="og:description" content="Back in November last year, I started a new job at Intercom, and one of the first projects I got to work on was improving the Intercom monolith CI with some of my new colleagues." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2026/04/18/faster-paths.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2026/04/18/faster-paths.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-04-18T12:03:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Optimizing Ruby Path Methods" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2026-04-18T12:03:51+00:00","datePublished":"2026-04-18T12:03:51+00:00","description":"Back in November last year, I started a new job at Intercom, and one of the first projects I got to work on was improving the Intercom monolith CI with some of my new colleagues.","headline":"Optimizing Ruby Path Methods","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2026/04/18/faster-paths.html"},"url":"https://byroot.github.io/ruby/performance/2026/04/18/faster-paths.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Optimizing Ruby Path Methods</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2026-04-18T12:03:51+00:00" itemprop="datePublished">Apr 18, 2026
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>Back in November last year, I started a new job at Intercom, and one of the first projects I got to work on was
+improving the Intercom monolith CI with some of my new colleagues.</p>
+
+<p>Interestingly, I never got around to talking about CI on this blog, even though I consider it to be one of my main areas of expertise.
+That topic is way beyond the subject I’d like to talk about here, but just to give a bit of context, a key driver in CI performance
+and user experience is how fast you can get a Ruby process ready to run tests.</p>
+
+<p>When working with very large test suites, it becomes essential to run tests in parallel.
+If you have a test suite that runs in say, 1 hour, on paper, you can run it in 15 minutes on 4 workers, or in 6 minutes on 10 workers,
+and 1 minute on 60 workers.</p>
+
+<p>But that’s a bit too simplistic, in practice, a CI test runner has two phases.</p>
+
+<p>First, a setup phase that all runners have to go through, which includes fetching the source code,
+getting backing services like the database ready, and booting the application.
+Once the setup phase is done, the workers can start doing the actually useful work of running tests.</p>
+
+<p>So using the same 1-hour test suite, but now with a 1-minute setup phase, will now take 16 minutes if you are using 4 workers
+but 2 minutes if you are using 60 parallel workers.
+That’s a much worse user experience, but also means half of your compute isn’t spent doing the actual work, likely increasing
+your costs.</p>
+
+<p>All this to say that parallelizing test suites has diminishing returns that are entirely tied to how costly setting up a worker is.
+The worker setup time is like a fixed cost toll, hence reducing it both improves user experience and reduces cost.</p>
+
+<p>Given that the Intercom monolith CI runs with 1350 parallel workers by default, one second is optimized out of the setup
+time has 1350 times more impact than a second optimized out of a particular test, and saves over 20 minutes of compute per build.</p>
+
+<p>Hence, while the team also worked on speeding up various slow tests and factories, I personally was very focused on reducing the setup time,
+shaving every second or even split seconds I could find.</p>
+
+<p>As part of this effort, I looked into speeding up the application boot time, and if you’re a Rubyist, you probably know about Bootsnap.</p>
+
+<h2 id="what-does-bootsnap-even-do">What Does Bootsnap Even Do?</h2>
+
+<p>While Bootsnap <a href="https://github.com/rails/rails/pull/29313">has been in the default Rails gemfile for almost a decade now</a>,
+and is very popular even in non-Rails codebases, based on chats I had with people online or at conferences, I suspect many
+people don’t quite understand exactly what it is doing.
+So let me explain just one of the optimizations it performs.</p>
+
+<p>When you require a file (what is internally referred to as a “feature”), Ruby has to perform a very expensive linear search
+in its load path, something that looks a bit like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">search_load_path</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+  <span class="k">if</span> <span class="n">path</span><span class="p">.</span><span class="nf">end_with?</span><span class="p">(</span><span class="s2">".rb"</span><span class="p">,</span> <span class="s2">".so"</span><span class="p">)</span>
+    <span class="vg">$LOAD_PATH</span><span class="p">.</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">load_path</span><span class="o">|</span>
+      <span class="n">absolute_path</span> <span class="o">=</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="n">load_path</span><span class="p">,</span> <span class="n">feature</span><span class="p">)</span>
+      <span class="k">return</span> <span class="n">absolute_path</span> <span class="k">if</span> <span class="no">File</span><span class="p">.</span><span class="nf">exist?</span><span class="p">(</span><span class="n">absolute_path</span><span class="p">)</span>
+    <span class="k">end</span>
+    <span class="k">return</span> <span class="kp">nil</span>
+  <span class="k">else</span>
+    <span class="n">search_load_path</span><span class="p">(</span><span class="s2">"</span><span class="si">#{</span><span class="n">path</span><span class="si">}</span><span class="s2">.rb"</span><span class="p">,</span> <span class="s2">"</span><span class="si">#{</span><span class="n">path</span><span class="si">}</span><span class="s2">.so"</span><span class="p">)</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="nf">require_internal</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+  <span class="k">return</span> <span class="kp">false</span> <span class="k">if</span> <span class="vg">$LOADED_FEATURES</span><span class="p">.</span><span class="nf">include?</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+
+  <span class="n">absolute_path</span> <span class="o">=</span> <span class="k">if</span> <span class="no">File</span><span class="p">.</span><span class="nf">absolute_path?</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+    <span class="n">feature</span>
+  <span class="k">else</span>
+    <span class="n">search_load_path</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+  <span class="k">end</span>
+
+  <span class="k">unless</span> <span class="n">absolute_path</span>
+    <span class="k">raise</span> <span class="no">LoadError</span><span class="p">,</span> <span class="s2">"cannot load such file: </span><span class="si">#{</span><span class="n">feature</span><span class="si">}</span><span class="s2">"</span>
+  <span class="k">end</span>
+
+  <span class="nb">load</span><span class="p">(</span><span class="n">absolute_path</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>The problem with this code loading mechanism is that, while simple, it scales very badly.</p>
+
+<p>A clean Ruby process starts with approximately 8 paths in its load path, so <code class="language-plaintext highlighter-rouge">require</code> is relatively cheap,
+worst case scenario, Ruby will query the file system 16 times.</p>
+
+<p>But then, every single gem you add to your gemfile adds one extra entry in <code class="language-plaintext highlighter-rouge">$LOAD_PATH</code>, and will in turn likely call <code class="language-plaintext highlighter-rouge">require</code>
+even more times.
+Meaning that starting a Ruby program isn’t linear, but much worse. The cost is roughly <code class="language-plaintext highlighter-rouge">O(N*M)</code> with <code class="language-plaintext highlighter-rouge">N</code> being <code class="language-plaintext highlighter-rouge">$LOAD_PATH.size</code> and <code class="language-plaintext highlighter-rouge">M</code> being <code class="language-plaintext highlighter-rouge">$LOADED_FEATURES.size</code>.</p>
+
+<p>In other words, an application with 400 gems is likely way more than twice as slow to boot compared to an application with 200 gems.</p>
+
+<p>That’s a problem <a href="https://www.youtube.com/watch?v=kwkbrOwLsZY">Aaron Patterson explained in his GORUCO 2015 talk</a>,
+and that talk in turn inspired me to write <a href="https://github.com/byroot/bootscale/"><code class="language-plaintext highlighter-rouge">bootscale</code></a>,
+which we used with success in the Shopify monolith for a while, but while very effective, it was quite brittle, so it remained
+mostly confidential.</p>
+
+<p>Later on, my former colleague Burke Libbey, reimplemented the same idea, but in a much more robust and cleaner way,
+giving birth to <code class="language-plaintext highlighter-rouge">bootsnap</code>, and facilitating its adoption across the community.</p>
+
+<p>But enough history, let’s dive into what it does.</p>
+
+<h3 id="load-path-caching">Load Path Caching.</h3>
+
+<p>While this is not the only thing Bootsnap does, its main feature is load path caching.</p>
+
+<p>The idea is simple, instead of repeatedly testing the existence of files over and over, Bootsnap eagerly
+scan all directories in <code class="language-plaintext highlighter-rouge">$LOAD_PATH</code> to build a large map of all potentially requirable files, as to provide a way to
+look them up with just a <code class="language-plaintext highlighter-rouge">O(1)</code> hash lookup.</p>
+
+<p>It’s a bit over-simplified, but in essence, Bootsnap’s cache is just a big hash:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="vi">@cache</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="s2">"active_support/core_ext.rb"</span> <span class="o">=&gt;</span> <span class="s2">"/gems/activesupport-8.1.2/lib/active_support/core_ext.rb"</span><span class="p">,</span>
+  <span class="s2">"active_support/json.rb"</span> <span class="o">=&gt;</span> <span class="s2">"/gems/activesupport-8.1.2/lib/active_support/json.rb"</span><span class="p">,</span>
+  <span class="o">...</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Which then allows to decorate <code class="language-plaintext highlighter-rouge">Kernel.require</code>, as to cheaply translate relative paths into absolute ones,
+hence entirely sidestepping Ruby’s slow search mechanism:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">require</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+  <span class="k">unless</span> <span class="no">File</span><span class="p">.</span><span class="nf">absolute_path?</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">feature</span><span class="p">.</span><span class="nf">end_with</span><span class="p">(</span><span class="s2">".rb"</span><span class="p">,</span> <span class="s2">".so"</span><span class="p">)</span>
+      <span class="n">feature</span> <span class="o">=</span> <span class="no">Bootsnap</span><span class="o">::</span><span class="no">LoadPathCache</span><span class="p">.</span><span class="nf">lookup</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+    <span class="k">else</span>
+      <span class="n">feature</span> <span class="o">=</span> <span class="no">Bootsnap</span><span class="o">::</span><span class="no">LoadPathCache</span><span class="p">.</span><span class="nf">lookup</span><span class="p">(</span><span class="s2">"</span><span class="si">#{</span><span class="n">feature</span><span class="si">}</span><span class="s2">.rb"</span><span class="p">)</span> <span class="o">||</span> <span class="no">Bootsnap</span><span class="o">::</span><span class="no">LoadPathCache</span><span class="p">.</span><span class="nf">lookup</span><span class="p">(</span><span class="s2">"</span><span class="si">#{</span><span class="n">feature</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+  <span class="n">require_without_bootsnap</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>There are, of course, many subtle corner cases Bootsnap has to deal with to reproduce Ruby’s behavior as accurately as possible,
+but conceptually, Bootsnap is quite simple and reliable.</p>
+
+<p>Thanks to this cache, instead of scanning and checking the existence of up to <code class="language-plaintext highlighter-rouge">2*N</code> files in every <code class="language-plaintext highlighter-rouge">require</code> call, we only
+need to pay a one-time cost, which is quickly amortized.</p>
+
+<h3 id="cache-invalidation">Cache Invalidation</h3>
+
+<p>Now, the problem with adding a cache is that you need to know when it’s no longer valid, and
+as the famous maxim says, cache invalidation is one of the hardest problems in programming.</p>
+
+<p>Hence, Bootsnap can’t just persist its cache across CI builds, as any added or removed file in any of the load paths
+MUST invalidate the cache.</p>
+
+<p>The way Bootsnap does it is that in the cache, it records the <code class="language-plaintext highlighter-rouge">mtime</code> of the scanned directories.
+Whenever you add or remove a file in a directory, the directory’s <code class="language-plaintext highlighter-rouge">mtime</code> is updated.
+However, its parent directory <code class="language-plaintext highlighter-rouge">mtime</code> is left unchanged:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"fileutils"</span>
+
+<span class="no">FileUtils</span><span class="p">.</span><span class="nf">rm_rf</span><span class="p">(</span><span class="s2">"/tmp/test/"</span><span class="p">)</span>
+<span class="no">FileUtils</span><span class="p">.</span><span class="nf">mkdir_p</span><span class="p">(</span><span class="s2">"/tmp/test/dir/subdir"</span><span class="p">)</span>
+
+<span class="nb">p</span> <span class="no">File</span><span class="p">.</span><span class="nf">mtime</span><span class="p">(</span><span class="s2">"/tmp/test/dir"</span><span class="p">).</span><span class="nf">to_f</span>        <span class="c1"># 1776351416.5027087</span>
+<span class="nb">p</span> <span class="no">File</span><span class="p">.</span><span class="nf">mtime</span><span class="p">(</span><span class="s2">"/tmp/test/dir/subdir"</span><span class="p">).</span><span class="nf">to_f</span> <span class="c1"># 1776351416.5027075</span>
+
+<span class="no">File</span><span class="p">.</span><span class="nf">write</span><span class="p">(</span><span class="s2">"/tmp/test/dir/subdir/file.txt"</span><span class="p">,</span> <span class="s2">"1"</span><span class="p">)</span>
+
+<span class="nb">p</span> <span class="no">File</span><span class="p">.</span><span class="nf">mtime</span><span class="p">(</span><span class="s2">"/tmp/test/dir"</span><span class="p">).</span><span class="nf">to_f</span>        <span class="c1"># 1776351416.5027087</span>
+<span class="nb">p</span> <span class="no">File</span><span class="p">.</span><span class="nf">mtime</span><span class="p">(</span><span class="s2">"/tmp/test/dir/subdir"</span><span class="p">).</span><span class="nf">to_f</span> <span class="c1"># 1776351416.502805</span>
+</code></pre></div></div>
+
+<p>If file and directory <code class="language-plaintext highlighter-rouge">mtime</code> were updated recursively, that would be extremely powerful for many tools like Bootsnap,
+however I suspect it wasn’t done this way out of performance concerns.</p>
+
+<p>As such, Bootsnap has to recursively check the <code class="language-plaintext highlighter-rouge">mtime</code> of all directories in all load paths whenever it needs to revalidate the cache.
+That’s cheaper than rebuilding the full cache, but still potentially thousands of <code class="language-plaintext highlighter-rouge">stat(2)</code> syscalls, so quite costly.</p>
+
+<p>More importantly, on CI systems it’s relatively common to check out code using <code class="language-plaintext highlighter-rouge">git</code>, and <code class="language-plaintext highlighter-rouge">git</code> doesn’t care about <code class="language-plaintext highlighter-rouge">mtime</code><sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.
+Which means in many cases, this cache won’t be re-usable across builds or machines, hence it will need to be rebuilt every time,
+making the scanning performance important.</p>
+
+<h3 id="n1-syscalls">N+1 Syscalls</h3>
+
+<p>On the Intercom monorepo, scanning all load paths was just shy of a second<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>, and as I said previously, even a split
+second was important to me, given it was part of the “setup time”.
+So I was keen on finding ways to improve it.</p>
+
+<p>To understand the issue, let’s look at a very simplified implementation of Bootsnap’s load path scanner:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">scan</span><span class="p">(</span><span class="n">dir_path</span><span class="p">,</span> <span class="n">requirables</span> <span class="o">=</span> <span class="p">[],</span> <span class="n">directories</span> <span class="o">=</span> <span class="p">[])</span>
+  <span class="no">Dir</span><span class="p">.</span><span class="nf">foreach</span><span class="p">(</span><span class="n">dir_path</span><span class="p">)</span> <span class="k">do</span> <span class="o">|</span><span class="nb">name</span><span class="o">|</span>
+    <span class="n">path</span> <span class="o">=</span> <span class="s2">"</span><span class="si">#{</span><span class="n">absolute_dir_path</span><span class="si">}</span><span class="s2">/</span><span class="si">#{</span><span class="nb">name</span><span class="si">}</span><span class="s2">"</span>
+    <span class="k">if</span> <span class="no">File</span><span class="p">.</span><span class="nf">directory?</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+      <span class="n">directory</span> <span class="o">&lt;&lt;</span> <span class="n">path</span>
+      <span class="nb">scan</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">requirables</span><span class="p">,</span> <span class="n">directories</span><span class="p">)</span>
+    <span class="k">elsif</span> <span class="nb">name</span><span class="p">.</span><span class="nf">end_with?</span><span class="p">(</span><span class="s2">".rb"</span><span class="p">,</span> <span class="s2">".so"</span><span class="p">)</span>
+      <span class="n">requirables</span> <span class="o">&lt;&lt;</span> <span class="nb">name</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Simply put, for each entry of a directory, if it’s also a directory, we record it in the list and recurse, otherwise,
+if it has an extension we care about (<code class="language-plaintext highlighter-rouge">.rb</code>, <code class="language-plaintext highlighter-rouge">.so</code>, <code class="language-plaintext highlighter-rouge">.bundle</code>, etc) we add it to the list of requirable files.</p>
+
+<p>At that stage, you might wonder why all this code isn’t just <code class="language-plaintext highlighter-rouge">Dir["**/*.{rb,so}"]</code>, but Bootsnap needs to exactly match Ruby’s behavior
+otherwise it could change the behavior of programs.
+So while it is far fetched to imagine a project with directories named <code class="language-plaintext highlighter-rouge">something.rb</code> or <code class="language-plaintext highlighter-rouge">somethingelse.so</code>, assuming such
+directories don’t exist would be a correctness bug.</p>
+
+<p>There’s also some other subtleties, like needing to keep a list of all directories, even the ones not yet containing requirable files,
+so as to be able to revalidate the cache.</p>
+
+<p>As mentioned, <a href="https://github.com/rails/bootsnap/blob/d4ad1673943b416cd46491ffe236df29862ce37f/lib/bootsnap/load_path_cache/path_scanner.rb#L23-L66">the real version is noticeably more complex</a>,
+but from a performance standpoint, they’re equivalent.</p>
+
+<p>Anyways, the problem with that path scanner, is that it’s essentially the system programming equivalent to what N+1 queries
+are to web programming, except with system calls.</p>
+
+<p>While they’re much faster than a database query, syscalls are still something you wish to avoid or minimize
+when working at this level of abstraction, as they involve a context switch into the kernel.</p>
+
+<p>The actual cost of a syscall depends on which system the program work on.
+For instance, Linux syscalls are generally much faster than macOS ones, and <a href="https://en.wikipedia.org/wiki/VDSO">some calls don’t even need a context switch</a>.
+On the other side, <a href="https://discuss.rubyonrails.org/t/why-is-rails-boot-so-slow-on-macos/74021/45">some macOS syscalls like <code class="language-plaintext highlighter-rouge">open(2)</code> have a massive overhead because of some security features</a>.</p>
+
+<p>In this specific case, for each entry in the directory, we’ll call <code class="language-plaintext highlighter-rouge">File.directory?</code>, which results in a <code class="language-plaintext highlighter-rouge">stat(2)</code> syscall.
+But this <code class="language-plaintext highlighter-rouge">N+1</code> syscall was a long-known issue even in early UNIX programs written in C, that’s why at least on Linux and BSD,
+<code class="language-plaintext highlighter-rouge">readdir(3)</code>, which is the API to read the content of a directory, exposes a <code class="language-plaintext highlighter-rouge">d_type</code> member, allowing us to know whether that
+directory entry is a directory, a regular file, or something else without needing to issue a <code class="language-plaintext highlighter-rouge">stat(2)</code> call.</p>
+
+<p>Unfortunately, while Ruby does use <code class="language-plaintext highlighter-rouge">d_type</code> internally to speed up methods like <code class="language-plaintext highlighter-rouge">Dir[]</code>, it doesn’t expose it to the <code class="language-plaintext highlighter-rouge">Dir.foreach</code>
+block.</p>
+
+<p>This wasn’t a new issue for me, I knew about that problem back in 2020, as back then, I was already looking at speeding
+up Bootsnap and Zeitwerk (<a href="https://github.com/fxn/zeitwerk/blob/806795d302840a7e96612b88ff45f231ea4318b0/lib/zeitwerk/loader.rb#L376-L391">which have the same issue</a>).
+That’s why back then, I opened <a href="https://bugs.ruby-lang.org/issues/17001">a feature request for a <code class="language-plaintext highlighter-rouge">Dir.scan</code> method</a>,
+unfortunately that ticket never got any traction.</p>
+
+<p>So I thought it was time to try again.</p>
+
+<h3 id="implementing-dirscan">Implementing <code class="language-plaintext highlighter-rouge">Dir.scan</code></h3>
+
+<p>Instead of reviving the old ticket, I decided to try again from scratch, and this time to include a prototype implementation.
+Instead of adding a new method, I decided extend the existing <code class="language-plaintext highlighter-rouge">Dir</code> methods like <code class="language-plaintext highlighter-rouge">foreach</code>, so that they’d yield a second parameter to
+represent the file type as a symbol.</p>
+
+<p>This initial prototype sped up recursively walking directories by about 2x.
+Soon after, Nobuyoshi Nakada, AKA <a href="https://github.com/nobu">nobu</a> noticed my pull request and implemented
+<a href="https://github.com/ruby/ruby/commit/9acf67057b9bc6f855b2c37e41c1a2f91eae643a">an alternative version that yielded <code class="language-plaintext highlighter-rouge">File::Stat</code> objects instead of symbols</a>,
+which I thought was much more elegant, so I opened <a href="https://bugs.ruby-lang.org/issues/21800">a new feature request proposing his API</a>.</p>
+
+<p>But from experience, I knew that even in the best-case scenario, I’d need to wait for the next developer meeting before I’d
+get an OK from Matz, which means it would only make it into Ruby 4.1.</p>
+
+<p>Waiting a full year to improve Bootsnap wasn’t very satisfactory, but since Bootsnap already ships with a C extension,
+I thought I could just <a href="https://github.com/rails/bootsnap/pull/511">implement that API in Bootsnap itself</a>,
+to get the performance improvement immediately.</p>
+
+<p>Benchmarked on Intercom’s monolith (only the repo, not the dependencies) showed the same 2x improvement:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 3.4.4 (2025-05-14 revision a38531fd3f) +PRISM [arm64-darwin25]
+Warming up --------------------------------------
+                orig     1.000 i/100ms
+                 opt     1.000 i/100ms
+Calculating -------------------------------------
+                orig      1.988 (± 0.0%) i/s  (502.94 ms/i) -     10.000 in   5.031382s
+                 opt      4.297 (± 0.0%) i/s  (232.70 ms/i) -     22.000 in   5.120236s
+
+Comparison:
+                orig:        2.0 i/s
+                 opt:        4.3 i/s - 2.16x  faster
+</code></pre></div></div>
+
+<p>Bootsnap was now able to scan <code class="language-plaintext highlighter-rouge">~32k</code> files in <code class="language-plaintext highlighter-rouge">~10k</code> repositories in 230ms, while the previous implementation needed
+500ms.</p>
+
+<p>Later on, my Ruby feature request was discussed at the developer meeting, and a few concerns were raised, notably
+it was considered that changing the signature of existing methods could cause backward compatibility issues.</p>
+
+<p>Instead, after a few rounds of discussion, we settled on a new method: <code class="language-plaintext highlighter-rouge">Dir.scan</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">Dir</span><span class="p">.</span><span class="nf">scan</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="k">do</span> <span class="o">|</span><span class="nb">name</span><span class="p">,</span> <span class="n">type</span><span class="o">|</span>
+  <span class="k">case</span> <span class="n">type</span>
+  <span class="k">when</span> <span class="ss">:directory</span>
+    <span class="c1"># ...</span>
+  <span class="k">when</span> <span class="ss">:link</span>
+    <span class="c1"># ...</span>
+  <span class="k">when</span> <span class="ss">:file</span>
+    <span class="c1"># ...</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>This new feature will be available in Ruby 4.1.0.</p>
+
+<h2 id="other-path-methods">Other Path Methods</h2>
+
+<p>While this <code class="language-plaintext highlighter-rouge">N+1</code> issue was definitely the main hotspot, and this 2x win felt good, I tend to treat performance gains like
+mushroom hunting.
+When you find a mushroom, it usually means that it’s an area where they grow well, and that no other mushroom hunter has passed by recently.</p>
+
+<p>Well, in my experience, unoptimized code is the same.
+If you find a piece of code that is much slower than it could be, it suggests nobody ever needed it to be faster, hence it’s
+likely the same for other pieces of code in the same area.</p>
+
+<p>In this case, another Ruby method Bootsnap calls a lot was <code class="language-plaintext highlighter-rouge">File.join</code>, and while it wasn’t a major hotspot, it still was
+visible on boot profile, so I figured it was worth looking into.</p>
+
+<p>But how are you supposed to tell if some code is slower than it should be?</p>
+
+<p>What commonly slows down a given method is its handling of corner cases, so a good comparison point is a naive implementation
+that only considers the happy path.
+In our case, the most common usage of <code class="language-plaintext highlighter-rouge">File.join</code> by far is basically just a concatenation:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">file_join</span><span class="p">(</span><span class="n">parent</span><span class="p">,</span> <span class="n">child</span><span class="p">)</span>
+  <span class="s2">"</span><span class="si">#{</span><span class="n">parent</span><span class="si">}</span><span class="s2">/</span><span class="si">#{</span><span class="n">child</span><span class="si">}</span><span class="s2">"</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>So if we benchmark this simplistic implementation against the real <code class="language-plaintext highlighter-rouge">File.join</code>, we should have a vague idea of how much
+performance is left on the table:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1"># frozen_string_literal: true</span>
+<span class="nb">require</span> <span class="s2">"benchmark/ips"</span>
+
+<span class="n">dir</span> <span class="o">=</span> <span class="s2">"/Users/byroot/src/github.com/byroot/ruby/build"</span>
+<span class="n">entry</span> <span class="o">=</span> <span class="s2">"path/to/file.txt"</span>
+
+<span class="no">Benchmark</span><span class="p">.</span><span class="nf">ips</span> <span class="k">do</span> <span class="o">|</span><span class="n">x</span><span class="o">|</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"File.join"</span><span class="p">)</span> <span class="p">{</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="n">dir</span><span class="p">,</span> <span class="n">entry</span><span class="p">)</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"interpolation"</span><span class="p">)</span> <span class="p">{</span> <span class="s2">"</span><span class="si">#{</span><span class="n">dir</span><span class="si">}</span><span class="s2">/</span><span class="si">#{</span><span class="n">entry</span><span class="si">}</span><span class="s2">"</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">compare!</span><span class="p">(</span><span class="ss">order: :baseline</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.0.2 (2026-03-17 revision d3da9fec82) +YJIT +PRISM [arm64-darwin25]
+Warming up --------------------------------------
+           File.join   429.375k i/100ms
+       interpolation     1.560M i/100ms
+Calculating -------------------------------------
+           File.join      4.336M (± 0.2%) i/s  (230.65 ns/i) -     21.898M in   5.050870s
+       interpolation     17.501M (± 0.5%) i/s   (57.14 ns/i) -     88.905M in   5.079969s
+
+Comparison:
+           File.join:  4335527.0 i/s
+       interpolation: 17501462.6 i/s - 4.04x  faster
+</code></pre></div></div>
+
+<p>Bingo!
+A 4x difference really didn’t pass the smell test, so I immediately profiled <code class="language-plaintext highlighter-rouge">File.join</code> called 10 million times in a loop:</p>
+
+<p><img src="/assets/articles/paths/file-join-profile.png" alt="Flame graph of Ruby's File.join" /></p>
+
+<p><a href="https://share.firefox.dev/4cRhU3x">Full profile</a></p>
+
+<p>What immediately surprised me was that <code class="language-plaintext highlighter-rouge">File.join</code> was spending over half its time in encoding-related functions (<code class="language-plaintext highlighter-rouge">rb_enc_*</code>),
+most notably 33% in <code class="language-plaintext highlighter-rouge">rb_enc_mbclen</code>:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/**
+ * Queries the number of bytes of the character at the passed pointer.
+ *
+ * @param[in]  p    Pointer to a character's first byte.
+ * @param[in]  e    End of the string that has `p`.
+ * @param[in]  enc  Encoding of the string.
+ * @return     If the character at `p` does  not end until `e`, number of bytes
+ *             between `p`  and `e`.   Otherwise the number  of bytes  that the
+ *             character at `p` is encoded.
+ *
+ * @internal
+ *
+ * Strictly speaking there  are chances when `p`  points to a middle  byte of a
+ * wide character.   This function  returns "the  number of  bytes from  `p` to
+ * nearest of either `e` or the next character boundary", if you go strict.
+ */</span>
+<span class="kt">int</span> <span class="nf">rb_enc_mbclen</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">p</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">e</span><span class="p">,</span> <span class="n">rb_encoding</span> <span class="o">*</span><span class="n">enc</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Without even looking at the code, this told me there was a large potential for an easy optimization, because <code class="language-plaintext highlighter-rouge">File.join</code>,
+like all other Ruby methods handling paths, rejects paths encoded with non-ASCII compatible encodings:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"a"</span><span class="p">.</span><span class="nf">encode</span><span class="p">(</span><span class="no">Encoding</span><span class="o">::</span><span class="no">UTF_16LE</span><span class="p">),</span> <span class="s2">"b"</span><span class="p">.</span><span class="nf">encode</span><span class="p">(</span><span class="no">Encoding</span><span class="o">::</span><span class="no">UTF_16LE</span><span class="p">))</span>
+<span class="c1"># =&gt; 'File.join': path name must be ASCII-compatible (UTF-16LE): "a" (Encoding::CompatibilityError)</span>
+</code></pre></div></div>
+
+<p>So I thought this could be some leftover from a long time ago that could be pruned, hence I started digging into the git history,
+and found that this multi-byte encoding support was added by nobu in January 2012 (<a href="https://github.com/ruby/ruby/commit/ed469831e44f2b5a9384b18e660677b20a5ab664">commit <code class="language-plaintext highlighter-rouge">ed469831</code></a>),
+whereas the code that rejects non-ASCII compatible encoding was only added in October 2012 (<a href="https://github.com/ruby/ruby/commit/ad54de2acac70ba2f889892df950508edbc972b7">commit <code class="language-plaintext highlighter-rouge">ad54de2a</code></a>), again by nobu.</p>
+
+<p>Unfortunately, neither commit message was really explicit in its intent, nor linked to a bug ticket or anything like that.
+Still, it did look like back in 2012, nobu tried to solve some issues with multi-byte paths, but it was ultimately decided to
+only accept ASCII-compatible encodings and reject the others.</p>
+
+<p>But a few years of working on Ruby taught me never to assume nobu made a mistake, so before jumping to that conclusion, I figured I’d ask him, just in case:</p>
+
+<p><img src="/assets/articles/paths/nobu-file-join-question.png" alt="Aking nobu about the reason for multi-byte handling in path methods" /></p>
+
+<p>And after a few hours, he answered me:</p>
+
+<p><img src="/assets/articles/paths/nobu-file-join-answer.png" alt="nobu: The conflict of `0x5c` between the trailing byte in Shift_JIS family and the DOSISH path separator is a VERY well known issue in Japan." /></p>
+
+<p>Indeed, it was no mistake, but some sort of corner case I didn’t know about involving the Japanese Shift JIS encoding.
+This wasn’t the first time it happened to me, and probably won’t be the last.</p>
+
+<p>Anyways, in such cases, there is a Wikipedia page that helped me multiple times: <a href="https://en.wikipedia.org/wiki/Japanese_language_and_computers">Japanese language and computers</a><sup id="fnref:3"><a href="#fn:3" class="footnote" rel="footnote" role="doc-noteref">3</a></sup>.
+But let me explain the problem here.</p>
+
+<h3 id="ascii-compatibility">ASCII Compatibility</h3>
+
+<p>Ruby supports over a hundred string encodings, and some of them are defined as “ASCII-compatible”, which isn’t a very well-defined concept.
+According to Ruby, both UTF-8 and Shift JIS are ASCII-compatible:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">Encoding</span><span class="o">::</span><span class="no">UTF_8</span><span class="p">.</span><span class="nf">ascii_compatible?</span>
+<span class="o">=&gt;</span> <span class="kp">true</span>
+<span class="o">&gt;&gt;</span> <span class="no">Encoding</span><span class="o">::</span><span class="no">Shift_JIS</span><span class="p">.</span><span class="nf">ascii_compatible?</span>
+<span class="o">=&gt;</span> <span class="kp">true</span>
+</code></pre></div></div>
+
+<p>Which in a way isn’t wrong, because both are ASCII superset, meaning valid ASCII is both valid UTF-8 and valid Shift JIS.</p>
+
+<p>However, UTF-8’s killer feature is that it’s way more ASCII compatible than previous multi-byte encodings.
+All UTF-8 multibyte characters only use codes outside the ASCII range (so higher than <code class="language-plaintext highlighter-rouge">127</code>).
+Thanks to this, simple ASCII operations like searching for a specific character in the ASCII range can remain simple fixed-length operations:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">backslash?</span><span class="p">(</span><span class="n">string</span><span class="p">)</span>
+  <span class="n">string</span><span class="p">.</span><span class="nf">each_byte</span> <span class="k">do</span> <span class="o">|</span><span class="n">byte</span><span class="o">|</span>
+    <span class="k">return</span> <span class="kp">true</span> <span class="k">if</span> <span class="n">byte</span> <span class="o">==</span> <span class="mh">0x5c</span> <span class="c1"># `\` is 0x5c in ASCII </span>
+  <span class="k">end</span>
+  
+  <span class="kp">false</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>In other words, with UTF-8, if you see a <code class="language-plaintext highlighter-rouge">0x5c</code> byte, you know for sure it’s a backslash character, whereas with Shift-JIS,
+it may be a backslash character, or it may be a continuation byte of a multi-byte character.
+For example, <code class="language-plaintext highlighter-rouge">構</code> is encoded as <code class="language-plaintext highlighter-rouge">0x8d 0x5c</code>.
+Hence, you can’t efficiently treat Shift-JIS as ASCII, you must use a lookup table to check the width of every character,
+which is what <code class="language-plaintext highlighter-rouge">rb_enc_mbclen</code> does (<code class="language-plaintext highlighter-rouge">mbclen</code> -&gt; multi-byte character length), and it’s a very costly operation compared to
+just iterating over a stream of bytes.</p>
+
+<p>But ultimately, it’s fair to assume the overwhelming majority of paths passed to <code class="language-plaintext highlighter-rouge">File.join</code> are encoded in UTF-8 or even pure-ASCII,
+as such, I could implement a fast path for these encodings and keep the more complex algorithm for the others.</p>
+
+<p>That’s something I already did a few years prior for various string methods, such that Ruby already had a helper to check
+for such encodings:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="n">bool</span>
+<span class="nf">rb_str_encindex_fastpath</span><span class="p">(</span><span class="kt">int</span> <span class="n">encindex</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// The overwhelming majority of strings are in one of these 3 encodings,</span>
+    <span class="c1">// which are all either ASCII or perfect ASCII supersets.</span>
+    <span class="c1">// Hence you can use fast, single byte algorithms on them, such as `memchr` etc,</span>
+    <span class="c1">// without all the overhead of fetching the rb_encoding and using functions such as</span>
+    <span class="c1">// rb_enc_mbminlen etc.</span>
+    <span class="c1">// Many other encodings could qualify, but they are expected to be rare occurrences,</span>
+    <span class="c1">// so it's better to keep that list small.</span>
+    <span class="k">switch</span> <span class="p">(</span><span class="n">encindex</span><span class="p">)</span> <span class="p">{</span>
+      <span class="k">case</span> <span class="n">ENCINDEX_ASCII_8BIT</span><span class="p">:</span>
+      <span class="k">case</span> <span class="n">ENCINDEX_UTF_8</span><span class="p">:</span>
+      <span class="k">case</span> <span class="n">ENCINDEX_US_ASCII</span><span class="p">:</span>
+        <span class="k">return</span> <span class="nb">true</span><span class="p">;</span>
+      <span class="nl">default:</span>
+        <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Using this helper, <a href="https://github.com/ruby/ruby/commit/6cd4549060a608d8a7e5ee0dde2c4b69b08d7f6e">I implemented a fastpath for <code class="language-plaintext highlighter-rouge">File.join</code></a>,
+using single byte comparisons, and that’s when I realized the multi-byte checks weren’t the only thing slowing down <code class="language-plaintext highlighter-rouge">File.join</code>
+and several other path handling methods.</p>
+
+<h3 id="reverse-search">Reverse Search</h3>
+
+<p>After every path segment it concatenates, <code class="language-plaintext highlighter-rouge">File.join</code> would call <code class="language-plaintext highlighter-rouge">chompdirsep</code> to find whether
+the segment had a trailing path separator.
+That’s necessary because <code class="language-plaintext highlighter-rouge">File.join</code> avoids duplicate separators:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"foo/"</span><span class="p">,</span> <span class="s2">"/bar"</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="s2">"foo/bar"</span>
+</code></pre></div></div>
+
+<p>But there was something very wrong with its implementation:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">char</span> <span class="o">*</span>
+<span class="nf">chompdirsep</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">path</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">end</span><span class="p">,</span> <span class="n">rb_encoding</span> <span class="o">*</span><span class="n">enc</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">while</span> <span class="p">(</span><span class="n">path</span> <span class="o">&lt;</span> <span class="n">end</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">isdirsep</span><span class="p">(</span><span class="o">*</span><span class="n">path</span><span class="p">))</span> <span class="p">{</span>
+            <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">last</span> <span class="o">=</span> <span class="n">path</span><span class="o">++</span><span class="p">;</span>
+            <span class="k">while</span> <span class="p">(</span><span class="n">path</span> <span class="o">&lt;</span> <span class="n">end</span> <span class="o">&amp;&amp;</span> <span class="n">isdirsep</span><span class="p">(</span><span class="o">*</span><span class="n">path</span><span class="p">))</span> <span class="n">path</span><span class="o">++</span><span class="p">;</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">path</span> <span class="o">&gt;=</span> <span class="n">end</span><span class="p">)</span> <span class="k">return</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">last</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="k">else</span> <span class="p">{</span>
+            <span class="n">Inc</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">end</span><span class="p">,</span> <span class="n">enc</span><span class="p">);</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">path</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>As you can see, the function receives the start and end pointers of the string, and is supposed to
+return the position of the last meaningful separator, so that extra trailing separators are eliminated by <code class="language-plaintext highlighter-rouge">File.join</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"foo///"</span><span class="p">,</span> <span class="s2">"/bar"</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="s2">"foo/bar"</span>
+</code></pre></div></div>
+
+<p>The logical way to implement such a function would be to start looking from the back of the string, but here it
+was scanning the entire string, meaning longer paths were disproportionately slower to join than shorter paths.</p>
+
+<p>I’m not one hundred percent sure why it was implemented that way, probably because the multi-byte aware <code class="language-plaintext highlighter-rouge">Inc</code> macro
+was readily available, and implementing a <code class="language-plaintext highlighter-rouge">Dec</code> macro would have been a bit trickier, but technically it should have been doable.</p>
+
+<p>In my case, I only cared about optimizing the fast path, so I inlined a single-byte version of it, which searches for
+duplicate separators from the end of the string:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">long</span> <span class="n">trailing_seps</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+<span class="k">while</span> <span class="p">(</span><span class="n">isdirsep</span><span class="p">(</span><span class="n">name</span><span class="p">[</span><span class="n">len</span> <span class="o">-</span> <span class="n">trailing_seps</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]))</span> <span class="p">{</span>
+    <span class="n">trailing_seps</span><span class="o">++</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="n">rb_str_set_len</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">len</span> <span class="o">-</span> <span class="n">trailing_seps</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>And while I was in there, I kept looking for other opportunities.</p>
+
+<h3 id="c-strings">C Strings</h3>
+
+<p>The profile was showing <code class="language-plaintext highlighter-rouge">6.7%</code> of time spent in <code class="language-plaintext highlighter-rouge">rb_string_value_cstr</code>, which, after fixing the multi-byte encoding, was now a much bigger deal.</p>
+
+<p>What that function does is that it ensures that a given Ruby string is also a valid “C string”, which implies two things:</p>
+
+<ul>
+  <li>The string is <code class="language-plaintext highlighter-rouge">NULL</code> terminated.</li>
+  <li>The string does not contain any <code class="language-plaintext highlighter-rouge">NULL</code> bytes.</li>
+</ul>
+
+<p>Most Ruby methods dealing with path, do reject strings containing <code class="language-plaintext highlighter-rouge">NULL</code> bytes because that’s not valid for a file or directory name:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"foo</span><span class="se">\0</span><span class="s2">bar"</span><span class="p">,</span> <span class="s2">"baz"</span><span class="p">)</span>
+<span class="p">(</span><span class="n">irb</span><span class="p">):</span><span class="mi">1</span><span class="ss">:in</span> <span class="s1">'File.join'</span><span class="p">:</span> <span class="n">string</span> <span class="n">contains</span> <span class="n">null</span> <span class="n">byte</span> <span class="p">(</span><span class="no">ArgumentError</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>However, we actually don’t really care here if the string is NULL-terminated or not, as all we’re doing is concatenating it,
+we’re not passing it to any C-level API that expects a NULL-terminated string.
+So <code class="language-plaintext highlighter-rouge">rb_string_value_cstr</code> wasn’t really the right function to call, hence I could replace it with <code class="language-plaintext highlighter-rouge">rb_str_null_check</code>, which only checks
+the content of the string.</p>
+
+<h3 id="variadic-arguments">Variadic Arguments</h3>
+
+<p>Another hotpot from the profile was the 10% spent in <code class="language-plaintext highlighter-rouge">rb_ary_new_from_values</code>, which, as its name indicates, creates a new
+array.</p>
+
+<p>The reason is that <code class="language-plaintext highlighter-rouge">File.join</code> has some pretty flexible arguments:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">,</span> <span class="s2">"c"</span><span class="p">)</span> <span class="o">==</span> <span class="no">File</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">"a"</span><span class="p">,</span> <span class="p">[</span><span class="s2">"b"</span><span class="p">,</span> <span class="p">[</span><span class="s2">"c"</span><span class="p">]])</span>
+<span class="o">=&gt;</span> <span class="kp">true</span>
+</code></pre></div></div>
+
+<p>So to simplify the implementation, <code class="language-plaintext highlighter-rouge">File.join</code> was defined to receive all its arguments in an <code class="language-plaintext highlighter-rouge">args</code> Array:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">static</span> <span class="no">VALUE</span>
+<span class="n">rb_file_s_join</span><span class="p">(</span><span class="no">VALUE</span> <span class="n">klass</span><span class="p">,</span> <span class="no">VALUE</span> <span class="n">args</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="n">rb_file_join</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>To avoid that extra allocation and copying, I changed it to not create the Array object, and instead receive a pointer
+into the stack and the number of arguments:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">static</span> <span class="no">VALUE</span>
+<span class="n">rb_file_s_join</span><span class="p">(</span><span class="n">int</span> <span class="n">argc</span><span class="p">,</span> <span class="no">VALUE</span> <span class="o">*</span><span class="n">argv</span><span class="p">,</span> <span class="no">VALUE</span> <span class="n">klass</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="n">rb_file_join</span><span class="p">(</span><span class="n">argc</span><span class="p">,</span> <span class="n">argv</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Allowing for not allocating that extra array in the simpler cases.</p>
+
+<h3 id="result">Result</h3>
+
+<p>All this combined made the common usages of <code class="language-plaintext highlighter-rouge">File.join</code> over 7 times faster:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>compare-ruby: ruby 4.1.0dev (2026-01-17T14:40:03Z master 00a3b71eaf) +PRISM [arm64-darwin25]
+built-ruby: ruby 4.1.0dev (2026-01-18T12:55:15Z spedup-file-join 5948e92e03) +PRISM [arm64-darwin25]
+warming up....
+
+|              |compare-ruby|built-ruby|
+|:-------------|-----------:|---------:|
+|two_strings   |      2.477M|   19.317M|
+|              |           -|     7.80x|
+|many_strings  |    547.577k|   10.298M|
+|              |           -|    18.81x|
+|array         |    515.280k|  523.291k|
+|              |           -|     1.02x|
+|mixed         |    621.840k|  635.422k|
+|              |           -|     1.02x|
+</code></pre></div></div>
+
+<p>And now, on Ruby <code class="language-plaintext highlighter-rouge">4.1.0dev</code>, using <code class="language-plaintext highlighter-rouge">File.join</code> for two simple paths is faster than using string interpolation:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.1.0dev (2026-04-11T18:26:22Z compact-ar-table 06507da144) +YJIT +PRISM [arm64-darwin25]
+Warming up --------------------------------------
+           File.join     1.944M i/100ms
+       interpolation     1.716M i/100ms
+Calculating -------------------------------------
+           File.join     21.750M (± 0.4%) i/s   (45.98 ns/i) -    108.860M in   5.005112s
+       interpolation     19.012M (± 0.6%) i/s   (52.60 ns/i) -     96.111M in   5.055419s
+
+Comparison:
+           File.join: 21750287.3 i/s
+       interpolation: 19012105.0 i/s - 1.14x  slower
+</code></pre></div></div>
+
+<p>If you are curious, you can read <a href="https://github.com/ruby/ruby/pull/15898">the full pull request</a>.</p>
+
+<h2 id="other-methods">Other Methods</h2>
+
+<p>After finding such low-hanging fruits in <code class="language-plaintext highlighter-rouge">File.join</code>, I figured other path handling methods likely had similar issues,
+and I applied similar optimizations to:</p>
+
+<ul>
+  <li><a href="https://github.com/ruby/ruby/pull/15919"><code class="language-plaintext highlighter-rouge">File.basename</code></a></li>
+  <li><a href="https://github.com/ruby/ruby/pull/15907"><code class="language-plaintext highlighter-rouge">File.dirname</code></a></li>
+  <li><a href="https://github.com/ruby/ruby/pull/15912"><code class="language-plaintext highlighter-rouge">File.extname</code></a></li>
+  <li><a href="https://github.com/ruby/ruby/pull/16697"><code class="language-plaintext highlighter-rouge">File.expand_path</code></a></li>
+</ul>
+
+<p>Not that any of these were massive hotspots to my knowledge, but I saw no reason not to optimize them too.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Unless you use plugins such as <code class="language-plaintext highlighter-rouge">git-restore-mtime</code>, which have their own performance overhead. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>If I remember correctly. I’m writing this while traveling and can’t double-check the historical data. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:3">
+      <p>The mere existence of a Wikipedia page with such a title says a lot if you ask me. <a href="#fnref:3" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/performance/2026/04/18/faster-paths.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
