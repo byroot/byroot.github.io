@@ -149,7 +149,7 @@ Two years later, I still think that feature would be tremendously helpful, but i
 In practice, you don't even need Bundler to substitute a gem for another, you just need it not to install a particular
 gem:
 
-```
+```ruby
 ban 'httpclient' # Broken because ....
 gem 'byroot-httpclient' # Replace `httpclient` 
 ```
