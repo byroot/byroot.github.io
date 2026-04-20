@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2026-04-20T02:43:48+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">The Missing Bundler Features</title><link href="https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features.html" rel="alternate" type="text/html" title="The Missing Bundler Features" /><published>2026-04-20T00:03:51+00:00</published><updated>2026-04-20T00:03:51+00:00</updated><id>https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features</id><content type="html" xml:base="https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features.html"><![CDATA[<p>Over the last few months, there has been a lot of talk about making Bundler faster,
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2026-04-20T04:36:38+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">The Missing Bundler Features</title><link href="https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features.html" rel="alternate" type="text/html" title="The Missing Bundler Features" /><published>2026-04-20T00:03:51+00:00</published><updated>2026-04-20T00:03:51+00:00</updated><id>https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features</id><content type="html" xml:base="https://byroot.github.io/ruby/bundler/2026/04/20/bundle-features.html"><![CDATA[<p>Over the last few months, there has been a lot of talk about making Bundler faster,
 both by improving it directly, or by reimplementing it in another language, and while it may surprise some, that didn’t excite me much.</p>
 
 <p>Don’t get me wrong, all other things being equal, faster is better, so if Bundler gets faster without me having to change my toolchain one bit,
@@ -140,8 +140,8 @@ as a gem named <code class="language-plaintext highlighter-rouge">byroot-httpcli
 In practice, you don’t even need Bundler to substitute a gem for another, you just need it not to install a particular
 gem:</p>
 
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ban 'httpclient' # Broken because ....
-gem 'byroot-httpclient' # Replace `httpclient` 
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">ban</span> <span class="s1">'httpclient'</span> <span class="c1"># Broken because ....</span>
+<span class="n">gem</span> <span class="s1">'byroot-httpclient'</span> <span class="c1"># Replace `httpclient` </span>
 </code></pre></div></div>
 
 <p>Which makes for an even simpler feature, and would also be useful to prune some dependencies that are being pulled, but

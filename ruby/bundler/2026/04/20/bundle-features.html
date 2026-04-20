@@ -190,8 +190,8 @@ as a gem named <code class="language-plaintext highlighter-rouge">byroot-httpcli
 In practice, you don’t even need Bundler to substitute a gem for another, you just need it not to install a particular
 gem:</p>
 
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ban 'httpclient' # Broken because ....
-gem 'byroot-httpclient' # Replace `httpclient` 
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">ban</span> <span class="s1">'httpclient'</span> <span class="c1"># Broken because ....</span>
+<span class="n">gem</span> <span class="s1">'byroot-httpclient'</span> <span class="c1"># Replace `httpclient` </span>
 </code></pre></div></div>
 
 <p>Which makes for an even simpler feature, and would also be useful to prune some dependencies that are being pulled, but
