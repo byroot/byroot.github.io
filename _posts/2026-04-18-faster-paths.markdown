@@ -189,7 +189,7 @@ def scan(dir_path, requirables = [], directories = [])
   Dir.foreach(dir_path) do |name|
     path = "#{absolute_dir_path}/#{name}"
     if File.directory?(path)
-      directory << path
+      directories << path
       scan(path, requirables, directories)
     elsif name.end_with?(".rb", ".so")
       requirables << name
