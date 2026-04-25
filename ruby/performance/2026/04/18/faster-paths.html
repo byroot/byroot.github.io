@@ -227,7 +227,7 @@ So I was keen on finding ways to improve it.</p>
   <span class="no">Dir</span><span class="p">.</span><span class="nf">foreach</span><span class="p">(</span><span class="n">dir_path</span><span class="p">)</span> <span class="k">do</span> <span class="o">|</span><span class="nb">name</span><span class="o">|</span>
     <span class="n">path</span> <span class="o">=</span> <span class="s2">"</span><span class="si">#{</span><span class="n">absolute_dir_path</span><span class="si">}</span><span class="s2">/</span><span class="si">#{</span><span class="nb">name</span><span class="si">}</span><span class="s2">"</span>
     <span class="k">if</span> <span class="no">File</span><span class="p">.</span><span class="nf">directory?</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-      <span class="n">directory</span> <span class="o">&lt;&lt;</span> <span class="n">path</span>
+      <span class="n">directories</span> <span class="o">&lt;&lt;</span> <span class="n">path</span>
       <span class="nb">scan</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">requirables</span><span class="p">,</span> <span class="n">directories</span><span class="p">)</span>
     <span class="k">elsif</span> <span class="nb">name</span><span class="p">.</span><span class="nf">end_with?</span><span class="p">(</span><span class="s2">".rb"</span><span class="p">,</span> <span class="s2">".so"</span><span class="p">)</span>
       <span class="n">requirables</span> <span class="o">&lt;&lt;</span> <span class="nb">name</span>
