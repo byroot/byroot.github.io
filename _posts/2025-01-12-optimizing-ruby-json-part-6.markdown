@@ -608,7 +608,7 @@ end
 
 Since a character is just one byte, and a processor register can hold 8 bytes (64-bit), you can load 8 characters in a
 single register, and apply the same bitmask to all of the 8 bytes at once, by simply repeating the `0x80` pattern, which
-drastically the ratio of useful instructions, and the number of times you have to loop.
+drastically increase the ratio of useful instructions, and reduces the number of times you have to loop.
 
 Well, [SIMD, which stands for Single Instruction Multiple Data](https://en.wikipedia.org/wiki/Single_instruction,_multiple_data),
 is exactly that idea, pushed further, with some even larger registers, and a wider set of specialized instructions to more easily
