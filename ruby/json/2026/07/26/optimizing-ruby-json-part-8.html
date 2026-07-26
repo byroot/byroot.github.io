@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Optimizing Ruby’s JSON, Part 8 | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Optimizing Ruby’s JSON, Part 8" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="It has now been about 18 months since I concluded my post series on optimising Ruby’s json." />
+<meta property="og:description" content="It has now been about 18 months since I concluded my post series on optimising Ruby’s json." />
+<link rel="canonical" href="https://byroot.github.io/ruby/json/2026/07/26/optimizing-ruby-json-part-8.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/json/2026/07/26/optimizing-ruby-json-part-8.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-07-26T08:28:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Optimizing Ruby’s JSON, Part 8" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2026-07-26T08:28:51+00:00","datePublished":"2026-07-26T08:28:51+00:00","description":"It has now been about 18 months since I concluded my post series on optimising Ruby’s json.","headline":"Optimizing Ruby’s JSON, Part 8","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/json/2026/07/26/optimizing-ruby-json-part-8.html"},"url":"https://byroot.github.io/ruby/json/2026/07/26/optimizing-ruby-json-part-8.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Optimizing Ruby&#39;s JSON, Part 8</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2026-07-26T08:28:51+00:00" itemprop="datePublished">Jul 26, 2026
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>It has now been about 18 months since I concluded my post series on optimising Ruby’s json.</p>
+
+<p>Back then, I covered interesting performance patches that happened between version <code class="language-plaintext highlighter-rouge">2.7.2</code>,
+the last version published before I took over maintenance, and version <code class="language-plaintext highlighter-rouge">2.9.0</code>, the latest release at that time.</p>
+
+<p>During that span, both the parser and the generator became twice as fast on the infamous <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (466906 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+ 2.7.2    575.498  (± 2.1%) i/s    (1.74 ms/i) -      2.880k in   5.004363s
+ 2.9.0      1.109k (± 0.7%) i/s  (901.86 μs/i) -      5.564k in   5.017923s
+
+Comparison:
+2.7.2:      575.5 i/s
+2.9.0:     1108.8 i/s - 1.93x  faster
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+ 2.7.2      1.108k (± 0.9%) i/s  (902.19 μs/i) -      5.635k in   5.083851s
+ 2.9.0      2.219k (± 0.2%) i/s  (450.69 μs/i) -     11.220k in   5.056759s
+
+Comparison:
+2.7.2:     1108.4 i/s
+2.9.0:     2218.8 i/s - 2.00x  faster
+</code></pre></div></div>
+
+<p>All this happened over about 6 weeks, and back then, performance was the main focus by far,
+and there were numerous low-hanging fruits.</p>
+
+<p>Since then, I’ve released almost 40 new versions, and even though the focus was mostly on deprecating some dangerous parts of the API,
+and introducing a few more convenient and efficient APIs,
+a number of interesting performance optimizations were implemented.
+Most were by myself, but it also appears that the post series did motivate a handful of other people into contributing.</p>
+
+<p>Now the parser is another <code class="language-plaintext highlighter-rouge">1.4x</code> faster:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing twitter.json (466906 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+               2.7.2    586.494  (± 0.7%) i/s    (1.71 ms/i) -      2.950k in   5.029886s
+              master      1.570k (± 0.4%) i/s  (637.13 μs/i) -      7.956k in   5.069045s
+
+Comparison:
+ 2.7.2:      586.5 i/s
+master:     1569.5 i/s - 2.68x  faster
+</code></pre></div></div>
+
+<p>And the generator <code class="language-plaintext highlighter-rouge">1.8x</code> faster:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+Warming up --------------------------------------
+               2.7.2   109.000 i/100ms
+Calculating -------------------------------------
+               2.7.2      1.103k (± 0.5%) i/s  (906.46 μs/i) -      5.559k in   5.039002s
+
+== Encoding twitter.json (466906 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+Warming up --------------------------------------
+              master   393.000 i/100ms
+Calculating -------------------------------------
+              master      3.966k (± 0.8%) i/s  (252.17 μs/i) -     20.043k in   5.054161s
+
+Comparison:
+ 2.7.2:     1103.2 i/s
+master:     3965.6 i/s - 3.59x  faster
+</code></pre></div></div>
+
+<p>But that’s just for the main <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark.
+Even though the JSON grammar is small, the cost of parsing a document can vary widely.</p>
+
+<p>For instance, the <code class="language-plaintext highlighter-rouge">canada.json</code> benchmark contains a lot of floating-point numbers,
+which are surprisingly hard to parse both efficiently and correctly.
+That benchmark is now almost <code class="language-plaintext highlighter-rouge">10x</code> faster:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Parsing canada.json (2090234 bytes)
+ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +YJIT +PRISM [arm64-darwin25]
+   2.7.2     32.352 (± 0.0%) i/s   (30.91 ms/i) -    162.000  in   5.007433s
+   2.9.0     37.698 (± 0.0%) i/s   (26.53 ms/i) -    189.000  in   5.013513s
+  master    312.939 (± 3.2%) i/s    (3.20 ms/i) -      1.568k in   5.010569s
+
+Comparison:
+ 2.7.2:       32.4 i/s
+ 2.9.0:       37.7 i/s - 1.17x  faster
+master:      312.9 i/s - 9.67x  faster
+</code></pre></div></div>
+
+<p>So I figured it would be interesting to look back at some of the optimizations that moved the needle.
+Now, please do keep in mind some of these are now 18 months old, so I don’t always have as much fresh context
+I mind than I had when I wrote the previous parts.
+But hopefully it’s still interesting.</p>
+
+<h3 id="more-specialization">More Specialization</h3>
+
+<p>The very first performance improvement that landed after <code class="language-plaintext highlighter-rouge">2.9.0</code> was about more efficiently scanning strings in the generator.
+<a href="/ruby/json/2024/12/27/optimizing-ruby-json-part-3.html#dont-ignore-the-not-so-happy-path">Back in part 3, I covered how I previously optimized that part of the generator</a>,
+and back then, I noted that there was still some unnecessary overhead:</p>
+
+<blockquote>
+  <p>I also realize now that I’m writing this, that I could have used something other than 3 in the lookup table for 0xE2 so
+that we don’t do any extra work for the 15 other bytes that mark the start of a 3-byte wide codepoint we’re not
+interested in, and also so that only the script safe version of the escape table would ever enter this branch of the code.</p>
+</blockquote>
+
+<p>For context, when generating a JSON string, there are three types of characters you need to escape: double-quotes (<code class="language-plaintext highlighter-rouge">"</code>), backslashes (<code class="language-plaintext highlighter-rouge">\</code>)
+and ASCII control characters (newline, tab, etc).</p>
+
+<p>But given it’s relatively common to interpolate JSON documents into JavaScript code, the JSON gem also provides a <code class="language-plaintext highlighter-rouge">script_safe: true</code>
+escaping option, to also escape forward slashes (<code class="language-plaintext highlighter-rouge">/</code>), line separator (<code class="language-plaintext highlighter-rouge">U+2028</code>), and paragraph separator (<code class="language-plaintext highlighter-rouge">U+2029</code>).</p>
+
+<p>The first one is to protect from XSS attacks, as an unescaped <code class="language-plaintext highlighter-rouge">/</code> could allow the injection of elements in the HTML document, e.g.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&lt;</span><span class="n">script</span><span class="o">&gt;</span>
+  <span class="n">var</span> <span class="n">config</span> <span class="o">=</span> <span class="o">&lt;</span><span class="sx">%= config.to_json %&gt;;
+&lt;/script&gt;
+</span></code></pre></div></div>
+
+<p>Could allow an attacker to inject arbitrary scripts in the page:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nt">&lt;script&gt;</span>
+  <span class="kd">var</span> <span class="nx">config</span> <span class="o">=</span> <span class="p">{</span> <span class="dl">"</span><span class="s2">title</span><span class="dl">"</span><span class="p">:</span> <span class="dl">"</span><span class="nt">&lt;/script&gt;&lt;script&gt;</span><span class="nf">alert</span><span class="p">(</span><span class="dl">'</span><span class="s1">pwned!</span><span class="dl">'</span><span class="p">)</span><span class="nt">&lt;/script&gt;</span>" };
+<span class="nt">&lt;/script&gt;</span>
+</code></pre></div></div>
+
+<p>As for the two separator characters, they aren’t really a security concern, but up until recently, they would cause JavaScript syntax errors,
+as the JavaScript spec treats them as newlines, and unescaped newlines are not valid inside strings.
+Conceptually, JSON was meant to be a subset of JavaScript, but these two characters broke that promise.</p>
+
+<p>Thankfully, <a href="https://github.com/tc39/proposal-json-superset">the ES2019 specification now allows these unescaped characters in Javascript strings</a>,
+so it’s no longer really necessary to escape them unless you want to support fairly old JavaScript engines.
+We already <a href="https://github.com/rails/rails/pull/55800">stopped doing it by default in Rails</a>, and I’ll probably make that change in <code class="language-plaintext highlighter-rouge">JSON</code> at some point as well.</p>
+
+<p>But anyway, the problem isn’t so much that there are a few more characters to escape, that alone has a negligible performance impact.
+The issue is that these are multi-byte characters, hence they cause noticeably more branching, and as we’ve seen in previous parts, branching is bad for performance.</p>
+
+<p>Previously the lookup table was:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="k">const</span> <span class="kt">char</span> <span class="n">escape_table</span><span class="p">[</span><span class="mi">256</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="c1">// ASCII Control Characters</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="c1">// ASCII Characters</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span> <span class="c1">// '"'</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span> <span class="c1">// '\\'</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
+    <span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span>
+    <span class="c1">// Continuation byte</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+    <span class="c1">// First byte of a 2-byte code point</span>
+    <span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span>
+    <span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span>
+    <span class="c1">// First byte of a 3-byte code point</span>
+    <span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span>
+    <span class="c1">//First byte of a 4+ byte code point</span>
+    <span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>And whenever we’d find the first byte of a 3-byte code point, we’d check whether we have to escape in “script safe” mode
+and whether the code point is the one we care about:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// snip...</span>
+  <span class="k">case</span> <span class="mi">3</span><span class="p">:</span> <span class="p">{</span>
+      <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">b2</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="n">pos</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">out_script_safe</span> <span class="o">&amp;&amp;</span> <span class="n">ch</span> <span class="o">==</span> <span class="mh">0xE2</span> <span class="o">&amp;&amp;</span> <span class="n">b2</span> <span class="o">==</span> <span class="mh">0x80</span><span class="p">))</span> <span class="p">{</span>
+          <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">b3</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="n">pos</span> <span class="o">+</span> <span class="mi">2</span><span class="p">];</span>
+          <span class="k">if</span> <span class="p">(</span><span class="n">b3</span> <span class="o">==</span> <span class="mh">0xA8</span><span class="p">)</span> <span class="p">{</span>
+              <span class="n">FLUSH_POS</span><span class="p">(</span><span class="mi">3</span><span class="p">);</span>
+              <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">out_buffer</span><span class="p">,</span> <span class="s">"</span><span class="se">\\</span><span class="s">u2028"</span><span class="p">,</span> <span class="mi">6</span><span class="p">);</span>
+              <span class="k">break</span><span class="p">;</span>
+          <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">b3</span> <span class="o">==</span> <span class="mh">0xA9</span><span class="p">)</span> <span class="p">{</span>
+              <span class="n">FLUSH_POS</span><span class="p">(</span><span class="mi">3</span><span class="p">);</span>
+              <span class="n">fbuffer_append</span><span class="p">(</span><span class="n">out_buffer</span><span class="p">,</span> <span class="s">"</span><span class="se">\\</span><span class="s">u2029"</span><span class="p">,</span> <span class="mi">6</span><span class="p">);</span>
+              <span class="k">break</span><span class="p">;</span>
+          <span class="p">}</span>
+      <span class="p">}</span>
+      <span class="c1">// fallthrough</span>
+  <span class="p">}</span>
+</code></pre></div></div>
+
+<p>So we’d run extra checks every time we run into a 3-byte code point, even when not in script safe-mode.</p>
+
+<p>To speed that up, I packed an extra bit of information in the lookup table.
+Now, the lower 3 bits contain the size of the codepoint, and the 4th bit is a boolean telling us whether escaping is required:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// 0 - single byte char that don't need to be escaped.</span>
+<span class="c1">// (x | 8) - char that needs to be escaped.</span>
+<span class="k">static</span> <span class="k">const</span> <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">CHAR_LENGTH_MASK</span> <span class="o">=</span> <span class="mi">7</span><span class="p">;</span>
+
+<span class="k">static</span> <span class="k">const</span> <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">ascii_only_escape_table</span><span class="p">[</span><span class="mi">256</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="c1">// ASCII Control Characters</span>
+     <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span>
+     <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span>
+    <span class="c1">// ASCII Characters</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="c1">// '"'</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="c1">// '\\'</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="c1">// Continuation byte</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="c1">// First byte of a  2-byte code point</span>
+     <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span>
+     <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="c1">// First byte of a 3-byte code point</span>
+     <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span>
+    <span class="c1">//First byte of a 4+ byte code point</span>
+     <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>So that now, the <code class="language-plaintext highlighter-rouge">if (RB_UNLIKELY(out_script_safe &amp;&amp; ch == 0xE2 &amp;&amp; b2 == 0x80))</code> and the subsequent branches only
+need to be taken when we encounter <code class="language-plaintext highlighter-rouge">0xE2</code>, and not for the many other 3-byte code points.</p>
+
+<p>This resulted in a 15% gain on the <code class="language-plaintext highlighter-rouge">twitter.json</code> benchmark:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
+ruby 3.4.1 (2024-12-25 revision 48d4efcb85) +YJIT +PRISM [arm64-darwin23]
+Warming up --------------------------------------
+               after   244.000 i/100ms
+Calculating -------------------------------------
+               after      2.436k (± 0.9%) i/s  (410.43 μs/i) -     12.200k in   5.007702s
+
+Comparison:
+              before:     2125.9 i/s
+               after:     2436.5 i/s - 1.15x  faster
+</code></pre></div></div>
+
+<p>Which isn’t too surprising because it contains a lot of Japanese characters in the 3-byte range, e.g.:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="w">  </span><span class="nl">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"元野球部マネージャー❤︎…最高の夏をありがとう…❤︎"</span><span class="err">,</span><span class="w">
+</span></code></pre></div></div>
+
+<p>You can read <a href="https://github.com/ruby/json/pull/724">the full patch on GitHub</a>.</p>
+
+<h3 id="further-escaping-optimization">Further Escaping Optimization</h3>
+
+<p>Not long after that, <a href="https://github.com/samyron">Scott Myron</a> opened <a href="https://github.com/ruby/json/pull/730">a pull request to speed up escaping further using SIMD</a>.</p>
+
+<p>If you’re unfamiliar with what SIMD is, I briefly <a href="https://byroot.github.io/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html#a-note-on-simd">explained it in part 6</a>,
+that’s also where I explained that even though the <code class="language-plaintext highlighter-rouge">simdjson</code> project had shown SIMD can be used to accelerate JSON parsing very significantly,
+I wasn’t very keen on taking the associated maintenance burden of maintaining at least three implementations of the same routines,
+two of which are particularly cryptic, because SIMD intrinsics have such eyesore names like <code class="language-plaintext highlighter-rouge">_mm_cmplt_epu8</code> or <code class="language-plaintext highlighter-rouge">vcltq_u8</code>.</p>
+
+<p>So Scott’s pull request was a bit of a maintainer’s dilemma for me.
+On one hand, his first prototype was showing some very substantial gains, but on the other, I was reticent about including
+hard-to-maintain code, given I’m no SIMD expert myself, and I also don’t even have a proper <code class="language-plaintext highlighter-rouge">x86</code> development environment to debug potential issues.</p>
+
+<p>I was also worried about giving him false expectations, causing him to put a lot of work into something that may never be merged,
+which, from my point of view, is a very rude thing for a maintainer to do.</p>
+
+<p>So <a href="https://github.com/ruby/json/pull/730#issuecomment-2612031717">I explained to him that his initial pull request was more than I could chew</a>,
+and that I’d try to carefully extract the simplest possible SIMD routine in order to make sure it’s not causing issues to some users
+before considering any more SIMD usage.
+Thankfully, he was very understanding of the situation and was willing to work on this regardless of whether it had any chance of being merged.</p>
+
+<p>After a couple of weeks of back and forth, we settled on just two routines, a NEON one that works on all <code class="language-plaintext highlighter-rouge">arm64</code> CPUs,
+and an SSE2 onethat works on all <code class="language-plaintext highlighter-rouge">x86_64</code> CPUs, and we left more powerful <code class="language-plaintext highlighter-rouge">x86</code> implementations such as <code class="language-plaintext highlighter-rouge">SSE4.2</code> and <code class="language-plaintext highlighter-rouge">AVX2</code> for the future.</p>
+
+<p>The <code class="language-plaintext highlighter-rouge">SSE2</code> (Intel) implementation:</p>
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="n">TARGET_SSE2</span> <span class="n">FORCE_INLINE</span> <span class="kt">int</span> <span class="nf">sse2_update</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">__m128i</span> <span class="n">chunk</span>         <span class="o">=</span> <span class="n">_mm_loadu_si128</span><span class="p">((</span><span class="n">__m128i</span> <span class="k">const</span><span class="o">*</span><span class="p">)</span><span class="n">ptr</span><span class="p">);</span>
+
+    <span class="k">const</span> <span class="n">__m128i</span> <span class="n">lower_bound</span> <span class="o">=</span> <span class="n">_mm_set1_epi8</span><span class="p">(</span><span class="sc">' '</span><span class="p">);</span> 
+    <span class="k">const</span> <span class="n">__m128i</span> <span class="n">backslash</span>   <span class="o">=</span> <span class="n">_mm_set1_epi8</span><span class="p">(</span><span class="sc">'\\'</span><span class="p">);</span>
+    <span class="k">const</span> <span class="n">__m128i</span> <span class="n">dblquote</span>    <span class="o">=</span> <span class="n">_mm_set1_epi8</span><span class="p">(</span><span class="sc">'\"'</span><span class="p">);</span>
+
+    <span class="n">__m128i</span> <span class="n">too_low</span>       <span class="o">=</span> <span class="n">_mm_cmplt_epu8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">lower_bound</span><span class="p">);</span>
+    <span class="n">__m128i</span> <span class="n">has_backslash</span> <span class="o">=</span> <span class="n">_mm_cmpeq_epi8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">backslash</span><span class="p">);</span>
+    <span class="n">__m128i</span> <span class="n">has_dblquote</span>  <span class="o">=</span> <span class="n">_mm_cmpeq_epi8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">dblquote</span><span class="p">);</span>
+    <span class="n">__m128i</span> <span class="n">needs_escape</span>  <span class="o">=</span> <span class="n">_mm_or_si128</span><span class="p">(</span><span class="n">too_low</span><span class="p">,</span> <span class="n">_mm_or_si128</span><span class="p">(</span><span class="n">has_backslash</span><span class="p">,</span> <span class="n">has_dblquote</span><span class="p">));</span>
+    <span class="k">return</span> <span class="n">_mm_movemask_epi8</span><span class="p">(</span><span class="n">needs_escape</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>And here’s the <code class="language-plaintext highlighter-rouge">NEON</code> (Arm64) one:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="n">FORCE_INLINE</span> <span class="kt">uint64_t</span> <span class="nf">neon_rules_update</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">uint8x16_t</span> <span class="n">chunk</span> <span class="o">=</span> <span class="n">vld1q_u8</span><span class="p">((</span><span class="k">const</span> <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">ptr</span><span class="p">);</span>
+
+    <span class="k">const</span> <span class="n">uint8x16_t</span> <span class="n">lower_bound</span> <span class="o">=</span> <span class="n">vdupq_n_u8</span><span class="p">(</span><span class="sc">' '</span><span class="p">);</span> 
+    <span class="k">const</span> <span class="n">uint8x16_t</span> <span class="n">backslash</span>   <span class="o">=</span> <span class="n">vdupq_n_u8</span><span class="p">(</span><span class="sc">'\\'</span><span class="p">);</span>
+    <span class="k">const</span> <span class="n">uint8x16_t</span> <span class="n">dblquote</span>    <span class="o">=</span> <span class="n">vdupq_n_u8</span><span class="p">(</span><span class="sc">'\"'</span><span class="p">);</span>
+
+    <span class="n">uint8x16_t</span> <span class="n">too_low</span>       <span class="o">=</span> <span class="n">vcltq_u8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">lower_bound</span><span class="p">);</span>
+    <span class="n">uint8x16_t</span> <span class="n">has_backslash</span> <span class="o">=</span> <span class="n">vceqq_u8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">backslash</span><span class="p">);</span>
+    <span class="n">uint8x16_t</span> <span class="n">has_dblquote</span>  <span class="o">=</span> <span class="n">vceqq_u8</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">dblquote</span><span class="p">);</span>
+    <span class="n">uint8x16_t</span> <span class="n">needs_escape</span>  <span class="o">=</span> <span class="n">vorrq_u8</span><span class="p">(</span><span class="n">too_low</span><span class="p">,</span> <span class="n">vorrq_u8</span><span class="p">(</span><span class="n">has_backslash</span><span class="p">,</span> <span class="n">has_dblquote</span><span class="p">));</span>
+
+    <span class="k">return</span> <span class="n">neon_match_mask</span><span class="p">(</span><span class="n">needs_escape</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>As you can see, the SIMD intrinsic names make this code quite cryptic for the uninitiated,
+yet, what they do is conceptually fairly simple, so as usual, I’ll try to explain it using Ruby code.</p>
+
+<p>The first key thing to keep in mind is that SIMD is all about applying transformation onto fixed-size <em>vectors</em>,
+or simply put, arrays.
+So in most cases, the Ruby equivalent would be some <code class="language-plaintext highlighter-rouge">Array</code> or <code class="language-plaintext highlighter-rouge">Enumerable</code> method like <code class="language-plaintext highlighter-rouge">#map</code>,
+but you have to imagine that the <code class="language-plaintext highlighter-rouge">map</code> is applied to all the elements simultaneously.</p>
+
+<p>With that said, let’s decompose it line by line, using the <code class="language-plaintext highlighter-rouge">NEON</code> implementation.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">uint8x16_t</span> <span class="n">chunk</span> <span class="o">=</span> <span class="n">vld1q_u8</span><span class="p">((</span><span class="k">const</span> <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">ptr</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>That first line loads (<code class="language-plaintext highlighter-rouge">vld</code> -&gt; vector load) <code class="language-plaintext highlighter-rouge">16</code> 8-bit unsigned integers (<code class="language-plaintext highlighter-rouge">u8</code>) into a register.
+The Ruby equivalent would be something like:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">ruby_rules_update</span><span class="p">(</span><span class="n">str</span><span class="p">,</span> <span class="n">offset</span><span class="p">)</span>
+  <span class="n">chunk</span> <span class="o">=</span> <span class="n">str</span><span class="p">.</span><span class="nf">byteslice</span><span class="p">(</span><span class="n">offset</span><span class="p">,</span> <span class="mi">16</span><span class="p">).</span><span class="nf">bytes</span>
+  <span class="c1"># ...</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Then the three <code class="language-plaintext highlighter-rouge">vdupq_n_u8</code> calls are defining constant vectors with the characters we care about, using Ruby arrays
+it would look like:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">LOWER_BOUND</span> <span class="o">=</span> <span class="p">[</span><span class="s2">" "</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>   <span class="o">*</span> <span class="mi">16</span>
+<span class="no">BACKSLASH</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">"</span><span class="se">\\</span><span class="s2">"</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>  <span class="o">*</span> <span class="mi">16</span>
+<span class="no">DBLQUOTE</span>    <span class="o">=</span> <span class="p">[</span><span class="s1">'"'</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>   <span class="o">*</span> <span class="mi">16</span>
+</code></pre></div></div>
+
+<p>After that, we compare each element of <code class="language-plaintext highlighter-rouge">chunk</code> against our constants.
+First using <code class="language-plaintext highlighter-rouge">&lt;</code> (<code class="language-plaintext highlighter-rouge">lt</code> -&gt; lether than), then <code class="language-plaintext highlighter-rouge">==</code> (<code class="language-plaintext highlighter-rouge">eq</code> -&gt; equal):</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">too_low</span>       <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">LOWER_BOUND</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">char</span><span class="p">,</span> <span class="n">bound</span><span class="o">|</span> <span class="n">char</span> <span class="o">&lt;</span> <span class="n">bound</span> <span class="p">}</span>
+<span class="n">has_backslash</span> <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">BACKSLASH</span><span class="p">).</span><span class="nf">map</span>   <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">==</span> <span class="n">b</span> <span class="p">}</span>
+<span class="n">has_dblquote</span>  <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">DBLQUOTE</span><span class="p">).</span><span class="nf">map</span>    <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">==</span> <span class="n">b</span> <span class="p">}</span>
+</code></pre></div></div>
+
+<p>Which produces three arrays of booleans, which we combine with <code class="language-plaintext highlighter-rouge">|</code> (<code class="language-plaintext highlighter-rouge">vorrq_u8</code> -&gt; “vector or”):</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">needs_escape</span> <span class="o">=</span> <span class="n">too_low</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="n">has_backslash</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">|</span> <span class="n">b</span> <span class="p">}</span>
+<span class="n">needs_escape</span> <span class="o">=</span> <span class="n">needs_escape</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="n">has_dblquote</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">|</span> <span class="n">b</span> <span class="p">}</span>
+</code></pre></div></div>
+
+<p>Putting it all together in a single method:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">VECTOR_SIZE</span> <span class="o">=</span> <span class="mi">16</span>
+<span class="no">LOWER_BOUND</span> <span class="o">=</span> <span class="p">[</span><span class="s2">" "</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>   <span class="o">*</span> <span class="no">VECTOR_SIZE</span>
+<span class="no">BACKSLASH</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">"</span><span class="se">\\</span><span class="s2">"</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>  <span class="o">*</span> <span class="no">VECTOR_SIZE</span>
+<span class="no">DBLQUOTE</span>    <span class="o">=</span> <span class="p">[</span><span class="s1">'"'</span><span class="p">.</span><span class="nf">ord</span><span class="p">]</span>   <span class="o">*</span> <span class="no">VECTOR_SIZE</span>
+
+<span class="k">def</span> <span class="nf">ruby_rules_update</span><span class="p">(</span><span class="n">str</span><span class="p">,</span> <span class="n">offset</span><span class="p">)</span>
+  <span class="n">chunk</span> <span class="o">=</span> <span class="n">str</span><span class="p">.</span><span class="nf">byteslice</span><span class="p">(</span><span class="n">offset</span><span class="p">,</span> <span class="no">VECTOR_SIZE</span><span class="p">).</span><span class="nf">bytes</span>
+
+  <span class="n">too_low</span>       <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">LOWER_BOUND</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">char</span><span class="p">,</span> <span class="n">bound</span><span class="o">|</span> <span class="n">char</span> <span class="o">&lt;</span> <span class="n">bound</span> <span class="p">}</span>
+  <span class="n">has_backslash</span> <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">BACKSLASH</span><span class="p">).</span><span class="nf">map</span>   <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">==</span> <span class="n">b</span> <span class="p">}</span>
+  <span class="n">has_dblquote</span>  <span class="o">=</span> <span class="n">chunk</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="no">DBLQUOTE</span><span class="p">).</span><span class="nf">map</span>    <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">==</span> <span class="n">b</span> <span class="p">}</span>
+
+  <span class="n">needs_escape</span> <span class="o">=</span> <span class="n">too_low</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="n">has_backslash</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">|</span> <span class="n">b</span> <span class="p">}</span>
+  <span class="n">needs_escape</span> <span class="o">=</span> <span class="n">needs_escape</span><span class="p">.</span><span class="nf">zip</span><span class="p">(</span><span class="n">has_dblquote</span><span class="p">).</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">|</span> <span class="n">a</span> <span class="o">|</span> <span class="n">b</span> <span class="p">}</span>
+
+  <span class="n">needs_escape</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>And as you can see, just like the SIMD implementation, that Ruby method returns a vector of booleans, telling us
+which characters need to be escaped.</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="n">ruby_rules_update</span><span class="p">(</span><span class="s1">'___\\___""_________'</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+<span class="o">=&gt;</span> <span class="p">[</span><span class="kp">false</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="kp">true</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="kp">true</span><span class="p">,</span> <span class="kp">true</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="kp">false</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+</code></pre></div></div>
+
+<p>Even though in C we repack that vector into a normal 64-bit number that we use as a bitfield, conceptually it’s the same thing as an array of booleans.</p>
+
+<p>The very counter-intuitive part of SIMD is that when you’re very used to scalar code, it really looks like SIMD is wasting a lot
+of time computing useless things.
+By that I mean that the idiomatic scalar equivalent would likely short-circuit to avoid computing <code class="language-plaintext highlighter-rouge">c == '"'</code> if we previously established
+that <code class="language-plaintext highlighter-rouge">c &lt; ' '</code>.
+Yet, since SIMD instructions operate on 16 (or more) bytes at once, the amortized cost of the check on a per-byte basis is so low
+that we win anyway.</p>
+
+<p>For me, that’s one of the challenging things with writing or reviewing SIMD code, it requires having a fairly different mindset.</p>
+
+<p>You can have a look at <a href="https://github.com/ruby/json/pull/743">the final pull request</a>, it contains a lot of extra boilerplate
+required to test for SIMD support, etc, but I explained the core of it just above.</p>
+
+<p>Overall, between the very first version and when the first SIMD code landed, there were over three months of iteration and back-and-forth.
+We also included <a href="https://github.com/ruby/json/pull/769">some code from radiospiel, who happened to also look at introducing SIMD</a>, but didn’t notice Scott’s work.</p>
+
+<p>In the end, the gain on <code class="language-plaintext highlighter-rouge">twitter.json</code> was quite substantial:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>== Encoding twitter.json (466906 bytes)
+ruby 3.4.2 (2025-02-15 revision d2930f8e7a) +YJIT +PRISM [arm64-darwin24]
+               after      3.115k (± 3.1%) i/s  (321.01 μs/i) -     15.759k in   5.063776s
+
+Comparison:
+              before:     2508.3 i/s
+               after:     3115.2 i/s - 1.24x  faster
+</code></pre></div></div>
+
+<h3 id="a-brand-new-parser">A Brand New Parser</h3>
+
+<p>Another change that was foreshadowed on this blog was the re-implementation of the parser.
+I ended part 7 with this comment:</p>
+
+<blockquote>
+  <p>I’d like to drop Ragel and replace it with a simpler recursive descent parser.
+The existing one could certainly be improved, but I find it much harder to work with generated parsers than to write them manually.</p>
+</blockquote>
+
+<p>When I wrote this, I actually meant it, but as a nice-to-have.
+Something I’d eventually work on when I’d get the time, but that wasn’t pressing by any means.</p>
+
+<p>But I suspect publishing this combination of keywords on the Internet must have lit some sort of bat-signal in
+<a href="https://github.com/kddnewton">Kevin Newton</a>’s office,
+because not long after he pinged me with just that, a reimplementation of the JSON parser using recursive descent.</p>
+
+<p>The implementation wasn’t quite complete, all sorts of corner cases weren’t handled yet, but <a href="https://github.com/byroot/json/blob/5694cff0b773ed786da7c0f97521714fef4fee54/ext/json/ext/parser/parser.c">the code was clean, barely 200 lines</a> and much, much easier
+to work with than the previous 1400 lines of Ragel implementation.
+Even though it was mostly just prototype quality, you could really feel that there were lots of lessons he learned while
+working on <a href="https://github.com/ruby/prism/">Prism</a> baked in that prototype.</p>
+
+<p>That being said, after adding the missing parts and refactoring the code quite heavily to familiarize myself with it,
+the size grew to a bit less than 600 lines, and <a href="https://github.com/ruby/json/pull/729#issuecomment-2593780223">the performance impact was mixed</a>.
+The parser performed about the same on <code class="language-plaintext highlighter-rouge">twitter.json</code>, and even <code class="language-plaintext highlighter-rouge">6%</code> faster on <code class="language-plaintext highlighter-rouge">citm_catalog.json</code>, but <code class="language-plaintext highlighter-rouge">8%</code> slower on <code class="language-plaintext highlighter-rouge">activitypub.json</code>.
+So, gain some, lose some, however it did still replace 1400 lines of Ragel code with less than 600 lines of pure C, so it was really worth it in my opinion.</p>
+
+<p>But ultimately, a code that is easy to understand and work with is also easier to optimize,
+so I was confident that this new implementation would allow me to find optimization faster than with Ragel, so it was worth pursuing.</p>
+
+<p>I just didn’t want to merge a measurable regression, so I needed to find enough performance to be on par with Ragel on all benchmarks.</p>
+
+<p>And like several times in the past, I found some nice wins using lookup tables.</p>
+
+<p>In <a href="https://github.com/byroot/json/blob/5694cff0b773ed786da7c0f97521714fef4fee54/ext/json/ext/parser/parser.c">Kevin’s initial prototype</a>, there was two fairly hot loop.</p>
+
+<p>One was for skipping whitespaces:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">j2_eat_whitespace</span><span class="p">(</span><span class="n">j2_parser_t</span> <span class="o">*</span><span class="n">parser</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">while</span> <span class="p">(</span><span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">&lt;</span> <span class="n">parser</span><span class="o">-&gt;</span><span class="n">end</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">switch</span> <span class="p">(</span><span class="o">*</span><span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">case</span> <span class="sc">' '</span><span class="p">:</span>
+            <span class="k">case</span> <span class="sc">'\t'</span><span class="p">:</span>
+            <span class="k">case</span> <span class="sc">'\n'</span><span class="p">:</span>
+            <span class="k">case</span> <span class="sc">'\r'</span><span class="p">:</span>
+                <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+                <span class="k">break</span><span class="p">;</span>
+            <span class="k">case</span> <span class="sc">'/'</span><span class="p">:</span>
+                <span class="c1">// snip... deal with comments</span>
+                <span class="k">break</span><span class="p">;</span>
+            <span class="nl">default:</span>
+                <span class="k">return</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Since JSON allows for whitespace between all tokens, this function is called a lot, making it quite the hotspot.
+That being said, it’s almost always a noop, given that we benchmark against minified JSON documents, hence there are no comments
+not whitespace in any of the benchmarks.</p>
+
+<p>Which somewhat maps the reality, as aside from the occasional configuration file, most JSON documents in the wild
+are produced as compactly as possible to save bandwidth.</p>
+
+<p>Hence, checking for 5 different characters, when it will almost never match, is a bit of a waste.</p>
+
+<p>And here again, it looked like a good case for using <a href="/ruby/json/2024/12/15/optimizing-ruby-json-part-1.html#lookup-tables">a lookup table</a>,
+so I changed the code:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="k">const</span> <span class="n">bool</span> <span class="n">whitespace</span><span class="p">[</span><span class="mi">256</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="p">[</span><span class="sc">' '</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="p">[</span><span class="sc">'\t'</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="p">[</span><span class="sc">'\n'</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="p">[</span><span class="sc">'\r'</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="p">[</span><span class="sc">'/'</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+<span class="p">};</span>
+
+<span class="k">static</span> <span class="kt">void</span>
+<span class="nf">json_eat_comments</span><span class="p">(</span><span class="n">JSON_ParserState</span> <span class="o">*</span><span class="n">state</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="c1">// snip...</span>
+<span class="p">}</span>
+
+<span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">json_eat_whitespace</span><span class="p">(</span><span class="n">JSON_ParserState</span> <span class="o">*</span><span class="n">state</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">while</span> <span class="p">(</span><span class="n">state</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">&lt;</span> <span class="n">state</span><span class="o">-&gt;</span><span class="n">end</span> <span class="o">&amp;&amp;</span> <span class="n">RB_UNLIKELY</span><span class="p">(</span><span class="n">whitespace</span><span class="p">[(</span><span class="kt">unsigned</span> <span class="kt">char</span><span class="p">)</span><span class="o">*</span><span class="n">state</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="p">]))</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">RB_LIKELY</span><span class="p">(</span><span class="o">*</span><span class="n">state</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">!=</span> <span class="sc">'/'</span><span class="p">))</span> <span class="p">{</span>
+            <span class="n">state</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">json_eat_comments</span><span class="p">(</span><span class="n">state</span><span class="p">);</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>I also extracted the comment handling part into its own function, so that the compiler is less likely to inline it<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup>.
+This is because comments in JSON documents are rare.
+They’re mostly just present in configuration files, which really aren’t that performance sensitive.
+So it’s best to discourage the compiler from inlining rarely called functions, because compilers have some sort of soft limit
+to inlining.</p>
+
+<p>They try to avoid creating functions that are too big using various heuristics, so you can sometimes witness some really bad
+performance regressions by just adding a few lines of code in an inlined function, causing the compiler to stop inlining
+some other functions, tanking the performance.</p>
+
+<p>This is a particularly common problem for large dispatch loops, like the one found in recursive descent parsers and interpreter loops.</p>
+
+<p>Similarly, in the initial prototype, the string parsing code was relying on sequential character comparisons to either
+the end of the string or escape sequences:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="k">case</span> <span class="sc">'"'</span><span class="p">:</span> <span class="p">{</span>
+      <span class="c1">// %r{\A"[^"\\\t\n\x00]*(?:\\[bfnrtu\\/"][^"\\]*)*"}</span>
+      <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+      <span class="k">const</span> <span class="kt">uint8_t</span> <span class="o">*</span><span class="n">start</span> <span class="o">=</span> <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="p">;</span>
+
+      <span class="k">while</span> <span class="p">(</span><span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">&lt;</span> <span class="n">parser</span><span class="o">-&gt;</span><span class="n">end</span><span class="p">)</span> <span class="p">{</span>
+          <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">==</span> <span class="sc">'"'</span><span class="p">)</span> <span class="p">{</span>
+              <span class="n">VALUE</span> <span class="n">string</span> <span class="o">=</span> <span class="n">rb_enc_str_new</span><span class="p">((</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="n">start</span><span class="p">,</span> <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">-</span> <span class="n">start</span><span class="p">,</span> <span class="n">rb_utf8_encoding</span><span class="p">());</span>
+              <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+              <span class="k">return</span> <span class="n">string</span><span class="p">;</span>
+          <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span> <span class="o">==</span> <span class="sc">'\\'</span><span class="p">)</span> <span class="p">{</span>
+              <span class="c1">// TODO: Parse escape sequence</span>
+              <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+          <span class="p">}</span>
+
+          <span class="n">parser</span><span class="o">-&gt;</span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+      <span class="p">}</span>
+
+      <span class="n">rb_raise</span><span class="p">(</span><span class="n">rb_eRuntimeError</span><span class="p">,</span> <span class="s">"unexpected end of input"</span><span class="p">);</span>
+      <span class="k">break</span><span class="p">;</span>
+  <span class="p">}</span>
+</code></pre></div></div>
+
+<p>Which at first performed OK, but was actually incomplete because a conforming JSON parser must also fail to parse if it encounters
+an unescaped ASCII escape code.</p>
+
+<p>Once I added an <code class="language-plaintext highlighter-rouge">} else if (*parser-&gt;cursor &lt; ' ') {</code> branch, the performance lowered to be significantly worse than the previous parser.</p>
+
+<p>So there too, I introduced a lookup table:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="k">const</span> <span class="n">bool</span> <span class="n">string_scan</span><span class="p">[</span><span class="mi">256</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="c1">// ASCII Control Characters</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+     <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="c1">// ASCII Characters</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="c1">// '"'</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="c1">// '\\'</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+     <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>With these two changes and a few more minor tweaks, the new parser was finally <a href="https://github.com/ruby/json/pull/729#issuecomment-2595328158">a bit faster than the old one</a>.
+<code class="language-plaintext highlighter-rouge">15%</code> on <code class="language-plaintext highlighter-rouge">twitter.json</code>, <code class="language-plaintext highlighter-rouge">7%</code> on <code class="language-plaintext highlighter-rouge">activitypub.json</code> and <code class="language-plaintext highlighter-rouge">11%</code> on <code class="language-plaintext highlighter-rouge">citm_catalog.json</code>.
+Nothing major, but there again, the goal was merely to match the previous performance, with the hope that it would be a better
+basis for future gains.</p>
+
+<h3 id="to-be-continued">To Be Continued</h3>
+
+<p>I think that’s enough content for now.
+When I get the time to write part 9, I’ll talk about how <a href="https://github.com/radiospiel">radiospiel</a> sped up number generation.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Many versions later, I even marked it with <code class="language-plaintext highlighter-rouge">__attribute__((noinline))</code> to really discourage inlining. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/json/2026/07/26/optimizing-ruby-json-part-8.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
