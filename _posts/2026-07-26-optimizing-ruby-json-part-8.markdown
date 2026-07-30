@@ -355,7 +355,7 @@ DBLQUOTE    = ['"'.ord]   * 16
 ```
 
 After that, we compare each element of `chunk` against our constants.
-First using `<` (`lt` -> lether than), then `==` (`eq` -> equal):
+First using `<` (`lt` -> less than), then `==` (`eq` -> equal):
 
 ```ruby
 too_low       = chunk.zip(LOWER_BOUND).map { |char, bound| char < bound }
