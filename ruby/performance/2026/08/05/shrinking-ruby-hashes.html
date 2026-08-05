@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Shrinking Ruby Hashes | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Shrinking Ruby Hashes" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="As you may know, one area of Ruby performance optimization that particularly interests me is memory usage. Given that most Ruby deployments rely on fork, improving Copy-on-Write performance is generally where you get the biggest bang for your buck, but that only helps with the somewhat static part of an application heap." />
+<meta property="og:description" content="As you may know, one area of Ruby performance optimization that particularly interests me is memory usage. Given that most Ruby deployments rely on fork, improving Copy-on-Write performance is generally where you get the biggest bang for your buck, but that only helps with the somewhat static part of an application heap." />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2026/08/05/shrinking-ruby-hashes.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2026/08/05/shrinking-ruby-hashes.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-08-05T06:28:51+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Shrinking Ruby Hashes" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2026-08-05T06:28:51+00:00","datePublished":"2026-08-05T06:28:51+00:00","description":"As you may know, one area of Ruby performance optimization that particularly interests me is memory usage. Given that most Ruby deployments rely on fork, improving Copy-on-Write performance is generally where you get the biggest bang for your buck, but that only helps with the somewhat static part of an application heap.","headline":"Shrinking Ruby Hashes","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2026/08/05/shrinking-ruby-hashes.html"},"url":"https://byroot.github.io/ruby/performance/2026/08/05/shrinking-ruby-hashes.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Shrinking Ruby Hashes</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2026-08-05T06:28:51+00:00" itemprop="datePublished">Aug 5, 2026
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>As you may know, one area of Ruby performance optimization that particularly interests me is memory usage.
+Given that most Ruby deployments rely on <code class="language-plaintext highlighter-rouge">fork</code>, improving Copy-on-Write performance is generally where you get the
+biggest bang for your buck, but that only helps with the somewhat static part of an application heap.</p>
+
+<p>A significant contributor to memory usage is also the transient memory that is allocated during a request or job
+cycle and released soon after.
+As such, it’s also interesting to keep an eye out for opportunities to make various Ruby objects smaller.</p>
+
+<p>And the Ruby object type that’s probably the biggest contributor to memory usage is likely <code class="language-plaintext highlighter-rouge">Hash</code>.
+<code class="language-plaintext highlighter-rouge">Hash</code> instances are extremely common in Ruby applications and libraries, from option hashes and keyword arguments
+to logging and API responses.</p>
+
+<p>They’re so convenient that they’re perhaps overused sometimes, especially since they’re really not very memory-efficient.</p>
+
+<p>So let’s dig into how much memory they use, a bit of history of how we got there, and what we could do about it.</p>
+
+<h3 id="measuring-memory-usage">Measuring Memory Usage</h3>
+
+<p>If you’ve read some of my previous posts, you are probably already familiar with the Ruby APIs that allow digging into memory usage.</p>
+
+<p>The simplest one is <code class="language-plaintext highlighter-rouge">ObjectSpace.memsize_of(obj)</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="no">Ruby</span><span class="o">::</span><span class="no">DESCRIPTION</span>
+<span class="o">=&gt;</span> <span class="s2">"ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [arm64-darwin25]"</span>
+<span class="o">&gt;&gt;</span> <span class="nb">require</span> <span class="s1">'objspace'</span>
+<span class="o">&gt;&gt;</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({})</span>
+<span class="o">=&gt;</span> <span class="mi">160</span>
+</code></pre></div></div>
+
+<p>So this tells us that an empty hash uses <code class="language-plaintext highlighter-rouge">160</code> bytes.
+But without a comparison point, that doesn’t mean much, so let’s compare them to say, <code class="language-plaintext highlighter-rouge">Struct</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'objspace'</span>
+<span class="nb">puts</span> <span class="s2">"Ruby: </span><span class="si">#{</span><span class="no">RUBY_VERSION</span><span class="si">}</span><span class="s2">"</span>
+
+<span class="mi">11</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span> <span class="o">|</span><span class="n">size</span><span class="o">|</span>
+  <span class="n">struct_class</span> <span class="o">=</span> <span class="n">size</span><span class="p">.</span><span class="nf">zero?</span> <span class="p">?</span> <span class="no">Object</span> <span class="p">:</span> <span class="no">Struct</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="o">*</span><span class="n">size</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="ss">:"m_</span><span class="si">#{</span><span class="n">i</span><span class="si">}</span><span class="ss">"</span> <span class="p">})</span>
+  <span class="n">struct</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">(</span><span class="n">struct_class</span><span class="p">.</span><span class="nf">new</span><span class="p">)</span>
+  <span class="nb">hash</span> <span class="o">=</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">(</span><span class="no">Hash</span><span class="p">[</span><span class="n">size</span><span class="p">.</span><span class="nf">times</span><span class="p">.</span><span class="nf">map</span> <span class="p">{</span> <span class="o">|</span><span class="n">i</span><span class="o">|</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="p">}])</span>
+  <span class="n">diff</span> <span class="o">=</span> <span class="p">(</span><span class="nb">hash</span><span class="p">.</span><span class="nf">to_f</span> <span class="o">/</span> <span class="n">struct</span><span class="p">).</span><span class="nf">round</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+  <span class="nb">puts</span> <span class="s2">"size: </span><span class="si">#{</span><span class="n">size</span><span class="si">}</span><span class="s2"> </span><span class="se">\t</span><span class="s2">struct: </span><span class="si">#{</span><span class="n">struct</span><span class="si">}</span><span class="s2"> </span><span class="se">\t</span><span class="s2">hash: </span><span class="si">#{</span><span class="nb">hash</span><span class="si">}</span><span class="s2"> </span><span class="se">\t</span><span class="s2">diff: </span><span class="si">#{</span><span class="n">diff</span><span class="si">}</span><span class="s2">x"</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Which gives us:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby 4.0.6
+size:  0 	struct:  40 	hash: 160 	diff: 4.0x
+size:  1 	struct:  40 	hash: 160 	diff: 4.0x
+size:  2 	struct:  40 	hash: 160 	diff: 4.0x
+size:  3 	struct:  40 	hash: 160 	diff: 4.0x
+size:  4 	struct:  80 	hash: 160 	diff: 2.0x
+size:  5 	struct:  80 	hash: 160 	diff: 2.0x
+size:  6 	struct:  80 	hash: 160 	diff: 2.0x
+size:  7 	struct:  80 	hash: 160 	diff: 2.0x
+size:  8 	struct:  80 	hash: 160 	diff: 2.0x
+size:  9 	struct: 160 	hash: 544 	diff: 3.4x
+size: 10 	struct: 160 	hash: 544 	diff: 3.4x
+</code></pre></div></div>
+
+<p>As you can see, <code class="language-plaintext highlighter-rouge">Hash</code> uses 2 to 4 times as much memory as <code class="language-plaintext highlighter-rouge">Struct</code><sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup> or a Plain Old Ruby Object (PORO).</p>
+
+<p>I could almost say to stop using <code class="language-plaintext highlighter-rouge">Hash</code> when a PORO could do and leave it at that (and that would be good advice),
+but the goal is to dig into why <code class="language-plaintext highlighter-rouge">Hash</code> uses so much memory and what we can do about it.</p>
+
+<p>If you studied hash tables, that may seem like I’m stating the obvious here.
+Of course, hash tables need more memory!</p>
+
+<p>What may be less obvious is that in the above example, up until size 8, Ruby’s <code class="language-plaintext highlighter-rouge">Hash</code> instances aren’t actually hash tables.</p>
+
+<p>So let’s actually look at the implementation and its history to understand how we got here.</p>
+
+<h3 id="open-addressing">Open Addressing</h3>
+
+<p>The <code class="language-plaintext highlighter-rouge">Hash</code> implementation changed a lot over Ruby’s lifetime.</p>
+
+<p>The first major change I remember was when the Hash-table implementation <a href="https://bugs.ruby-lang.org/issues/12142">was entirely rewritten by Vladimir Makarov for Ruby 2.4</a>.
+It then changed from a more traditional design to <a href="https://en.wikipedia.org/wiki/Open_addressing">open-addressing</a>.
+I’m not going to dig into the differences much, there are much better sources than me on that, but the thing I’ll point out, though,
+is that while that change made hashes noticeably faster, it also significantly increased the “header” size.</p>
+
+<p>By header, I mean the C struct that keeps track of the entries and bins.
+Prior to the change, the <code class="language-plaintext highlighter-rouge">st_table</code> struct was <code class="language-plaintext highlighter-rouge">48B</code>:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#include</span> <span class="cpf">&lt;stdio.h&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;limits.h&gt;</span><span class="cp">
+</span>
+<span class="k">struct</span> <span class="n">st_hash_type</span><span class="p">;</span>
+<span class="k">struct</span> <span class="n">packed_entry</span><span class="p">;</span>
+<span class="k">struct</span> <span class="n">st_table_entry</span><span class="p">;</span>
+
+<span class="k">typedef</span> <span class="kt">unsigned</span> <span class="kt">long</span> <span class="kt">long</span> <span class="n">st_index_t</span><span class="p">;</span>
+<span class="cp">#define ST_INDEX_BITS (sizeof(st_index_t) * CHAR_BIT)
+</span>
+<span class="k">struct</span> <span class="n">st_table</span> <span class="p">{</span>
+    <span class="k">const</span> <span class="k">struct</span> <span class="n">st_hash_type</span> <span class="o">*</span><span class="n">type</span><span class="p">;</span>
+    <span class="n">st_index_t</span> <span class="n">num_bins</span><span class="p">;</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">entries_packed</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="n">st_index_t</span> <span class="n">num_entries</span> <span class="o">:</span> <span class="n">ST_INDEX_BITS</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="k">union</span> <span class="p">{</span>
+      <span class="k">struct</span> <span class="p">{</span>
+          <span class="k">struct</span> <span class="n">st_table_entry</span> <span class="o">**</span><span class="n">bins</span><span class="p">;</span>
+          <span class="kt">void</span> <span class="o">*</span><span class="n">private_list_head</span><span class="p">[</span><span class="mi">2</span><span class="p">];</span>
+      <span class="p">}</span> <span class="n">big</span><span class="p">;</span>
+      <span class="k">struct</span> <span class="p">{</span>
+          <span class="k">struct</span> <span class="n">st_packed_entry</span> <span class="o">*</span><span class="n">entries</span><span class="p">;</span>
+          <span class="n">st_index_t</span> <span class="n">real_entries</span><span class="p">;</span>
+      <span class="p">}</span> <span class="n">packed</span><span class="p">;</span>
+    <span class="p">}</span> <span class="n">as</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span> <span class="s">"sizeof(struct st_table) = %ld</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="k">struct</span> <span class="n">st_table</span><span class="p">));</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>sizeof(struct st_table) = 48
+</code></pre></div></div>
+
+<p>In Vladimir’s initial patch, that struct grew to <code class="language-plaintext highlighter-rouge">88B</code>, but after some improvements, when the patch actually
+landed, it only grew to <code class="language-plaintext highlighter-rouge">64B</code>, and then <a href="https://github.com/ruby/ruby/commit/5714a26b90b40846733fb2a5764d4c61285f5ea1">in a follow-up commit</a>,
+Nobu shrunk it down further to <code class="language-plaintext highlighter-rouge">56B</code>.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#include</span> <span class="cpf">&lt;stdio.h&gt;</span><span class="cp">
+</span>
+<span class="k">struct</span> <span class="n">st_hash_type</span><span class="p">;</span>
+<span class="k">struct</span> <span class="n">st_table_entry</span><span class="p">;</span>
+
+<span class="k">typedef</span> <span class="kt">unsigned</span> <span class="kt">long</span> <span class="kt">long</span> <span class="n">st_index_t</span><span class="p">;</span>
+
+<span class="k">struct</span> <span class="n">st_table</span> <span class="p">{</span>
+    <span class="cm">/* Cached features of the table -- see st.c for more details.  */</span>
+    <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">entry_power</span><span class="p">,</span> <span class="n">bin_power</span><span class="p">,</span> <span class="n">size_ind</span><span class="p">;</span>
+    <span class="cm">/* How many times the table was rebuilt.  */</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">rebuilds_num</span><span class="p">;</span>
+    <span class="k">const</span> <span class="k">struct</span> <span class="n">st_hash_type</span> <span class="o">*</span><span class="n">type</span><span class="p">;</span>
+    <span class="cm">/* Number of entries currently in the table.  */</span>
+    <span class="n">st_index_t</span> <span class="n">num_entries</span><span class="p">;</span>
+    <span class="cm">/* Array of bins used for access by keys.  */</span>
+    <span class="n">st_index_t</span> <span class="o">*</span><span class="n">bins</span><span class="p">;</span>
+    <span class="cm">/* Start and bound index of entries in array entries.
+       entries_starts and entries_bound are in interval
+       [0,allocated_entries].  */</span>
+    <span class="n">st_index_t</span> <span class="n">entries_start</span><span class="p">,</span> <span class="n">entries_bound</span><span class="p">;</span>
+    <span class="cm">/* Array of size 2^entry_power.  */</span>
+    <span class="k">struct</span> <span class="n">st_table_entry</span> <span class="o">*</span><span class="n">entries</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span> <span class="s">"sizeof(struct st_table) = %ld</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="k">struct</span> <span class="n">st_table</span><span class="p">));</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>sizeof(struct st_table) = 56
+</code></pre></div></div>
+
+<p>Still an extra <code class="language-plaintext highlighter-rouge">16B</code> of baseline usage, yet, since the new implementation used some smart, dynamically sized integer offsets.
+So, overall, small Hash memory usage was mostly decreased.</p>
+
+<p>Back in Ruby 2.3, it was:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby 2.3.8
+size: 0 	struct:  40 	hash:  40 	diff: 1.0x
+size: 1 	struct:  40 	hash: 232 	diff: 5.8x
+size: 2 	struct:  40 	hash: 232 	diff: 5.8x
+size: 3 	struct:  40 	hash: 232 	diff: 5.8x
+size: 4 	struct:  72 	hash: 232 	diff: 3.2x
+size: 5 	struct:  80 	hash: 232 	diff: 2.9x
+size: 6 	struct:  88 	hash: 232 	diff: 2.6x
+size: 7 	struct:  96 	hash: 552 	diff: 5.8x
+size: 8 	struct: 104 	hash: 600 	diff: 5.8x
+size: 9 	struct: 112 	hash: 648 	diff: 5.8x
+size: 10 	struct: 120 	hash: 696 	diff: 5.8x
+</code></pre></div></div>
+
+<p>And in 2.4:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: 2.4.10
+size: 0 	struct:  40 	hash:  40 	diff: 1.0x
+size: 1 	struct:  40 	hash: 192 	diff: 4.8x
+size: 2 	struct:  40 	hash: 192 	diff: 4.8x
+size: 3 	struct:  40 	hash: 192 	diff: 4.8x
+size: 4 	struct:  72 	hash: 192 	diff: 2.7x
+size: 5 	struct:  80 	hash: 288 	diff: 3.6x
+size: 6 	struct:  88 	hash: 288 	diff: 3.3x
+size: 7 	struct:  96 	hash: 288 	diff: 3.0x
+size: 8 	struct: 104 	hash: 288 	diff: 2.8x
+size: 9 	struct: 112 	hash: 480 	diff: 4.3x
+size: 10 	struct: 120 	hash: 480 	diff: 4.0x
+</code></pre></div></div>
+
+<p>A very positive change, but that’s still, a lot of memory for a few keys.</p>
+
+<h3 id="array-tables">Array Tables</h3>
+
+<p>The next major change to hashes happened in Ruby 2.6.
+Yimin Zhao, a Google Summer of Code student mentored by Koichi Sasada worked on adapting hashes to work with <a href="https://bugs.ruby-lang.org/issues/14858">the “transient heap”</a>.
+The ticket description explains the concept pretty well, but in short, the idea is that since “most objects die young”,
+and that at the time, most Ruby objects would allocate extra memory with <code class="language-plaintext highlighter-rouge">malloc</code>. As such, allowing young objects to allocate memory
+from a simple bump pointer allocator would speed things up.</p>
+
+<p>Then at the end of GC marking, any surviving object pointing at memory allocated in the transient heap would reallocate it using the real <code class="language-plaintext highlighter-rouge">malloc</code> and copy the bytes over.
+After that, the entire transient heap could be reset and re-used for free.
+This is very much inspired by copying garbage collectors, but adapted for the Ruby VM of the time.</p>
+
+<p>It’s in that context that Yimin Zhao started working on <a href="https://bugs.ruby-lang.org/issues/14989">integrating the transient heap with Ruby’s Hash</a>,
+the problem, though, was that <code class="language-plaintext highlighter-rouge">st_table</code> isn’t the backing structure for the <code class="language-plaintext highlighter-rouge">Hash</code> class. It is also used as a generic hash table
+across the virtual machine, and is even exposed in Ruby’s C API, so some extensions make use of it.</p>
+
+<p>As such, refactoring it to use the transient heap would have been very tricky.
+Instead, Yimin and Koichi took another approach.
+They instrumented various benchmarks and <a href="https://docs.google.com/spreadsheets/d/1xAjO_qb5K49aLnvk8SypGwO5Avtbm2X12cYb1d-n6Xs/edit?gid=0#gid=0">saw that 80% of the hashes had 8 entries or less</a>.
+For small tables like this, you don’t necessarily need a real hash table, even a linear search of <code class="language-plaintext highlighter-rouge">O(N)</code> complexity
+can beat a <code class="language-plaintext highlighter-rouge">O(1)</code> hash-table lookup when <code class="language-plaintext highlighter-rouge">N</code> is small enough.</p>
+
+<p>Based on that idea, they refactored Ruby’s <code class="language-plaintext highlighter-rouge">Hash</code> class to essentially be an Array up to 8 entries.
+Now instead of always being backed by an <code class="language-plaintext highlighter-rouge">st_table</code>, <a href="https://github.com/ruby/ruby/commit/8f675cdd00e2c5b5a0f143f5e508dbbafdb20ccd#diff-d5867d8e382e49f5cdef27a4d24c1a4588954f96e00925092a586659bf1b1ba4R743-R744">hashes up to size 8 were now backed by an <code class="language-plaintext highlighter-rouge">li_table</code></a>,
+for “linear table”, <a href="https://github.com/ruby/ruby/commit/e4c79d0d10429ac7d48641a66091f0292d807a9d">later renamed <code class="language-plaintext highlighter-rouge">ar_table</code></a> for “array table”.</p>
+
+<p>At that point, each entry would be composed of a key, a value, and a recorded hashcode, for a total of <code class="language-plaintext highlighter-rouge">24B</code> per entry, so <code class="language-plaintext highlighter-rouge">192B</code> plus
+the base <code class="language-plaintext highlighter-rouge">40B</code> overhead for all objects, so <code class="language-plaintext highlighter-rouge">232B</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: 2.6.10
+size: 0 	struct: 40 	hash: 232 	diff: 5.8x
+size: 1 	struct: 40 	hash: 232 	diff: 5.8x
+size: 2 	struct: 40 	hash: 232 	diff: 5.8x
+size: 3 	struct: 40 	hash: 232 	diff: 5.8x
+size: 4 	struct: 72 	hash: 232 	diff: 3.2x
+size: 5 	struct: 80 	hash: 232 	diff: 2.9x
+size: 6 	struct: 88 	hash: 232 	diff: 2.6x
+size: 7 	struct: 96 	hash: 232 	diff: 2.4x
+size: 8 	struct: 104 	hash: 232 	diff: 2.2x
+size: 9 	struct: 112 	hash: 928 	diff: 8.3x
+size: 10 	struct: 120 	hash: 928 	diff: 7.7x
+</code></pre></div></div>
+
+<p>So small hashes became bigger again.</p>
+
+<h3 id="lower-byte-hashcode">Lower Byte Hashcode</h3>
+
+<p>But thankfully, in Ruby 2.7, <a href="https://bugs.ruby-lang.org/issues/15602">Koichi managed to shrink them again</a> using a neat trick.
+Instead of storing one <code class="language-plaintext highlighter-rouge">8B</code> hash code per entry, he changed it to only store the lower byte of the hash code.
+The tradeoff is that this increases the collision probability to <code class="language-plaintext highlighter-rouge">0.39%</code> (<code class="language-plaintext highlighter-rouge">1/256</code>), but for such small tables,
+that is likely already good enough.
+The added upside is that it makes scanning the table much faster, and that it saves <code class="language-plaintext highlighter-rouge">7B</code> per entry, so <code class="language-plaintext highlighter-rouge">56B</code> per table,
+quite a sizeable saving:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: 2.7.8
+size: 0 	struct: 40 	hash: 40 	diff: 1.0x
+size: 1 	struct: 40 	hash: 168 	diff: 4.2x
+size: 2 	struct: 40 	hash: 168 	diff: 4.2x
+size: 3 	struct: 40 	hash: 168 	diff: 4.2x
+size: 4 	struct: 72 	hash: 168 	diff: 2.3x
+size: 5 	struct: 80 	hash: 168 	diff: 2.1x
+size: 6 	struct: 88 	hash: 168 	diff: 1.9x
+size: 7 	struct: 96 	hash: 168 	diff: 1.8x
+size: 8 	struct: 104 	hash: 168 	diff: 1.6x
+size: 9 	struct: 112 	hash: 928 	diff: 8.3x
+size: 10 	struct: 120 	hash: 928 	diff: 7.7x
+</code></pre></div></div>
+
+<h3 id="variable-width-allocation">Variable Width Allocation</h3>
+
+<p>The next notable change after was the generalization of Variable Width Allocation (VWA) in Ruby 3.3<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>.
+Prior to it, all Ruby objects were allocated as a fixed-size <code class="language-plaintext highlighter-rouge">40B</code> slot, and if they needed to store
+anything more, each object would have to allocate more using the system <code class="language-plaintext highlighter-rouge">malloc</code>.</p>
+
+<p>VWA changed that to allow multiple different sizes, all powers of <code class="language-plaintext highlighter-rouge">40</code>, so <code class="language-plaintext highlighter-rouge">40</code>, <code class="language-plaintext highlighter-rouge">80</code>, <code class="language-plaintext highlighter-rouge">160</code>, <code class="language-plaintext highlighter-rouge">320</code> and <code class="language-plaintext highlighter-rouge">640</code>,
+which is perfect for small hashes backed by <code class="language-plaintext highlighter-rouge">ar_table</code>.</p>
+
+<p>Instead of the <code class="language-plaintext highlighter-rouge">ar_table</code> being stored in a buffer allocated with <code class="language-plaintext highlighter-rouge">malloc</code>, it could now be stored inline in the slot,
+saving the pointer that used to point at the <code class="language-plaintext highlighter-rouge">malloc</code> buffer, making it exactly <code class="language-plaintext highlighter-rouge">160B</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: 3.3.7
+size: 0 	struct: 40 	hash: 160 	diff: 4.0x
+size: 1 	struct: 40 	hash: 160 	diff: 4.0x
+size: 2 	struct: 40 	hash: 160 	diff: 4.0x
+size: 3 	struct: 40 	hash: 160 	diff: 4.0x
+size: 4 	struct: 80 	hash: 160 	diff: 2.0x
+size: 5 	struct: 80 	hash: 160 	diff: 2.0x
+size: 6 	struct: 80 	hash: 160 	diff: 2.0x
+size: 7 	struct: 80 	hash: 160 	diff: 2.0x
+size: 8 	struct: 80 	hash: 160 	diff: 2.0x
+size: 9 	struct: 160 	hash: 544 	diff: 3.4x
+size: 10 	struct: 160 	hash: 544 	diff: 3.4x
+</code></pre></div></div>
+
+<p>In reality, this saved a bit more than <code class="language-plaintext highlighter-rouge">8B</code> per hash, because <code class="language-plaintext highlighter-rouge">ObjectSpace.memsize_of</code> only reports the amount of memory that was requested by Ruby to <code class="language-plaintext highlighter-rouge">malloc</code>.
+Various allocators have different strategies, but in general, there is some memory lost because of padding, and also some extra metadata the allocator has to keep.
+So it’s safe to assume the saving was in reality at least <code class="language-plaintext highlighter-rouge">24B</code> or even <code class="language-plaintext highlighter-rouge">32B</code> per hash.</p>
+
+<p>The additional benefit is that previously, when the GC would find an unused Hash, it would need to call <code class="language-plaintext highlighter-rouge">free()</code> to release the allocated memory.
+With VWA, since there’s no external buffer, the GC can just mark that slot as free and move on, which is dramatically faster.</p>
+
+<p>With <code class="language-plaintext highlighter-rouge">Hash</code> and many other types being refactored to use Variable Width Allocation, the transient heap became mostly useless
+and was <a href="https://bugs.ruby-lang.org/issues/19730">entirely removed by Peter Zhu in Ruby 3.3</a>.</p>
+
+<p>One notable downside, though, is that empty hashes are now 4 times bigger than they used to be, as they always reserve
+a slot big enough to fit an <code class="language-plaintext highlighter-rouge">ar_table</code>. Gain some, lose some…</p>
+
+<h3 id="going-smaller">Going Smaller</h3>
+
+<p>Recently, I started thinking whether we could make these small hashes even more compact.
+In theory, <code class="language-plaintext highlighter-rouge">Hash</code> instances have a base footprint of <code class="language-plaintext highlighter-rouge">24B</code>: <code class="language-plaintext highlighter-rouge">16B</code> for the generic Ruby object header,
+and<code class="language-plaintext highlighter-rouge">8B</code> for the default value (called <code class="language-plaintext highlighter-rouge">ifnone</code>).</p>
+
+<p>Then hashes backed by an <code class="language-plaintext highlighter-rouge">ar_table</code> need an extra fixed <code class="language-plaintext highlighter-rouge">8B</code> to store the hash code.</p>
+
+<p>From there, each entry in the hash needs <code class="language-plaintext highlighter-rouge">16B</code>: <code class="language-plaintext highlighter-rouge">8B</code> for the key reference, and <code class="language-plaintext highlighter-rouge">8B</code> for the value reference.
+So the theoretical memory footprint of small hashes should be <code class="language-plaintext highlighter-rouge">32 + size * 2</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: imaginary version
+size: 0 	struct: 40 	hash:  32
+size: 1 	struct: 40 	hash:  48
+size: 2 	struct: 40 	hash:  64
+size: 3 	struct: 40 	hash:  80
+size: 4 	struct: 80 	hash:  96
+size: 5 	struct: 80 	hash: 112
+size: 6 	struct: 80 	hash: 128
+size: 7 	struct: 80 	hash: 144
+size: 8 	struct: 80 	hash: 160
+size: 9 	struct: 160 	hash: 544
+size: 10 	struct: 160 	hash: 544
+</code></pre></div></div>
+
+<p>But of course it’s not that easy because of two limitations.</p>
+
+<p>First, we have to round up to a size offered by the GC (<code class="language-plaintext highlighter-rouge">40</code>, <code class="language-plaintext highlighter-rouge">80</code>, <code class="language-plaintext highlighter-rouge">160</code>, …).</p>
+
+<p>Second, since you can append keys to a hash, it needs to be able to transition into an <code class="language-plaintext highlighter-rouge">st_table</code> if it runs out of space,
+and as mentioned previously, a <code class="language-plaintext highlighter-rouge">st_table</code> is <code class="language-plaintext highlighter-rouge">56B</code>, so <code class="language-plaintext highlighter-rouge">24 + 56 =&gt; 80</code>, a Hash instance can’t possibly be smaller than 80B.</p>
+
+<p>But is that really the case?</p>
+
+<h3 id="knock-on-effects">Knock-On Effects</h3>
+
+<p>Optimizations are fundamentally an iterative process.
+An optimization that is impossible or too complex one day can become possible or even easy as the surrounding environment changes, and recently, quite a few things have changed in Ruby.</p>
+
+<p>First, Ruby <code class="language-plaintext highlighter-rouge">4.1.0dev</code> now has more fine-grained slot sizes.
+In addition to the existing power of <code class="language-plaintext highlighter-rouge">40</code> sizes, <a href="https://github.com/ruby/ruby/pull/16282">thanks to Matthew Valentine-House</a>,
+it now offers powers of <code class="language-plaintext highlighter-rouge">32</code> all the way up to <code class="language-plaintext highlighter-rouge">1024</code>, allowing us to be much closer to the theoretical ideal I listed above.</p>
+
+<p>The second recent change, I already mentioned in passing on this blog when I talked about a generic instance variable,
+and how I shrunk the <code class="language-plaintext highlighter-rouge">set_table</code> struct by <code class="language-plaintext highlighter-rouge">8B</code>, well <code class="language-plaintext highlighter-rouge">set_table</code> is essentially a copy-paste of <code class="language-plaintext highlighter-rouge">st_table</code>, so I applied
+the same optimization to it so they’d stay in sync, meaning <code class="language-plaintext highlighter-rouge">st_table</code> since Ruby 4.0 is actually <code class="language-plaintext highlighter-rouge">48B</code>.
+Hence, if we could shave off another <code class="language-plaintext highlighter-rouge">8B</code>, <code class="language-plaintext highlighter-rouge">st_table</code> backed hashes could use a <code class="language-plaintext highlighter-rouge">64B</code> slot, which in turn would allow to
+optimistically allocate <code class="language-plaintext highlighter-rouge">ar_table</code> backed hashes with only a capacity of 2, and they’d still be able to transition to an <code class="language-plaintext highlighter-rouge">st_table</code>
+if needed.</p>
+
+<p>And a third recent change in <code class="language-plaintext highlighter-rouge">4.1.0dev</code> is that <a href="https://github.com/ruby/ruby/pull/17572">Peter Zhu made a significant change to object shapes</a>,
+so that now they always include the size of the slot, directly in the object itself.
+It’s a change I wanted to make for a long time, because while it has always been possible to query an object’s slot size,
+up until that refactoring, it was quite costly, hence it was better avoided in hotspots.
+That being said, strings would frequently go through that codepath, but thanks to Peter’s change,
+<a href="https://github.com/ruby/ruby/pull/17730">I was able to get rid of that and get a nice 8% speedup on micro-benchmarks</a>.</p>
+
+<h3 id="data-locality">Data Locality</h3>
+
+<p>The reason querying an object’s slot size was slow was mostly due to data locality.
+The slot size was stored in the page metadata, and to get there, you first needed to find its address at the beginning
+of the page.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp"># gc/default.c
+</span>
+<span class="k">struct</span> <span class="n">heap_page_header</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="n">heap_page</span> <span class="o">*</span><span class="n">page</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="k">struct</span> <span class="n">heap_page</span> <span class="p">{</span>
+    <span class="c1">// snip...</span>
+    <span class="kt">uint64_t</span> <span class="n">slot_size_reciprocal</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>The problem is that processors have become incredibly fast at crunching data, but memory latency hasn’t progressed
+as rapidly.
+So when the processor needs to read data that isn’t already in its cache, it has to stall for what is comparatively a very long time.</p>
+
+<p>Wheras now that the information is inside the object header, it is almost guaranteed to already be in the processor cache,
+given CPU cache lines are generally 64B (<code class="language-plaintext highlighter-rouge">x86_64</code>) or <code class="language-plaintext highlighter-rouge">128B</code> (Apple Silicon).
+Making it practically free to access because we most likely already read some other information that is stored right next to it, like the object’s type.</p>
+
+<p>But that’s enough of a digression.</p>
+
+<h3 id="immutability">Immutability</h3>
+
+<p>The first idea I had to start tackling this problem with baby steps was that, given that the main blocker for allocating
+hashes in smaller GC slots was the risk that they may need to grow, why not start with frozen hashes?</p>
+
+<p>Since they’re immutable, there are no concerns whatsoever that they may run out of space.
+The downside of course is that they’re not quite as frequent, but they’re probably still more frequent than you think.</p>
+
+<p>For instance:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">some_method</span><span class="p">({</span> <span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span> <span class="p">})</span>
+</code></pre></div></div>
+
+<p>In that example, the hash passed as an argument is mutable, so we can’t optimize it.
+However, there is a second, “hidden” hash in that snippet of code that you’re probably not seeing, and it is frozen.</p>
+
+<p>Let’s disassemble this code:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="s1">'some_method({ a: 1, b: 2 })'</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,27)&gt;</span>
+<span class="mo">0000</span> <span class="n">putself</span>                                                          <span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0001</span> <span class="n">duphash</span>                                <span class="p">{</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">}</span>
+<span class="mo">0003</span> <span class="n">opt_send_without_block</span>                 <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:some_method</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="no">FCALL</span><span class="o">|</span><span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span>
+<span class="mo">0005</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>As you can see, Ruby generated bytecode with the <code class="language-plaintext highlighter-rouge">duphash</code> instruction.
+As its name suggests, it makes a copy (<code class="language-plaintext highlighter-rouge">dup</code>) of an already existing hash, and this hash is hidden from user space.
+You can never get a reference to it, even with <code class="language-plaintext highlighter-rouge">ObjectSpace.each_object</code>.
+The best you can do is somehow find it in the <code class="language-plaintext highlighter-rouge">ObjectSpace.dump_all</code> output.</p>
+
+<p>Another case where such optimization could be performed would be literal hashes that are explicitly frozen, such as:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="no">DEFAULT_OPTIONS</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="ss">host: </span><span class="s2">"localhost"</span><span class="p">,</span>
+  <span class="ss">port: </span><span class="mi">3456</span><span class="p">,</span>
+<span class="p">}.</span><span class="nf">freeze</span>
+</code></pre></div></div>
+
+<p>If we disassemble that expression:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="no">RubyVM</span><span class="o">::</span><span class="no">InstructionSequence</span><span class="p">.</span><span class="nf">compile</span><span class="p">(</span><span class="s1">'{ a: 1, b: 2 }.freeze'</span><span class="p">).</span><span class="nf">disasm</span>
+<span class="o">==</span> <span class="ss">disasm: </span><span class="c1">#&lt;ISeq:&lt;compiled&gt;@&lt;compiled&gt;:1 (1,0)-(1,21)&gt;</span>
+<span class="mo">0000</span> <span class="n">opt_hash_freeze</span>                        <span class="p">{</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">},</span> <span class="o">&lt;</span><span class="n">calldata!mid</span><span class="ss">:freeze</span><span class="p">,</span> <span class="n">argc</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="no">ARGS_SIMPLE</span><span class="o">&gt;</span><span class="p">(</span>   <span class="mi">1</span><span class="p">)[</span><span class="no">Li</span><span class="p">]</span>
+<span class="mo">0003</span> <span class="n">leave</span>
+</code></pre></div></div>
+
+<p>We can see the <code class="language-plaintext highlighter-rouge">opt_hash_freeze</code> instruction being used.
+That’s <a href="https://bugs.ruby-lang.org/issues/20684">an optimization I added two years ago with Étienne Barrié</a>, similar
+in concept to frozen string literals.
+When the compiler sees that you are immediately freezing an entirely literal hash, instead of making a copy of the hidden
+hash and then freezing it, it “reveals” the hidden hash, and pushes it on the stack directly with no zero allocations nor copies.</p>
+
+<p>Of course, I wouldn’t expect even these two cases to amount to a massive amount of memory, but in my view, even a small gain is welcome,
+granted it is easy to implement.
+But more importantly, starting with frozen hashes would be a good way to validate the idea and start refactoring the code
+to no longer assume all <code class="language-plaintext highlighter-rouge">ar_table</code> have a fixed size, before moving to harder changes.</p>
+
+<p><a href="https://github.com/ruby/ruby/pull/16653">The patch itself was relatively simple</a>, but I merged it before the new <code class="language-plaintext highlighter-rouge">32</code> based
+pool sizes were introduced.
+Running the associated benchmark on the current Ruby <code class="language-plaintext highlighter-rouge">4.1.0dev</code> now shows that frozen hashes
+can be as small as <code class="language-plaintext highlighter-rouge">64B</code> or even <code class="language-plaintext highlighter-rouge">32B</code> for empty hashes:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s2">"objspace"</span>
+
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 32</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 64</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 64</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 80</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">,</span> <span class="ss">d: </span><span class="mi">4</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 96</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">,</span> <span class="ss">d: </span><span class="mi">4</span><span class="p">,</span> <span class="ss">e: </span><span class="mi">5</span><span class="p">,</span> <span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 128</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">,</span> <span class="ss">d: </span><span class="mi">4</span><span class="p">,</span> <span class="ss">e: </span><span class="mi">5</span><span class="p">,</span> <span class="ss">f: </span><span class="mi">6</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 128</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">,</span> <span class="ss">d: </span><span class="mi">4</span><span class="p">,</span> <span class="ss">e: </span><span class="mi">5</span><span class="p">,</span> <span class="ss">f: </span><span class="mi">6</span><span class="p">,</span> <span class="ss">g: </span><span class="mi">7</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 160</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">({</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">,</span> <span class="ss">d: </span><span class="mi">4</span><span class="p">,</span> <span class="ss">e: </span><span class="mi">5</span><span class="p">,</span> <span class="ss">f: </span><span class="mi">6</span><span class="p">,</span> <span class="ss">g: </span><span class="mi">7</span><span class="p">,</span> <span class="ss">h: </span><span class="mi">8</span><span class="p">}.</span><span class="nf">freeze</span><span class="p">)</span> <span class="c1"># =&gt; 160</span>
+</code></pre></div></div>
+
+<h3 id="struct-packing">Struct Packing</h3>
+
+<p>Now, if I wanted to allow the same optimization for mutable hashes, I needed to shrink <code class="language-plaintext highlighter-rouge">st_table</code> further so
+that <code class="language-plaintext highlighter-rouge">st_table</code> backed hashes would also fit in <code class="language-plaintext highlighter-rouge">64B</code> slots, otherwise we could never cross the <code class="language-plaintext highlighter-rouge">80B</code> barrier,
+making the optimization much less interesting.</p>
+
+<p>As mentioned before, they were already theoretically <code class="language-plaintext highlighter-rouge">72B</code>, so all I needed to find was <code class="language-plaintext highlighter-rouge">8B</code>, and I had a few different ideas.
+Let’s look at the structs again:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">RHash</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="n">RBasic</span> <span class="n">basic</span><span class="p">;</span>    <span class="c1">// 16B</span>
+    <span class="k">const</span> <span class="n">VALUE</span> <span class="n">ifnone</span><span class="p">;</span>     <span class="c1">// 8B</span>
+<span class="p">};</span>
+
+<span class="k">struct</span> <span class="n">st_table</span> <span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">entry_power</span><span class="p">,</span> <span class="n">bin_power</span><span class="p">,</span> <span class="n">size_ind</span><span class="p">;</span> <span class="c1">// 1B each, so 3B</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">rebuilds_num</span><span class="p">;</span>                      <span class="c1">// 4B</span>
+    <span class="k">const</span> <span class="k">struct</span> <span class="n">st_hash_type</span> <span class="o">*</span><span class="n">type</span><span class="p">;</span>                <span class="c1">// 8B</span>
+    <span class="n">st_index_t</span> <span class="n">num_entries</span><span class="p">;</span>                         <span class="c1">// 8B</span>
+    <span class="n">st_index_t</span> <span class="n">entries_start</span><span class="p">,</span> <span class="n">entries_bound</span><span class="p">;</span>        <span class="c1">// 8B each, so 16B</span>
+    <span class="k">struct</span> <span class="n">st_table_entry</span> <span class="o">*</span><span class="n">entries</span><span class="p">;</span>                 <span class="c1">// 8B</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>My first idea was to move the hash default value (<code class="language-plaintext highlighter-rouge">ifnone</code>) elsewhere.
+Very few hashes have a default value, so I kind of find this wasteful to have this <code class="language-plaintext highlighter-rouge">8B</code> overhead in all hashes.</p>
+
+<p>One possibility would have been to make it an instance variable of the hash, but as I explained in
+<a href="/ruby/performance/2025/08/11/unlocking-ractors-generic-variables.html">my previous post about generic instance variables</a>,
+the instance variables of most types, like <code class="language-plaintext highlighter-rouge">Hash</code>, are stored in a global table that requires synchronization between
+ractors, so turning <code class="language-plaintext highlighter-rouge">ifnone</code> into an instance variable would have meant that default hash values would become a contention point for Ractors.
+That felt too much like running some of my previous hard work, so I shelved the idea.
+Perhaps one day the generic instance variables table will be contention-free, and then this idea will be more palatable.</p>
+
+<p>My second idea was to get rid of <code class="language-plaintext highlighter-rouge">st_table.type</code>.
+This member is a pointer to two functions, one for the hash function to use, the other for the comparison function to use.
+In the case of <code class="language-plaintext highlighter-rouge">st_table</code> backed hashes, that pointer is always one of two values.
+99% of the time, it’s the default Ruby object hashing function, and in rare cases, if for “identity hashes” created
+with <code class="language-plaintext highlighter-rouge">Hash#compare_by_identity</code>, it’s a different pointer.</p>
+
+<p>So, in theory, it would make a whole lot of sense not to store that in the <code class="language-plaintext highlighter-rouge">st_stable</code> and instead just pass it as an argument
+whenever it is needed.</p>
+
+<p>But here again it isn’t that simple, because <code class="language-plaintext highlighter-rouge">st_table</code> is a public C API, hence it is used by a bunch of native gems,
+and changing the API would break all of them.
+The only possibility would be to essentially fork <code class="language-plaintext highlighter-rouge">st.h</code> to have a private internal version used solely by Ruby itself.
+But even then, it could cause issues because the Ruby C API exposes the <code class="language-plaintext highlighter-rouge">RHASH_TBL</code> macro that by contract returns an
+<code class="language-plaintext highlighter-rouge">st_table</code> pointer.
+Even currently, when this macro is called on an <code class="language-plaintext highlighter-rouge">ar_table</code> backed hash, we have to convert it into an <code class="language-plaintext highlighter-rouge">st_table</code>.
+So here again it would be very hard to pull off.</p>
+
+<p><code class="language-plaintext highlighter-rouge">RHASH_TBL</code> should really be deprecated and removed, but that would take a long time.</p>
+
+<p>Yet another idea, this time suggested by John Hawthorn, was to use 32-bit integers for <code class="language-plaintext highlighter-rouge">num_entries</code>, <code class="language-plaintext highlighter-rouge">entries_start</code> and <code class="language-plaintext highlighter-rouge">entries_bound</code>.
+This would have shrunk the struct by <code class="language-plaintext highlighter-rouge">12B</code> (more likely <code class="language-plaintext highlighter-rouge">8B</code> because of alignment rules), but would also have limited
+hashes to ~4 billion entries.</p>
+
+<p>To be fair, such a big hash would require <code class="language-plaintext highlighter-rouge">96GiB</code> of memory just for the entries list,
+I can hardly imagine anyone processing such an amount of data using Ruby hashes, but still, having such an arbitrary limitation felt wrong to me.
+And amusingly, <a href="https://bugs.ruby-lang.org/issues/12142#note-17">that question was debated 10 years ago already, when Vladimir Makarov submitted his patch</a>.</p>
+
+<p>That’s when, after chatting a bit more with John, we figured we could shrink <code class="language-plaintext highlighter-rouge">entries_start</code> without restricting the maximum size
+of the tables.
+But to explain why, I need to explain its purpose.</p>
+
+<p>As mentioned previously, even in <code class="language-plaintext highlighter-rouge">st_table</code>, entries are stored linearly in the <code class="language-plaintext highlighter-rouge">entries</code> array:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">table</span><span class="o">-&gt;</span><span class="n">entries</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="p">{.</span><span class="n">hash</span> <span class="o">=</span> <span class="mh">0x12</span><span class="p">,</span> <span class="p">.</span><span class="n">key</span> <span class="o">=</span> <span class="mh">0x34</span><span class="p">,</span> <span class="p">.</span><span class="n">value</span> <span class="o">=</span> <span class="mh">0x56</span><span class="p">},</span>
+  <span class="p">{.</span><span class="n">hash</span> <span class="o">=</span> <span class="mh">0x78</span><span class="p">,</span> <span class="p">.</span><span class="n">key</span> <span class="o">=</span> <span class="mh">0x90</span><span class="p">,</span> <span class="p">.</span><span class="n">value</span> <span class="o">=</span> <span class="mh">0x12</span><span class="p">},</span>
+  <span class="c1">// snip...</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>This is the reason why Ruby hashes preserve their insertion order, and iterating a Hash with <code class="language-plaintext highlighter-rouge">Hash#each</code> is (almost)
+as simple as iterating over that contiguous array.</p>
+
+<p>Except that you can not only append to hashes, you can also delete from them, and when you do, you create holes
+in that contiguous array.</p>
+
+<p>So naively, whenever you would delete from a hash, you’d need to shift all the following entries to cover the gap,
+and then update all the offsets.
+That would be pretty costly, but more importantly, wouldn’t have <code class="language-plaintext highlighter-rouge">O(1)</code> complexity.</p>
+
+<p>So instead, to know which entries are present and which are deleted, the hash code of the entry is set to a special value (<code class="language-plaintext highlighter-rouge">0</code>):</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* The reserved hash value and its substitution.  */</span>
+<span class="cp">#define RESERVED_HASH_VAL (~(st_hash_t) 0)
+#define RESERVED_HASH_SUBSTITUTION_VAL ((st_hash_t) 0)
+</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">st_hash_t</span>
+<span class="nf">normalize_hash_value</span><span class="p">(</span><span class="n">st_hash_t</span> <span class="n">hash</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="cm">/* RESERVED_HASH_VAL is used for a deleted entry.  Map it into
+       another value.  Such mapping should be extremely rare.  */</span>
+    <span class="k">return</span> <span class="n">hash</span> <span class="o">==</span> <span class="n">RESERVED_HASH_VAL</span> <span class="o">?</span> <span class="n">RESERVED_HASH_SUBSTITUTION_VAL</span> <span class="o">:</span> <span class="n">hash</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cm">/* Macros for marking and checking deleted entries given by their
+   pointer E_PTR.  */</span>
+<span class="cp">#define MARK_ENTRY_DELETED(e_ptr) ((e_ptr)-&gt;hash = RESERVED_HASH_VAL)
+#define DELETED_ENTRY_P(e_ptr) ((e_ptr)-&gt;hash == RESERVED_HASH_VAL)
+</span></code></pre></div></div>
+
+<p>The consequence is that the iteration routine needs to skip over <code class="language-plaintext highlighter-rouge">RESERVED_HASH_VAL</code>.
+In itself, that’s not a huge deal, if you somehow delete a lot of elements from the start of the Hash,
+which can happen if, for some reason, you are relying on the <code class="language-plaintext highlighter-rouge">Hash#shift</code> method,
+that can cause a lot of extra work for the iteration routine.</p>
+
+<p>It’s to speed that case up that <code class="language-plaintext highlighter-rouge">entries_start</code> was added.
+When you delete the first entry, <code class="language-plaintext highlighter-rouge">st</code> does recompute <code class="language-plaintext highlighter-rouge">entries_start</code> to save work later:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* Update the entries start of table TAB after removing an entry
+   with index N in the array entries.  */</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">update_range_for_deleted</span><span class="p">(</span><span class="n">st_table</span> <span class="o">*</span><span class="n">tab</span><span class="p">,</span> <span class="n">st_index_t</span> <span class="n">n</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="cm">/* Do not update entries_bound here.  Otherwise, we can fill all
+       bins by deleted entry value before rebuilding the table.  */</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">tab</span><span class="o">-&gt;</span><span class="n">entries_start</span> <span class="o">==</span> <span class="n">n</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">st_index_t</span> <span class="n">start</span> <span class="o">=</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="n">st_index_t</span> <span class="n">bound</span> <span class="o">=</span> <span class="n">tab</span><span class="o">-&gt;</span><span class="n">entries_bound</span><span class="p">;</span>
+        <span class="n">st_table_entry</span> <span class="o">*</span><span class="n">entries</span> <span class="o">=</span> <span class="n">tab</span><span class="o">-&gt;</span><span class="n">entries</span><span class="p">;</span>
+        <span class="k">while</span> <span class="p">(</span><span class="n">start</span> <span class="o">&lt;</span> <span class="n">bound</span> <span class="o">&amp;&amp;</span> <span class="n">DELETED_ENTRY_P</span><span class="p">(</span><span class="o">&amp;</span><span class="n">entries</span><span class="p">[</span><span class="n">start</span><span class="p">]))</span> <span class="n">start</span><span class="o">++</span><span class="p">;</span>
+        <span class="n">tab</span><span class="o">-&gt;</span><span class="n">entries_start</span> <span class="o">=</span> <span class="n">start</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>So this part of the struct isn’t strictly required, and if present, it doesn’t even need to be 100% accurate as long as it’s never higher than it should be.
+In other words, it doesn’t need to be able to address the entirety of the <code class="language-plaintext highlighter-rouge">entries</code> array, and we can reasonably assume that it almost never really goes very high.</p>
+
+<p>As such, it would be fine to make it smaller.
+Worst-case scenario, for the odd hash with lots of deleted entries, it would be a little bit slower until the hash is rebuilt the next time another entry is inserted into it.</p>
+
+<p>However, you might think that shrinking it isn’t enough.
+After all, I needed to reclaim a full <code class="language-plaintext highlighter-rouge">8B</code>, so making it smaller wouldn’t work.</p>
+
+<p>Well, if you haven’t noticed, when I showed the <code class="language-plaintext highlighter-rouge">st_table</code> struct above, there was some free unused space in it:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">st_table</span> <span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">entry_power</span><span class="p">,</span> <span class="n">bin_power</span><span class="p">,</span> <span class="n">size_ind</span><span class="p">;</span> <span class="c1">// 1B each, so 3B</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">rebuilds_num</span><span class="p">;</span>                      <span class="c1">// 4B</span>
+</code></pre></div></div>
+
+<p>Here, the <code class="language-plaintext highlighter-rouge">3</code> <code class="language-plaintext highlighter-rouge">unsigned char</code> are followed by an <code class="language-plaintext highlighter-rouge">unsigned int</code>.
+CPUs have all sorts of restrictions on which addresses they can read, called <a href="https://en.wikipedia.org/wiki/Data_structure_alignment">alignment rules</a>.
+They vary a bit from one architecture to another, but the core of the idea is that you can’t just read a word of a given size at any address.
+The address must match the size of the memory being read.
+For instance, <code class="language-plaintext highlighter-rouge">8B</code> values (like pointers) must be aligned on <code class="language-plaintext highlighter-rouge">8B</code>, meaning their address must be divisible by <code class="language-plaintext highlighter-rouge">8</code>.
+Otherwise, depending on the CPU, it will either not work at all or be slower than it could be.</p>
+
+<p>That’s why compilers will sometimes “pad” structs, as in insert implicit holes between the different members.</p>
+
+<p>In the case above, <code class="language-plaintext highlighter-rouge">rebuilds_num</code> is <code class="language-plaintext highlighter-rouge">4B</code> large and on most archs needs to be aligned to <code class="language-plaintext highlighter-rouge">4</code>.
+But before it, we have <code class="language-plaintext highlighter-rouge">3</code> <code class="language-plaintext highlighter-rouge">1B</code> large members, so the compiler inserts a <code class="language-plaintext highlighter-rouge">1B</code> padding of essentially wasted space there.</p>
+
+<p>So by making <code class="language-plaintext highlighter-rouge">entries_start</code> <code class="language-plaintext highlighter-rouge">1B</code> large, and moving it alongside <code class="language-plaintext highlighter-rouge">size_ind</code>, we actually save a full <code class="language-plaintext highlighter-rouge">8B</code>:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">st_table</span> <span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">entry_power</span><span class="p">,</span> <span class="n">bin_power</span><span class="p">,</span> <span class="n">size_ind</span><span class="p">,</span> <span class="n">entries_start</span><span class="p">;</span> <span class="c1">// 1B each, so 4B</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">rebuilds_num</span><span class="p">;</span>                                     <span class="c1">// 4B</span>
+    <span class="k">const</span> <span class="k">struct</span> <span class="n">st_hash_type</span> <span class="o">*</span><span class="n">type</span><span class="p">;</span>                               <span class="c1">// 8B</span>
+    <span class="n">st_index_t</span> <span class="n">num_entries</span><span class="p">;</span>                                        <span class="c1">// 8B</span>
+    <span class="n">st_index_t</span> <span class="n">entries_bound</span><span class="p">;</span>                                      <span class="c1">// 8B</span>
+    <span class="k">struct</span> <span class="n">st_table_entry</span> <span class="o">*</span><span class="n">entries</span><span class="p">;</span>                                <span class="c1">// 8B</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>That’s almost the whole patch.
+The only extra complication was to add a condition to ensure <code class="language-plaintext highlighter-rouge">entries_start</code> will cap
+at <code class="language-plaintext highlighter-rouge">255</code> rather than to overflow.
+You can see <a href="https://github.com/ruby/ruby/pull/18149">the full patch</a>.</p>
+
+<p>With that fairly small change, <code class="language-plaintext highlighter-rouge">st_table</code> backed hashes now fit in <code class="language-plaintext highlighter-rouge">64B</code> slot, making it more attractive to
+make it possible to allocate <code class="language-plaintext highlighter-rouge">ar_table</code> hashes in smaller slots.</p>
+
+<p>Could we go further and fit in a <code class="language-plaintext highlighter-rouge">40B</code> slot though?
+As mentioned above, getting rid of <code class="language-plaintext highlighter-rouge">ifnone</code> and <code class="language-plaintext highlighter-rouge">type</code> could be doable in the long term if instance variables improve
+and some C APIs are deprecated.
+That would only leave 8 more bytes to find, which I’m sure is doable.</p>
+
+<p>But for now, I think it’s too soon.
+We’ll have to wait for some other parts of the codebase to evolve first.</p>
+
+<h3 id="dynamic-ar-table-sizes">Dynamic AR Table Sizes</h3>
+
+<p>But either way, fitting <code class="language-plaintext highlighter-rouge">st_table</code> inside a <code class="language-plaintext highlighter-rouge">40B</code> slot would only allow for shrinking empty hashes.
+Other than that, <code class="language-plaintext highlighter-rouge">64B</code> is enough to be as close as possible to the optimal size.</p>
+
+<p>The problem now is that ever since <code class="language-plaintext highlighter-rouge">ar_table</code> was introduced, all the code has been written around it with that fixed size in mind.
+So now there’s a bit of a refactoring to do, to make it dynamic and update some assumptions.</p>
+
+<p>I have <a href="https://github.com/byroot/ruby/commit/e351efe54f5660f38192cb04f5f33fc19d25aa08">an unfinished patch</a> that still
+has a bunch of bugs that I need to iron out, but it does work as expected on the happy path:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Ruby: ruby 4.1.0dev (2026-08-05T19:51:05Z hash-dynamic-ar-bo.. 095039c7b1) +PRISM [arm64-darwin25]
+size: 0 	struct:  32 	hash:  64 	diff: 2.0x
+size: 1 	struct:  32 	hash:  64 	diff: 2.0x
+size: 2 	struct:  40 	hash:  64 	diff: 1.6x
+size: 3 	struct:  64 	hash:  80 	diff: 1.3x
+size: 4 	struct:  64 	hash:  96 	diff: 1.5x
+size: 5 	struct:  64 	hash: 128 	diff: 2.0x
+size: 6 	struct:  80 	hash: 128 	diff: 1.6x
+size: 7 	struct:  80 	hash: 160 	diff: 2.0x
+size: 8 	struct:  96 	hash: 160 	diff: 1.7x
+size: 9 	struct:  96 	hash: 448 	diff: 4.7x
+size: 10 	struct: 128 	hash: 448 	diff: 3.5x
+</code></pre></div></div>
+
+<p>The flip side of the coin, however, is that when starting from a smaller slot, hashes need to evacuate to a <code class="language-plaintext highlighter-rouge">st_table</code>
+sooner, hence ending up using more memory than 160B, but also no longer being fully embedded, hence requiring some
+extra work to be reclaimed by the garbage collector.</p>
+
+<p>For instance, in the following case:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">hash</span> <span class="o">=</span> <span class="p">{</span><span class="ss">a: </span><span class="mi">1</span><span class="p">,</span> <span class="ss">b: </span><span class="mi">2</span><span class="p">,</span> <span class="ss">c: </span><span class="mi">3</span><span class="p">}</span>       <span class="c1"># 80B</span>
+<span class="nb">hash</span><span class="p">[</span><span class="ss">:d</span><span class="p">]</span> <span class="o">=</span> <span class="mi">4</span>
+<span class="nb">p</span> <span class="no">ObjectSpace</span><span class="p">.</span><span class="nf">memsize_of</span><span class="p">(</span><span class="nb">hash</span><span class="p">)</span>  <span class="c1"># 176B</span>
+</code></pre></div></div>
+
+<p>The hash starts in an <code class="language-plaintext highlighter-rouge">80B</code> slot, but then needs to transition and end up allocating an <code class="language-plaintext highlighter-rouge">entries</code> array of capacity 4,
+for a total of <code class="language-plaintext highlighter-rouge">176B</code>.
+So, as it’s often the case, this optimization saves memory in places, but increases memory usage in others.
+The hard question is whether it’s a gain or a loss overall.
+And that’s the sort of question that is very hard, if not impossible to answer with certainty, given that it really depends on what
+the code you are running looks like.
+Even if it’s positive for the vast majority of users, there will certainly be some pathological cases in someone’s codebase
+that causes it to be negative overall.</p>
+
+<p>That being said, even in the worst case, the degradation really isn’t that bad, given that this mostly concerns small hashes.</p>
+
+<p>Usually, we answer this type of question by measuring the impact on <a href="https://github.com/ruby/ruby-bench/">the <code class="language-plaintext highlighter-rouge">ruby-bench</code> suite</a>,
+which does include a couple of real-world applications, so that gives us some confidence in the results,
+but aside from the rare cases where the results are really strikingly good, this sort of work always end up on a leap of faith.</p>
+
+<h3 id="takeaways">Takeaways</h3>
+
+<p>I still have roughly 4 months to  polish, measure, and merge that last patch, so hopefully it ships with Ruby 4.1.0 in December,
+and it may yield some decent memory savings for Ruby users.</p>
+
+<p>But regardless, I also think this post was a good occasion to showcase how expensive hashes actually are.
+As Ruby developers, we tend to overuse them a bit.
+There are these convenient sort-of schema-less structs at your fingertips with a dedicated syntax.
+But when the structure of the data is known, it’s generally preferable to bother defining a Struct or a class with
+instance variables as they are way more compact, and way more efficient to acess.</p>
+
+<p>Similarly, the “array of hashes” pattern is really best avoided in performance-sensitive areas,
+instead you can often use flat arrays with a mapping of indexes, like in <a href="https://github.com/rails/rails/pull/51744">this Active Record patch</a> I’m quite proud of.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>Or <code class="language-plaintext highlighter-rouge">Data.define</code> which is basically a <code class="language-plaintext highlighter-rouge">Struct</code> in a trenchcoat. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>It was first introduced in 3.2, but many types, like hashes, only started benefiting from it in 3.3. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div><a class="u-url" href="/ruby/performance/2026/08/05/shrinking-ruby-hashes.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
