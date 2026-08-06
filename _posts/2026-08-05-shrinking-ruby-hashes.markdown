@@ -76,7 +76,7 @@ but the goal is to dig into why `Hash` uses so much memory and what we can do ab
 If you studied hash tables, that may seem like I'm stating the obvious here.
 Of course, hash tables need more memory!
 
-What may be less obvious is that in the above example, up until size 8, Ruby's `Hash` instances aren't actually hash tables.
+What may be less obvious is that in the above example, up until size 8, Ruby's `Hash` instances aren't exactly hash tables.
 
 So let's actually look at the implementation and its history to understand how we got here.
 
