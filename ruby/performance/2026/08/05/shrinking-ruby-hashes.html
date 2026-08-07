@@ -319,7 +319,7 @@ size: 10 	struct: 120 	hash: 928 	diff: 7.7x
 Prior to it, all Ruby objects were allocated as a fixed-size <code class="language-plaintext highlighter-rouge">40B</code> slot, and if they needed to store
 anything more, each object would have to allocate more using the system <code class="language-plaintext highlighter-rouge">malloc</code>.</p>
 
-<p>VWA changed that to allow multiple different sizes, all powers of <code class="language-plaintext highlighter-rouge">40</code>, so <code class="language-plaintext highlighter-rouge">40</code>, <code class="language-plaintext highlighter-rouge">80</code>, <code class="language-plaintext highlighter-rouge">160</code>, <code class="language-plaintext highlighter-rouge">320</code> and <code class="language-plaintext highlighter-rouge">640</code>,
+<p>VWA changed that to allow multiple different sizes, all multiples of <code class="language-plaintext highlighter-rouge">40</code> following <code class="language-plaintext highlighter-rouge">40 * 2 ^ n</code>, so <code class="language-plaintext highlighter-rouge">40</code>, <code class="language-plaintext highlighter-rouge">80</code>, <code class="language-plaintext highlighter-rouge">160</code>, <code class="language-plaintext highlighter-rouge">320</code> and <code class="language-plaintext highlighter-rouge">640</code>,
 which is perfect for small hashes backed by <code class="language-plaintext highlighter-rouge">ar_table</code>.</p>
 
 <p>Instead of the <code class="language-plaintext highlighter-rouge">ar_table</code> being stored in a buffer allocated with <code class="language-plaintext highlighter-rouge">malloc</code>, it could now be stored inline in the slot,
