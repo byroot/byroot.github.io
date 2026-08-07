@@ -287,7 +287,7 @@ The next notable change after was the generalization of Variable Width Allocatio
 Prior to it, all Ruby objects were allocated as a fixed-size `40B` slot, and if they needed to store
 anything more, each object would have to allocate more using the system `malloc`.
 
-VWA changed that to allow multiple different sizes, all powers of `40`, so `40`, `80`, `160`, `320` and `640`,
+VWA changed that to allow multiple different sizes, all multiples of `40` following `40 * 2 ^ n`, so `40`, `80`, `160`, `320` and `640`,
 which is perfect for small hashes backed by `ar_table`.
 
 Instead of the `ar_table` being stored in a buffer allocated with `malloc`, it could now be stored inline in the slot,
