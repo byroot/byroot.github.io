@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2026-08-13T13:04:29+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Speeding Up (small) Ruby Hashes</title><link href="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html" rel="alternate" type="text/html" title="Speeding Up (small) Ruby Hashes" /><published>2026-08-13T07:30:00+00:00</published><updated>2026-08-13T07:30:00+00:00</updated><id>https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html"><![CDATA[<p>Something I must confess is that I absolutely hate writing these blog posts.
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.4">Jekyll</generator><link href="https://byroot.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://byroot.github.io/" rel="alternate" type="text/html" /><updated>2026-08-13T13:47:53+00:00</updated><id>https://byroot.github.io/feed.xml</id><title type="html">byroot’s blog</title><subtitle>Various ramblings.</subtitle><entry><title type="html">Speeding Up (small) Ruby Hashes</title><link href="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html" rel="alternate" type="text/html" title="Speeding Up (small) Ruby Hashes" /><published>2026-08-13T07:30:00+00:00</published><updated>2026-08-13T07:30:00+00:00</updated><id>https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes</id><content type="html" xml:base="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html"><![CDATA[<p>Something I must confess is that I absolutely hate writing these blog posts.
 It’s not quite as bad as having to give a conference talk, but it’s up there on the list of activities that feel like pulling teeth to me.
 Not that I’m not proud of the result.
 I absolutely am.
@@ -90,13 +90,13 @@ but that I never really thought of deeply before then:</p>
 <span class="p">}</span>
 </code></pre></div></div>
 
-<p>As you may be able to see, it’s essentially a linear, AKA <code class="language-plaintext highlighter-rouge">O(N)</code>, search.
+<p>As you may be able to see, it’s essentially a linear, AKA <code class="language-plaintext highlighter-rouge">O(n)</code>, search.
 We receive the <code class="language-plaintext highlighter-rouge">hint</code> of the key we’re searching for, and linearly search for a match in the table list.</p>
 
 <p>When a match is found, since we have to worry about collisions, we invoke <code class="language-plaintext highlighter-rouge">Object#eql?</code> (<code class="language-plaintext highlighter-rouge">ar_equal</code>), and if it returns false,
 we continue our search until we reach the end of the array.</p>
 
-<p>This <code class="language-plaintext highlighter-rouge">O(N)</code> performance can be verified experimentally:</p>
+<p>This <code class="language-plaintext highlighter-rouge">O(n)</code> performance can be verified experimentally:</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'benchmark/ips'</span>
 
@@ -145,7 +145,7 @@ ar-hit-7:  8983492.7 i/s - 1.58x  slower
 When measured from the Ruby side, since there is a fixed cost overhead in the virtual machine dispatch, etc,
 so the measured difference is only <code class="language-plaintext highlighter-rouge">~1.5x</code>, but that’s still significant.</p>
 
-<p>Again, given we’re only ever dealing with at most 8 entries, an <code class="language-plaintext highlighter-rouge">O(N)</code> algorithm is fine.
+<p>Again, given we’re only ever dealing with at most 8 entries, an <code class="language-plaintext highlighter-rouge">O(n)</code> algorithm is fine.
 In this specific case, the linear search performance isn’t that far from what it would be if the Hash was backed by an <code class="language-plaintext highlighter-rouge">st_table</code>:</p>
 
 <div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'benchmark/ips'</span>
@@ -884,7 +884,7 @@ across the virtual machine, and is even exposed in Ruby’s C API, so some exten
 <p>As such, refactoring it to use the transient heap would have been very tricky.
 Instead, Yimin and Koichi took another approach.
 They instrumented various benchmarks and <a href="https://docs.google.com/spreadsheets/d/1xAjO_qb5K49aLnvk8SypGwO5Avtbm2X12cYb1d-n6Xs/edit?gid=0#gid=0">saw that 80% of the hashes had 8 entries or less</a>.
-For small tables like this, you don’t necessarily need a real hash table, even a linear search of <code class="language-plaintext highlighter-rouge">O(N)</code> complexity
+For small tables like this, you don’t necessarily need a real hash table, even a linear search of <code class="language-plaintext highlighter-rouge">O(n)</code> complexity
 can beat a <code class="language-plaintext highlighter-rouge">O(1)</code> hash-table lookup when <code class="language-plaintext highlighter-rouge">N</code> is small enough.</p>
 
 <p>Based on that idea, they refactored Ruby’s <code class="language-plaintext highlighter-rouge">Hash</code> class to essentially be an Array up to 8 entries.
