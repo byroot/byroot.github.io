@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Speeding Up (small) Ruby Hashes | byroot’s blog</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Speeding Up (small) Ruby Hashes" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Something I must confess is that I absolutely hate writing these blog posts. It’s not quite as bad as having to give a conference talk, but it’s up there on the list of activities that feel like pulling teeth to me. Not that I’m not proud of the result. I absolutely am. But the process of writing them is very painful for me. It’s particularly true of the very first sentence, as the post progresses, it gets a bit easier" />
+<meta property="og:description" content="Something I must confess is that I absolutely hate writing these blog posts. It’s not quite as bad as having to give a conference talk, but it’s up there on the list of activities that feel like pulling teeth to me. Not that I’m not proud of the result. I absolutely am. But the process of writing them is very painful for me. It’s particularly true of the very first sentence, as the post progresses, it gets a bit easier" />
+<link rel="canonical" href="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html" />
+<meta property="og:url" content="https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html" />
+<meta property="og:site_name" content="byroot’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-08-13T07:30:00+00:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Speeding Up (small) Ruby Hashes" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2026-08-13T07:30:00+00:00","datePublished":"2026-08-13T07:30:00+00:00","description":"Something I must confess is that I absolutely hate writing these blog posts. It’s not quite as bad as having to give a conference talk, but it’s up there on the list of activities that feel like pulling teeth to me. Not that I’m not proud of the result. I absolutely am. But the process of writing them is very painful for me. It’s particularly true of the very first sentence, as the post progresses, it gets a bit easier","headline":"Speeding Up (small) Ruby Hashes","mainEntityOfPage":{"@type":"WebPage","@id":"https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html"},"url":"https://byroot.github.io/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png"><link type="application/atom+xml" rel="alternate" href="https://byroot.github.io/feed.xml" title="byroot&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">byroot&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Speeding Up (small) Ruby Hashes</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2026-08-13T07:30:00+00:00" itemprop="datePublished">Aug 13, 2026
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>Something I must confess is that I absolutely hate writing these blog posts.
+It’s not quite as bad as having to give a conference talk, but it’s up there on the list of activities that feel like pulling teeth to me.
+Not that I’m not proud of the result.
+I absolutely am.
+But the process of writing them is very painful for me.
+It’s particularly true of the very first sentence, as the post progresses, it gets a bit easier</p>
+
+<p>Yet, I force myself to do it, because it helps me think about problems, and “compile” knowledge in my head.
+I’m so terrified of posting something wrong or inaccurate that I tend to double-check some long-held assumptions,
+dig into more details about how some things are implemented, etc.</p>
+
+<p>And very often, quickly after publishing the post, I think of new ideas I previously missed.
+This post is about one such idea I had right after publishing the previous one on <a href="/ruby/performance/2026/08/05/shrinking-ruby-hashes.html">shrinking Ruby hashes</a>.
+If you haven’t read it yet, please do, as this one is a direct continuation.</p>
+
+<h3 id="ar-tables-arent-hash-tables">AR Tables Aren’t Hash Tables</h3>
+
+<p>One of the main takeaways from the previous post is that, up to 8 entries, Ruby’s <code class="language-plaintext highlighter-rouge">Hash</code> class isn’t truly a Hash Table
+as its name would make you think.
+Instead, it’s literally an array of pairs. 
+Let’s look at its data structure:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#define RHASH_AR_TABLE_MAX_SIZE SIZEOF_VALUE
+</span>
+<span class="k">typedef</span> <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">ar_hint_t</span><span class="p">;</span>
+
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">ar_table_pair_struct</span> <span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">key</span><span class="p">;</span>
+    <span class="n">VALUE</span> <span class="n">val</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">ar_table_pair</span><span class="p">;</span>
+
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">ar_table_struct</span> <span class="p">{</span>
+    <span class="k">union</span> <span class="p">{</span>
+        <span class="n">ar_hint_t</span> <span class="n">ary</span><span class="p">[</span><span class="n">RHASH_AR_TABLE_MAX_SIZE</span><span class="p">];</span>
+        <span class="n">VALUE</span> <span class="n">word</span><span class="p">;</span>
+    <span class="p">}</span> <span class="n">ar_hint</span><span class="p">;</span>
+    <span class="cm">/* 64bit CPU: 8B * 2 * 8 = 128B */</span>
+    <span class="n">ar_table_pair</span> <span class="n">pairs</span><span class="p">[</span><span class="n">RHASH_AR_TABLE_MAX_SIZE</span><span class="p">];</span>
+<span class="p">}</span> <span class="n">ar_table</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>C can be a little cryptic to the uninitiated, so let me unpack it:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">VALUE</code> is the Ruby object reference, basically a pointer, so 8 bytes<sup id="fnref:1"><a href="#fn:1" class="footnote" rel="footnote" role="doc-noteref">1</a></sup></li>
+  <li><code class="language-plaintext highlighter-rouge">ar_hint</code> is 8 bytes long, and can be interpreted as either an array of 8 bytes, or as a single 8-byte (64-bit) integer.</li>
+  <li><code class="language-plaintext highlighter-rouge">pairs</code> is the array containing our key-value pairs.</li>
+</ul>
+
+<p>As I mentioned in the previous post, a <code class="language-plaintext highlighter-rouge">hint</code> is essentially a single-byte hash-code.
+In Ruby, hash-codes are 8 bytes long, and when backed by an <code class="language-plaintext highlighter-rouge">st_table</code> (the real hash-table implementation),
+the entire hash-code is stored and compared.</p>
+
+<p>But to save memory, <code class="language-plaintext highlighter-rouge">ar_table</code> only stores the lower byte of the hash-code.
+Fundamentally, that doesn’t change anything, except make hash collisions more likely, but that’s an acceptable
+tradeoff when we know we never have any more than 8 keys.</p>
+
+<p>If we were to implement <code class="language-plaintext highlighter-rouge">ar_table</code> in Ruby, the structure for <code class="language-plaintext highlighter-rouge">{a: 1, b: 2, c: 3}</code> could look like this:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">ARTable</span>
+  <span class="k">def</span> <span class="nf">initialize</span>
+    <span class="vi">@ar_hint</span> <span class="o">=</span> <span class="p">[</span><span class="mh">0x34</span><span class="p">,</span> <span class="mh">0x65</span><span class="p">,</span> <span class="mh">0x72</span><span class="p">]</span>
+    <span class="vi">@pairs</span> <span class="o">=</span> <span class="p">[</span><span class="ss">:a</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="ss">:b</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="ss">:c</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<p>Now let’s look at the core of the <code class="language-plaintext highlighter-rouge">ar_table</code> lookup routine, the one I looked at closely while writing the previous post,
+but that I never really thought of deeply before then:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// Returns the bin index if found, RHASH_AR_TABLE_MAX_BOUND if not found,</span>
+<span class="c1">// or RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE if #eql? or a Thread converted the hash to st_table.</span>
+<span class="k">static</span> <span class="kt">unsigned</span>
+<span class="nf">ar_find_entry_hint</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">ar_hint_t</span> <span class="n">hint</span><span class="p">,</span> <span class="n">st_data_t</span> <span class="n">key</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">RHASH_AR_TABLE_BOUND</span><span class="p">(</span><span class="n">hash</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">const</span> <span class="n">ar_hint_t</span> <span class="o">*</span><span class="n">hints</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">ary</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hints</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">==</span> <span class="n">hint</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">ar_table_pair</span> <span class="o">*</span><span class="n">pair</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE_REF</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">i</span><span class="p">);</span>
+            <span class="kt">int</span> <span class="n">eq</span> <span class="o">=</span> <span class="n">ar_equal</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">pair</span><span class="o">-&gt;</span><span class="n">key</span><span class="p">);</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">RHASH_AR_TABLE_P</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+                <span class="k">return</span> <span class="n">RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE</span><span class="p">;</span>
+            <span class="p">}</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">eq</span><span class="p">)</span> <span class="p">{</span>
+                <span class="k">return</span> <span class="n">i</span><span class="p">;</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">RHASH_AR_TABLE_MAX_BOUND</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>As you may be able to see, it’s essentially a linear, AKA <code class="language-plaintext highlighter-rouge">O(N)</code>, search.
+We receive the <code class="language-plaintext highlighter-rouge">hint</code> of the key we’re searching for, and linearly search for a match in the table list.</p>
+
+<p>When a match is found, since we have to worry about collisions, we invoke <code class="language-plaintext highlighter-rouge">Object#eql?</code> (<code class="language-plaintext highlighter-rouge">ar_equal</code>), and if it returns false,
+we continue our search until we reach the end of the array.</p>
+
+<p>This <code class="language-plaintext highlighter-rouge">O(N)</code> performance can be verified experimentally:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'benchmark/ips'</span>
+
+<span class="n">ar</span> <span class="o">=</span> <span class="p">{</span><span class="n">a</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span><span class="mi">2</span><span class="p">,</span> <span class="n">c</span><span class="p">:</span><span class="mi">3</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span><span class="mi">4</span><span class="p">,</span> <span class="n">e</span><span class="p">:</span><span class="mi">5</span><span class="p">,</span> <span class="n">f</span><span class="p">:</span><span class="mi">6</span><span class="p">,</span> <span class="n">g</span><span class="p">:</span><span class="mi">7</span><span class="p">,</span> <span class="n">h</span><span class="p">:</span><span class="mi">8</span><span class="p">}.</span><span class="nf">freeze</span>
+
+<span class="no">Benchmark</span><span class="p">.</span><span class="nf">ips</span> <span class="k">do</span> <span class="o">|</span><span class="n">x</span><span class="o">|</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-0"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:a</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-1"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:b</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-2"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:c</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-3"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:d</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-4"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:e</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-5"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:f</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-6"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:g</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-7"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-miss "</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:X</span><span class="p">]</span> <span class="p">}</span>
+
+  <span class="n">x</span><span class="p">.</span><span class="nf">compare!</span><span class="p">(</span><span class="ss">order: :baseline</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.1.0dev (2026-08-11T14:41:10Z c-api-shareable-co.. ab6b8ceaac) +YJIT +PRISM [arm64-darwin25]
+
+ar-hit-0     14.188M (± 0.8%) i/s   (70.48 ns/i) -     71.928M in   5.069797s
+ar-hit-1     13.247M (± 0.3%) i/s   (75.49 ns/i) -     67.139M in   5.068423s
+ar-hit-2     11.890M (± 0.4%) i/s   (84.11 ns/i) -     60.027M in   5.048655s
+ar-hit-3     11.119M (± 1.7%) i/s   (89.94 ns/i) -     56.290M in   5.062484s
+ar-hit-4     10.456M (± 1.5%) i/s   (95.64 ns/i) -     53.056M in   5.074381s
+ar-hit-5     10.018M (± 0.4%) i/s   (99.82 ns/i) -     50.464M in   5.037463s
+ar-hit-6      9.380M (± 2.9%) i/s  (106.61 ns/i) -     47.215M in   5.033578s
+ar-hit-7      8.983M (± 0.6%) i/s  (111.32 ns/i) -     45.158M in   5.026746s
+ar-miss       9.163M (± 1.9%) i/s  (109.14 ns/i) -     46.161M in   5.037831s
+
+Comparison:
+ar-hit-0: 14187571.6 i/s
+ar-hit-1: 13246581.8 i/s - 1.07x  slower
+ar-hit-2: 11889678.7 i/s - 1.19x  slower
+ar-hit-3: 11118989.8 i/s - 1.28x  slower
+ar-hit-4: 10455642.8 i/s - 1.36x  slower
+ar-hit-5: 10017678.5 i/s - 1.42x  slower
+ar-hit-6:  9379948.0 i/s - 1.51x  slower
+ar-miss :  9162845.7 i/s - 1.55x  slower
+ar-hit-7:  8983492.7 i/s - 1.58x  slower
+</code></pre></div></div>
+
+<p>As expected, looking up the 8th key is noticeably slower than looking up the first one.
+When measured from the Ruby side, since there is a fixed cost overhead in the virtual machine dispatch, etc,
+so the measured difference is only <code class="language-plaintext highlighter-rouge">~1.5x</code>, but that’s still significant.</p>
+
+<p>Again, given we’re only ever dealing with at most 8 entries, an <code class="language-plaintext highlighter-rouge">O(N)</code> algorithm is fine.
+In this specific case, the linear search performance isn’t that far from what it would be if the Hash was backed by an <code class="language-plaintext highlighter-rouge">st_table</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">require</span> <span class="s1">'benchmark/ips'</span>
+
+<span class="n">ar</span> <span class="o">=</span> <span class="p">{</span><span class="n">a</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span><span class="mi">2</span><span class="p">,</span> <span class="n">c</span><span class="p">:</span><span class="mi">3</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span><span class="mi">4</span><span class="p">,</span> <span class="n">e</span><span class="p">:</span><span class="mi">5</span><span class="p">,</span> <span class="n">f</span><span class="p">:</span><span class="mi">6</span><span class="p">,</span> <span class="n">g</span><span class="p">:</span><span class="mi">7</span><span class="p">,</span> <span class="n">h</span><span class="p">:</span><span class="mi">8</span><span class="p">}.</span><span class="nf">freeze</span>
+<span class="c1"># Creating  a hash with a capacity &gt; 8 gives us an `st_table`</span>
+<span class="n">st</span> <span class="o">=</span> <span class="no">Hash</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="ss">capacity: </span><span class="mi">9</span><span class="p">).</span><span class="nf">merge</span><span class="p">(</span><span class="n">ar</span><span class="p">).</span><span class="nf">freeze</span>
+
+<span class="no">Benchmark</span><span class="p">.</span><span class="nf">ips</span> <span class="k">do</span> <span class="o">|</span><span class="n">x</span><span class="o">|</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"ar-hit-7"</span><span class="p">)</span> <span class="p">{</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">ar</span><span class="p">[</span><span class="ss">:h</span><span class="p">]</span> <span class="p">}</span>
+  <span class="n">x</span><span class="p">.</span><span class="nf">report</span><span class="p">(</span><span class="s2">"st-hit-7"</span><span class="p">)</span> <span class="p">{</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">];</span> <span class="n">st</span><span class="p">[</span><span class="ss">:h</span><span class="p">]</span> <span class="p">}</span>
+
+  <span class="n">x</span><span class="p">.</span><span class="nf">compare!</span><span class="p">(</span><span class="ss">order: :baseline</span><span class="p">)</span>
+<span class="k">end</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.1.0dev (2026-08-11T14:41:10Z c-api-shareable-co.. ab6b8ceaac) +YJIT +PRISM [arm64-darwin25]
+
+ar-hit-7      8.967M (± 1.9%) i/s  (111.52 ns/i) -     45.030M in   5.021777s
+st-hit-7     10.574M (± 0.1%) i/s   (94.57 ns/i) -     53.527M in   5.061952s
+
+Comparison:
+ar-hit-7:  8966929.4 i/s
+st-hit-7: 10574312.0 i/s - 1.18x  faster
+</code></pre></div></div>
+
+<p>So using <code class="language-plaintext highlighter-rouge">ar_table</code> versus <code class="language-plaintext highlighter-rouge">st_table</code> is your classic space vs time trade-off.</p>
+
+<p>Yet, when most people think about hash tables, they think about <code class="language-plaintext highlighter-rouge">O(1)</code> access, so it feels slightly wrong.
+But what if <code class="language-plaintext highlighter-rouge">ar_table</code> lookups could be made <code class="language-plaintext highlighter-rouge">O(1)</code> too?</p>
+
+<h3 id="swar-search">SWAR Search</h3>
+
+<p>The core of <code class="language-plaintext highlighter-rouge">ar_find_entry_hint</code> is a loop that searches for a specific integer in an array of 8 such integers.
+But if you look at it from another angle, it’s searching for a specific byte, AKA character, inside an array of bytes, AKA string, of length 8.</p>
+
+<p>Efficiently searching for characters in strings is something I’ve done a lot in the <code class="language-plaintext highlighter-rouge">json</code> gem, and that I’ve touched on
+previously on this blog.
+Searching byte by byte in a string is quite wasteful, because the cost of iterating over each byte tends to dwarf the cost of comparing said bytes.</p>
+
+<p>And in our case, we’re looking at 8 bytes, so exactly the size of our CPU registers, which makes it a perfect fit for <a href="https://en.wikipedia.org/wiki/SWAR">SWAR</a>, which
+stands for SIMD within a register.</p>
+
+<p>I <a href="/ruby/json/2025/01/12/optimizing-ruby-json-part-6.html#a-note-on-simd">previously posted a quick explanation of what SIMD</a>
+(and incidentally SWAR) is, so I’m not gonna repeat it here.</p>
+
+<p>But the crux of the idea is that instead of interpreting <code class="language-plaintext highlighter-rouge">ar_hint</code> as a list of 8 1-byte long numbers, we can interpret it
+as a single 8-byte number, then, as long as we make sure not to overflow, we can perform the same operations on all these bytes all at once.</p>
+
+<p>This is a common enough trick that the Wikipedia article directly showcases how to find a NULL byte inside an 8-byte number:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#include</span> <span class="cpf">&lt;stdio.h&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;stdint.h&gt;</span><span class="cp">
+</span>
+<span class="k">static</span> <span class="kt">void</span> <span class="nf">has_null_byte</span><span class="p">(</span><span class="kt">uint64_t</span> <span class="n">word</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint64_t</span> <span class="n">x7</span> <span class="o">=</span> <span class="p">(</span><span class="n">word</span> <span class="o">&amp;</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">)</span> <span class="o">+</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">x8</span> <span class="o">=</span> <span class="n">x7</span> <span class="o">|</span> <span class="n">word</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">matches</span> <span class="o">=</span> <span class="n">x8</span> <span class="o">|</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">~</span><span class="n">matches</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"0x%llx has a NULL byte</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">word</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"0x%0llx does not have a NULL byte</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">word</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">has_null_byte</span><span class="p">(</span><span class="mh">0x1020304050607080</span><span class="p">);</span>
+    <span class="n">has_null_byte</span><span class="p">(</span><span class="mh">0x1020304000607080</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x1020304050607080 does not have a NULL byte
+0x1020304000607080 has a NULL byte
+</code></pre></div></div>
+
+<p>The above example might sound a bit like magic, so let’s try to unpack it.</p>
+
+<p>The very first step is <code class="language-plaintext highlighter-rouge">word &amp; 0x7f7f7f7f7f7f7f7f</code>, or scoped to a byte, <code class="language-plaintext highlighter-rouge">byte &amp; 0x7f</code> (<code class="language-plaintext highlighter-rouge">127</code>), or in binary form <code class="language-plaintext highlighter-rouge">byte &amp; 0b01111111</code>.
+In other words, we get rid of the most significant bit of each byte, which is necessary to prevent the next operation from ever overflowing.</p>
+
+<p>Then for each byte we add that same <code class="language-plaintext highlighter-rouge">0x7f</code> value. The idea is that since <code class="language-plaintext highlighter-rouge">0x7f</code> is <code class="language-plaintext highlighter-rouge">0b01111111</code> if the byte contained anything but <code class="language-plaintext highlighter-rouge">0</code>,
+the addition carry will cause the most significant bit to be set to <code class="language-plaintext highlighter-rouge">1</code>.</p>
+
+<p>e.g.</p>
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">0b00000000 + 0b01111111 = 0b01111111</code></li>
+  <li><code class="language-plaintext highlighter-rouge">0b00000001 + 0b01111111 = 0b10000000</code></li>
+  <li><code class="language-plaintext highlighter-rouge">0b00000010 + 0b01111111 = 0b10000001</code></li>
+  <li>…</li>
+</ul>
+
+<p>So all the bytes that had any of their 7 lower bits set now have their 8th bit set too.
+However, we need to handle <code class="language-plaintext highlighter-rouge">0x70</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> specifically, as it got its most significant bit discarded by the first
+bitwise <code class="language-plaintext highlighter-rouge">AND</code>.</p>
+
+<p>To restore that most significant bit, we do a bitwise <code class="language-plaintext highlighter-rouge">OR</code> with the original value (<code class="language-plaintext highlighter-rouge">x7 | word</code>), so if the original byte
+was <code class="language-plaintext highlighter-rouge">0x70</code>, its lifetime would look like this:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="mh">0x70</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b10000000</span> <span class="c1">// start</span>
+<span class="mh">0x00</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b00000000</span> <span class="c1">// &amp; 0x7f</span>
+<span class="mh">0x7f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b01111111</span> <span class="c1">// + 0x7f</span>
+<span class="mh">0x8f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b11111111</span> <span class="c1">// | 0x70 aka 0b10000000</span>
+</code></pre></div></div>
+
+<p>At that point, all bytes except the one that was fully zero now have their most significant bit set,
+so to answer the question of whether any of the bytes were originally zero, we can only keep that most significant bit (<code class="language-plaintext highlighter-rouge">x8 | 0x7f7f7f7f7f7f7f7f</code>),
+and then invert (<code class="language-plaintext highlighter-rouge">NOT</code>, <code class="language-plaintext highlighter-rouge">~matches</code>) all the bits.</p>
+
+<p>As a result, <code class="language-plaintext highlighter-rouge">0x00</code> bytes become <code class="language-plaintext highlighter-rouge">0x70</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> and all other bytes become <code class="language-plaintext highlighter-rouge">0x00</code>, meaning that if none of the 8 bytes were zero
+in the first place, then our resulting number is <code class="language-plaintext highlighter-rouge">0</code>, that’s our boolean condition.</p>
+
+<p>Even better, since we know all bits but the most significant ones are always <code class="language-plaintext highlighter-rouge">0</code>, beyond answering the question of whether at least
+one byte was NULL, we can even derive the byte index from the bit index.</p>
+
+<h3 id="counting-zeros">Counting Zeros</h3>
+
+<p>Since bitmaps are quite common, CPUs tend to have instructions dedicated to them, such as <code class="language-plaintext highlighter-rouge">ffs</code> (<a href="https://en.wikipedia.org/wiki/Find_first_set">Find First Set</a>),
+or <code class="language-plaintext highlighter-rouge">ctz</code> (Count Trailing Zeros) or even <code class="language-plaintext highlighter-rouge">nlz</code> (Number of Trailing Zeros).</p>
+
+<p>However, here we have to care about <a href="https://en.wikipedia.org/wiki/Endianness">endianness</a>.</p>
+
+<p>If we consider the number <code class="language-plaintext highlighter-rouge">0x1020304050607080</code>, you might think that when interpreted as an array of bytes, it would be equivalent to:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">char</span> <span class="n">ary</span><span class="p">[</span><span class="mi">8</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span> <span class="mh">0x10</span><span class="p">,</span> <span class="mh">0x20</span><span class="p">,</span> <span class="mh">0x30</span><span class="p">,</span> <span class="mh">0x40</span><span class="p">,</span> <span class="mh">0x50</span><span class="p">,</span> <span class="mh">0x60</span><span class="p">,</span> <span class="mh">0x70</span><span class="p">,</span> <span class="mh">0x80</span> <span class="p">};</span>
+</code></pre></div></div>
+
+<p>Which is somewhat natural for a human using a left-to-right language.
+After all, that’s how we write numbers.</p>
+
+<p>But actually, that would only be true on <em>big-endian</em> architectures, which today are very rare.</p>
+
+<p>Most modern computers are <em>little-endian</em>, which essentially means that they store and read numbers right-to-left,
+so the array above would, in reality, be:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">char</span> <span class="n">ary</span><span class="p">[</span><span class="mi">8</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span> <span class="mh">0x80</span><span class="p">,</span> <span class="mh">0x70</span><span class="p">,</span> <span class="mh">0x60</span><span class="p">,</span> <span class="mh">0x50</span><span class="p">,</span> <span class="mh">0x40</span><span class="p">,</span> <span class="mh">0x30</span><span class="p">,</span> <span class="mh">0x20</span><span class="p">,</span> <span class="mh">0x10</span> <span class="p">};</span>
+</code></pre></div></div>
+
+<p>Hence, the index we want must start from the least significant byte.</p>
+
+<p>So we need to use a different function depending on the CPU endianness.
+On most architectures, we want to start counting from the least significant byte, so we want the number of trailing zeros (<code class="language-plaintext highlighter-rouge">ntz</code>),
+while on the few big-endian architectures that Ruby supports, we want to count the number of leading zeros (<code class="language-plaintext highlighter-rouge">nlz</code>).</p>
+
+<p>Also, these are counting bits, so we need to essentially divide the result by <code class="language-plaintext highlighter-rouge">8</code>, or actually by <code class="language-plaintext highlighter-rouge">CHAR_BIT</code>, which is almost
+always <code class="language-plaintext highlighter-rouge">8</code>, but is theoretically allowed to be about anything.</p>
+
+<p>If you add that we also need to support 32-bit architectures, we end up with a macro like this one:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#if SIZEOF_VALUE == 8
+</span>  <span class="cp">#ifdef WORDS_BIGENDIAN
+</span>    <span class="cp">#define AR_HINT_FIND_FIRST_ZERO_BYTE(x) (nlz_int64(x) / CHAR_BIT)
+</span>  <span class="cp">#else
+</span>    <span class="cp">#define AR_HINT_FIND_FIRST_ZERO_BYTE(x) (ntz_int64(x) / CHAR_BIT)
+</span>  <span class="cp">#endif
+#else
+</span>  <span class="cp">#ifdef WORDS_BIGENDIAN
+</span>    <span class="cp">#define AR_HINT_FIND_FIRST_ZERO_BYTE(x) (nlz_int32(x) / CHAR_BIT)
+</span>  <span class="cp">#else
+</span>    <span class="cp">#define AR_HINT_FIND_FIRST_ZERO_BYTE(x) (ntz_int32(x) / CHAR_BIT)
+</span>  <span class="cp">#endif
+#endif
+</span></code></pre></div></div>
+
+<p>This relies on a lot of other <code class="language-plaintext highlighter-rouge">define</code> from Ruby itself, but it’s not super interesting, so I won’t dig into it.</p>
+
+<p>The one thing I’ll mention is that, in general, integer division is a relatively slow operation<sup id="fnref:2"><a href="#fn:2" class="footnote" rel="footnote" role="doc-noteref">2</a></sup>, but in this case we know
+that we will almost certainly always divide by the constant 8, which any self-respecting C compiler will optimize into
+a right-shift operation: <code class="language-plaintext highlighter-rouge">x / 8 == x &gt;&gt; 3</code>.
+And right shifting is very fast.</p>
+
+<p>So now, in addition to being able to tell if any byte is null, we can also tell its position:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">void</span> <span class="nf">first_null_byte</span><span class="p">(</span><span class="kt">uint64_t</span> <span class="n">word</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint64_t</span> <span class="n">x7</span> <span class="o">=</span> <span class="p">(</span><span class="n">word</span> <span class="o">&amp;</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">)</span> <span class="o">+</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">x8</span> <span class="o">=</span> <span class="n">x7</span> <span class="o">|</span> <span class="n">word</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">matches</span> <span class="o">=</span> <span class="n">x8</span> <span class="o">|</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">indexes</span> <span class="o">=</span> <span class="o">~</span><span class="n">matches</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"0x%llx has a NULL byte at index %u</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">word</span><span class="p">,</span> <span class="n">__builtin_ctzll</span><span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="o">/</span> <span class="n">CHAR_BIT</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"0x%0llx does not have a NULL byte</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">word</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">first_null_byte</span><span class="p">(</span><span class="mh">0x1020304050607080</span><span class="p">);</span>
+    <span class="n">first_null_byte</span><span class="p">(</span><span class="mh">0x1020304000607080</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x1020304050607080 does not have a NULL byte
+0x1020304000607080 has a NULL byte at index 3
+</code></pre></div></div>
+
+<p>But even better, the <code class="language-plaintext highlighter-rouge">indexes</code> variable, as its name suggests, doesn’t just contain the position of the first NULL byte,
+but the position of all NULL bytes.
+To access the next position, all we need to do is clear the least significant bit, the usual trick to do this is:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">x</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">x</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>This works because <code class="language-plaintext highlighter-rouge">-1</code> in binary will ensure we turn the least significant bit into a zero, but we’ll likely turn another
+lower one up. So if we use that result as an <code class="language-plaintext highlighter-rouge">AND</code> bitmask:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="mi">42</span><span class="p">.</span><span class="nf">to_s</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="mi">101010</span>
+<span class="o">=&gt;</span> <span class="kp">nil</span>
+<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="p">(</span><span class="mi">42</span> <span class="o">-</span> <span class="mi">1</span><span class="p">).</span><span class="nf">to_s</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="mi">101001</span>
+<span class="o">=&gt;</span> <span class="kp">nil</span>
+<span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="p">(</span><span class="mi">42</span> <span class="o">&amp;</span> <span class="p">(</span><span class="mi">42</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)).</span><span class="nf">to_s</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="mi">101000</span>
+</code></pre></div></div>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">void</span> <span class="nf">find_null_bytes</span><span class="p">(</span><span class="kt">uint64_t</span> <span class="n">word</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint64_t</span> <span class="n">x7</span> <span class="o">=</span> <span class="p">(</span><span class="n">word</span> <span class="o">&amp;</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">)</span> <span class="o">+</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">x8</span> <span class="o">=</span> <span class="n">x7</span> <span class="o">|</span> <span class="n">word</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">matches</span> <span class="o">=</span> <span class="n">x8</span> <span class="o">|</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">indexes</span> <span class="o">=</span> <span class="o">~</span><span class="n">matches</span><span class="p">;</span>
+
+    <span class="n">printf</span><span class="p">(</span><span class="s">"0x%0llx ------------------------</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">word</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">indexes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"does not have a NULL byte</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">while</span> <span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"NULL byte at index %u</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">__builtin_ctzll</span><span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="o">/</span> <span class="n">CHAR_BIT</span><span class="p">);</span>
+        <span class="n">indexes</span> <span class="o">&amp;=</span> <span class="n">indexes</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">find_null_bytes</span><span class="p">(</span><span class="mh">0x1020304050607080</span><span class="p">);</span>
+    <span class="n">find_null_bytes</span><span class="p">(</span><span class="mh">0x1000304000607000</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x1020304050607080 ------------------------
+does not have a NULL byte
+0x1000304000607000 ------------------------
+NULL byte at index 0
+NULL byte at index 3
+NULL byte at index 6
+</code></pre></div></div>
+
+<h3 id="mask-making">Mask Making</h3>
+
+<p>At this point, you might be thinking that I skipped a step.
+It’s great that we can find NULL bytes quickly in an array, but the <code class="language-plaintext highlighter-rouge">ar_table</code> hint is an arbitrary number, not <code class="language-plaintext highlighter-rouge">0</code>.</p>
+
+<p>So for this little function to help us, we’d first need to turn the matching bytes we care about into zeros, and the other
+ones into non-zeros.</p>
+
+<p>If you are familiar with logic gates, you may have recognized <code class="language-plaintext highlighter-rouge">XOR</code>.
+All we need to do is to <code class="language-plaintext highlighter-rouge">XOR</code> all the hint bytes against the value we’re looking for, e.g., if we’re looking for, say, <code class="language-plaintext highlighter-rouge">0x42</code>:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="mh">0x42</span> <span class="o">^</span> <span class="mh">0x42</span>
+<span class="o">=&gt;</span> <span class="mi">0</span>
+<span class="o">&gt;&gt;</span> <span class="mh">0x11</span> <span class="o">^</span> <span class="mh">0x42</span>
+<span class="o">=&gt;</span> <span class="mi">83</span>
+<span class="o">&gt;&gt;</span> <span class="mh">0x00</span> <span class="o">^</span> <span class="mh">0x42</span>
+<span class="o">=&gt;</span> <span class="mi">66</span>
+</code></pre></div></div>
+
+<p>But since we got 8 bytes to <code class="language-plaintext highlighter-rouge">XOR</code> we need to build the <code class="language-plaintext highlighter-rouge">0x4242424242424242</code> mask first, which we can easily do with a multiplication:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;</span> <span class="nb">puts</span> <span class="p">(</span><span class="mh">0x0101010101010101</span> <span class="o">*</span> <span class="mh">0x42</span><span class="p">).</span><span class="nf">to_s</span><span class="p">(</span><span class="mi">16</span><span class="p">)</span>
+<span class="mi">4242424242424242</span>
+</code></pre></div></div>
+
+<p>Again, putting it all together:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">void</span> <span class="nf">find_bytes</span><span class="p">(</span><span class="kt">uint8_t</span> <span class="n">needle</span><span class="p">,</span> <span class="kt">uint64_t</span> <span class="n">haystack</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">uint64_t</span> <span class="n">search_mask</span> <span class="o">=</span> <span class="mh">0x0101010101010101</span> <span class="o">*</span> <span class="n">needle</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">word</span> <span class="o">=</span> <span class="n">haystack</span> <span class="o">^</span> <span class="n">search_mask</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">x7</span> <span class="o">=</span> <span class="p">(</span><span class="n">word</span> <span class="o">&amp;</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">)</span> <span class="o">+</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">x8</span> <span class="o">=</span> <span class="n">x7</span> <span class="o">|</span> <span class="n">word</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">matches</span> <span class="o">=</span> <span class="n">x8</span> <span class="o">|</span> <span class="mh">0x7f7f7f7f7f7f7f7f</span><span class="p">;</span>
+    <span class="kt">uint64_t</span> <span class="n">indexes</span> <span class="o">=</span> <span class="o">~</span><span class="n">matches</span><span class="p">;</span>
+
+    <span class="n">printf</span><span class="p">(</span><span class="s">"0x%x in 0x%0llx ------------------------</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">needle</span><span class="p">,</span> <span class="n">haystack</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">indexes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"miss</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">while</span> <span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"hit at index %u</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">__builtin_ctzll</span><span class="p">(</span><span class="n">indexes</span><span class="p">)</span> <span class="o">/</span> <span class="n">CHAR_BIT</span><span class="p">);</span>
+        <span class="n">indexes</span> <span class="o">&amp;=</span> <span class="n">indexes</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">find_bytes</span><span class="p">(</span><span class="mh">0x42</span><span class="p">,</span> <span class="mh">0x1020304050607080</span><span class="p">);</span>
+    <span class="n">find_bytes</span><span class="p">(</span><span class="mh">0x42</span><span class="p">,</span> <span class="mh">0x1042304200607000</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x42 in 0x1020304050607080 ------------------------
+miss
+0x42 in 0x1042304200607000 ------------------------
+hit at index 4
+hit at index 6
+</code></pre></div></div>
+
+<h3 id="integrating-into-ruby">Integrating Into Ruby</h3>
+
+<p>Since I had a working algorithm, I now had to integrate it into Ruby.</p>
+
+<p>My very first attempt looked a bit like that:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">unsigned</span>
+<span class="nf">ar_find_entry_hint</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">ar_hint_t</span> <span class="n">hint</span><span class="p">,</span> <span class="n">st_data_t</span> <span class="n">key</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">VALUE</span> <span class="n">matches</span> <span class="o">=</span> <span class="n">ar_search_hint</span><span class="p">(</span><span class="n">hint</span><span class="p">,</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">word</span><span class="p">);</span>
+    <span class="kt">unsigned</span> <span class="n">i</span><span class="p">;</span>
+    <span class="k">while</span> <span class="p">((</span><span class="n">i</span> <span class="o">=</span> <span class="n">ar_search_position</span><span class="p">(</span><span class="n">matches</span><span class="p">))</span> <span class="o">&lt;</span> <span class="n">RHASH_AR_TABLE_BOUND</span><span class="p">(</span><span class="n">hash</span><span class="p">))</span> <span class="p">{</span>
+      <span class="n">ar_table_pair</span> <span class="o">*</span><span class="n">pair</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE_REF</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">i</span><span class="p">);</span>
+      <span class="kt">int</span> <span class="n">eq</span> <span class="o">=</span> <span class="n">ar_equal</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">pair</span><span class="o">-&gt;</span><span class="n">key</span><span class="p">);</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">RHASH_AR_TABLE_P</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+          <span class="k">return</span> <span class="n">RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">eq</span><span class="p">)</span> <span class="p">{</span>
+          <span class="k">return</span> <span class="n">i</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="n">matches</span> <span class="o">&amp;=</span> <span class="n">matches</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">RHASH_AR_TABLE_MAX_BOUND</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Essentially, the <code class="language-plaintext highlighter-rouge">find_bytes</code> function is described above, replacing the for-loop.
+Unfortunately, that didn’t work.
+Worse Ruby wouldn’t even build because Ruby somewhat bootstraps itself
+by first compiling a minimal version of Ruby called <code class="language-plaintext highlighter-rouge">miniruby</code> which is then used to run a bunch of build scripts,
+and since I had somehow broken the Hash implementation, some build scripts would fail.</p>
+
+<p>What I had overlooked is that, as I mentioned before, <code class="language-plaintext highlighter-rouge">ar_equal</code> calls <code class="language-plaintext highlighter-rouge">Hash#eql?</code> on arbitrary objects, and since
+objects can define their own <code class="language-plaintext highlighter-rouge">eql?</code> method, it’s calling into arbitrary code, which can very well do weird things,
+such as mutating the Hash we’re currently looking up…</p>
+
+<p>So the mistake here is that whenever we call <code class="language-plaintext highlighter-rouge">ar_equal</code>, we can no longer trust the result of <code class="language-plaintext highlighter-rouge">matches</code>.
+We’d have to either revalidate it by checking if <code class="language-plaintext highlighter-rouge">ar_hint</code> changed, or recompute it entirely.</p>
+
+<p>That’s why the <code class="language-plaintext highlighter-rouge">for</code> condition is <code class="language-plaintext highlighter-rouge">i &lt; RHASH_AR_TABLE_BOUND(hash)</code>.
+You’d naturally think that it would be better for performance to store that <code class="language-plaintext highlighter-rouge">bound</code> in a local variable,
+but we can’t do that because the table bounds may change as we iterate over it.</p>
+
+<p>But in the end, I thought it wasn’t really worth the complexity. <code class="language-plaintext highlighter-rouge">ar_table</code> is small enough that we don’t really
+have to concern ourselves with collisions, and even when they happen, the cost of the linear search really isn’t so bad.</p>
+
+<p>So I later changed it to just skip to the first matching hint:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// Returns the bin index if found, RHASH_AR_TABLE_MAX_BOUND if not found,</span>
+<span class="c1">// or RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE if #eql? or a Thread converted the hash to st_table.</span>
+<span class="k">static</span> <span class="kt">unsigned</span>
+<span class="nf">ar_find_entry_hint</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">ar_hint_t</span> <span class="n">hint</span><span class="p">,</span> <span class="n">st_data_t</span> <span class="n">key</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="n">i</span> <span class="o">=</span> <span class="n">ar_hint_first_match</span><span class="p">(</span><span class="n">hint</span><span class="p">,</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">word</span><span class="p">);</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">RHASH_AR_TABLE_BOUND</span><span class="p">(</span><span class="n">hash</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">const</span> <span class="n">ar_hint_t</span> <span class="o">*</span><span class="n">hints</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">ary</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hints</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">==</span> <span class="n">hint</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">ar_table_pair</span> <span class="o">*</span><span class="n">pair</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE_REF</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">i</span><span class="p">);</span>
+            <span class="kt">int</span> <span class="n">eq</span> <span class="o">=</span> <span class="n">ar_equal</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">pair</span><span class="o">-&gt;</span><span class="n">key</span><span class="p">);</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">RHASH_AR_TABLE_P</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+                <span class="k">return</span> <span class="n">RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE</span><span class="p">;</span>
+            <span class="p">}</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">eq</span><span class="p">)</span> <span class="p">{</span>
+                <span class="k">return</span> <span class="n">i</span><span class="p">;</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">RHASH_AR_TABLE_MAX_BOUND</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>And the benchmarking result was relatevely nice:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>|            |compare-ruby|built-ruby|
+|:-----------|-----------:|---------:|
+|hit_first   |     14.783M|   13.635M|
+|            |       1.08x|         -|
+|hit_fourth  |     13.139M|   13.877M|
+|            |           -|     1.06x|
+|hit_last    |     11.343M|   13.801M|
+|            |           -|     1.22x|
+|miss        |     11.096M|   16.892M|
+|            |           -|     1.52x|
+
+</code></pre></div></div>
+
+<p>What I loved to see here was that the performance was now identical whether we’d hit the first or the last key.
+It was also very noticeably faster on a miss.</p>
+
+<p>But I was a bit bothered by the loss of performance on hitting the very first key.
+As mentioned in the previous post, very small hashes are common, so even though ~8% slower isn’t too terrible, I’d rather avoid it.</p>
+
+<p>And as always, I focused on optimizing the happy-path.
+If you look at the code, on the first iteration, the <code class="language-plaintext highlighter-rouge">if (hints[i] == hint) {</code> condition is entirely redundant.
+Not only have we already established that <code class="language-plaintext highlighter-rouge">hints[i] == hint</code>, so it’s needless overhead, but it being in a condition messes with
+the branch predictor.</p>
+
+<p>So I decided to specialize the first match:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">unsigned</span>
+<span class="nf">ar_find_entry_hint</span><span class="p">(</span><span class="n">VALUE</span> <span class="n">hash</span><span class="p">,</span> <span class="n">ar_hint_t</span> <span class="n">hint</span><span class="p">,</span> <span class="n">st_data_t</span> <span class="n">key</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="n">first_match</span> <span class="o">=</span> <span class="n">ar_hint_first_match</span><span class="p">(</span><span class="n">hint</span><span class="p">,</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">word</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">LIKELY</span><span class="p">(</span><span class="n">first_match</span> <span class="o">&gt;=</span> <span class="n">RHASH_AR_TABLE_BOUND</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="n">RHASH_AR_TABLE_MAX_BOUND</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">RUBY_ASSERT</span><span class="p">(</span><span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">ary</span><span class="p">[</span><span class="n">first_match</span><span class="p">]</span> <span class="o">==</span> <span class="n">hint</span><span class="p">);</span>
+    <span class="kt">int</span> <span class="n">eq</span> <span class="o">=</span> <span class="n">ar_equal</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">RHASH_AR_TABLE_REF</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">first_match</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">key</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">RHASH_AR_TABLE_P</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="n">RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">LIKELY</span><span class="p">(</span><span class="n">eq</span><span class="p">))</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="n">first_match</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+        <span class="k">for</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="n">i</span> <span class="o">=</span> <span class="n">first_match</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">RHASH_AR_TABLE_BOUND</span><span class="p">(</span><span class="n">hash</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">const</span> <span class="n">ar_hint_t</span> <span class="o">*</span><span class="n">hints</span> <span class="o">=</span> <span class="n">RHASH_AR_TABLE</span><span class="p">(</span><span class="n">hash</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">ar_hint</span><span class="p">.</span><span class="n">ary</span><span class="p">;</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="n">hints</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">==</span> <span class="n">hint</span><span class="p">))</span> <span class="p">{</span>
+                <span class="n">eq</span> <span class="o">=</span> <span class="n">ar_equal</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">RHASH_AR_TABLE_REF</span><span class="p">(</span><span class="n">hash</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">key</span><span class="p">);</span>
+                <span class="k">if</span> <span class="p">(</span><span class="n">UNLIKELY</span><span class="p">(</span><span class="o">!</span><span class="n">RHASH_AR_TABLE_P</span><span class="p">(</span><span class="n">hash</span><span class="p">)))</span> <span class="p">{</span>
+                    <span class="k">return</span> <span class="n">RHASH_AR_TABLE_CONVERTED_TO_ST_TABLE</span><span class="p">;</span>
+                <span class="p">}</span>
+                <span class="k">if</span> <span class="p">(</span><span class="n">eq</span><span class="p">)</span> <span class="p">{</span>
+                    <span class="k">return</span> <span class="n">i</span><span class="p">;</span>
+                <span class="p">}</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">return</span> <span class="n">RHASH_AR_TABLE_MAX_BOUND</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>It’s noticeably more code, but now we’re much more friendly to the branch predictor, and it results in faster lookup.
+Even for the first key:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>|            |compare-ruby|built-ruby|
+|:-----------|-----------:|---------:|
+|hit_first   |     13.891M|   15.085M|
+|            |           -|     1.09x|
+|hit_third   |     13.322M|   15.065M|
+|            |           -|     1.13x|
+|hit_fourth  |     12.759M|   14.410M|
+|            |           -|     1.13x|
+|hit_last    |     11.545M|   15.275M|
+|            |           -|     1.32x|
+|miss        |     10.872M|   16.286M|
+|            |           -|     1.50x|
+</code></pre></div></div>
+
+<p>Now, when I run the first benchmark with my patch applied, we can see some nice, constant-time performance:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.1.0dev (2026-08-13T12:08:01Z ar-find-entry-swar-2 a62abe3f4c) +YJIT +PRISM [arm64-darwin25]
+ar-hit-0     13.973M (± 0.3%) i/s   (71.57 ns/i) -     70.048M in   5.013198s
+ar-hit-1     14.029M (± 0.1%) i/s   (71.28 ns/i) -     70.743M in   5.042555s
+ar-hit-2     14.013M (± 0.3%) i/s   (71.36 ns/i) -     70.121M in   5.003860s
+ar-hit-3     13.981M (± 0.1%) i/s   (71.53 ns/i) -     70.910M in   5.071933s
+ar-hit-4     14.011M (± 0.5%) i/s   (71.37 ns/i) -     71.328M in   5.090874s
+ar-hit-5     14.081M (± 0.2%) i/s   (71.02 ns/i) -     70.663M in   5.018430s
+ar-hit-6     14.010M (± 0.6%) i/s   (71.38 ns/i) -     70.308M in   5.018301s
+ar-hit-7     13.998M (± 0.3%) i/s   (71.44 ns/i) -     70.268M in   5.019812s
+ar-miss      16.053M (± 1.0%) i/s   (62.30 ns/i) -     80.447M in   5.011457s
+
+Comparison:
+ar-hit-0: 13972808.8 i/s
+ar-miss : 16052554.8 i/s - 1.15x  faster
+ar-hit-5: 14080711.5 i/s - 1.01x  faster
+ar-hit-1: 14029245.1 i/s - same-ish: difference falls within error
+ar-hit-2: 14013320.9 i/s - same-ish: difference falls within error
+ar-hit-4: 14011018.5 i/s - same-ish: difference falls within error
+ar-hit-6: 14010319.4 i/s - same-ish: difference falls within error
+ar-hit-7: 13998111.9 i/s - same-ish: difference falls within error
+ar-hit-3: 13980914.6 i/s - same-ish: difference falls within error
+</code></pre></div></div>
+
+<p>And the cherry on top is that now <code class="language-plaintext highlighter-rouge">ar_table</code> is always faster than <code class="language-plaintext highlighter-rouge">st_table</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>ruby 4.1.0dev (2026-08-13T12:08:01Z ar-find-entry-swar-2 a62abe3f4c) +YJIT +PRISM [arm64-darwin25]
+ar-hit-7     13.975M (± 0.2%) i/s   (71.55 ns/i) -     69.920M in   5.003078s
+st-hit-7     10.884M (± 0.5%) i/s   (91.88 ns/i) -     54.857M in   5.040316s
+
+Comparison:
+ar-hit-7: 13975351.4 i/s
+st-hit-7: 10883687.8 i/s - 1.28x  slower
+</code></pre></div></div>
+
+<p>I haven’t merged <a href="https://github.com/ruby/ruby/pull/18222">my patch</a> yet, but at that point I don’t really see any reason not to,
+so I kinda just need to clean it up.</p>
+
+<div class="footnotes" role="doc-endnotes">
+  <ol>
+    <li id="fn:1">
+      <p>As usual, I will assume 64-bit architecture through the whole post, as to make things simpler. <a href="#fnref:1" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+    <li id="fn:2">
+      <p>If you’ve played <a href="https://store.steampowered.com/app/1444480/Turing_Complete/">Turing Complete</a>, you may have a feel for it. <a href="#fnref:2" class="reversefootnote" role="doc-backlink">&#8617;</a></p>
+    </li>
+  </ol>
+</div>
+
+  </div>
+
+
+  <script src="https://utteranc.es/client.js" repo="byroot/byroot.github.io" issue-term="Speeding Up (small) Ruby Hashes" theme="github-light" crossorigin="anonymous" async></script>
+
+  <a class="u-url" href="/ruby/performance/2026/08/13/speeding-up-ruby-hashes.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">byroot&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">byroot&#39;s blog</li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://bsky.app/profile/byroot.bsky.social"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#bluesky"></use></svg> <span class="username">byroot</span></a></li><li><a href="https://www.twitter.com/_byroot"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">_byroot</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Various ramblings.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
