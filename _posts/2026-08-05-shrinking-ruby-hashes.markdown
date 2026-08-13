@@ -230,7 +230,7 @@ across the virtual machine, and is even exposed in Ruby's C API, so some extensi
 As such, refactoring it to use the transient heap would have been very tricky.
 Instead, Yimin and Koichi took another approach.
 They instrumented various benchmarks and [saw that 80% of the hashes had 8 entries or less](https://docs.google.com/spreadsheets/d/1xAjO_qb5K49aLnvk8SypGwO5Avtbm2X12cYb1d-n6Xs/edit?gid=0#gid=0).
-For small tables like this, you don't necessarily need a real hash table, even a linear search of `O(N)` complexity
+For small tables like this, you don't necessarily need a real hash table, even a linear search of `O(n)` complexity
 can beat a `O(1)` hash-table lookup when `N` is small enough.
 
 Based on that idea, they refactored Ruby's `Hash` class to essentially be an Array up to 8 entries.

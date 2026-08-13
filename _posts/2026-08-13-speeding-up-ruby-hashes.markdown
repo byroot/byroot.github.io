@@ -98,13 +98,13 @@ ar_find_entry_hint(VALUE hash, ar_hint_t hint, st_data_t key)
 }
 ```
 
-As you may be able to see, it's essentially a linear, AKA `O(N)`, search.
+As you may be able to see, it's essentially a linear, AKA `O(n)`, search.
 We receive the `hint` of the key we're searching for, and linearly search for a match in the table list.
 
 When a match is found, since we have to worry about collisions, we invoke `Object#eql?` (`ar_equal`), and if it returns false,
 we continue our search until we reach the end of the array.
 
-This `O(N)` performance can be verified experimentally:
+This `O(n)` performance can be verified experimentally:
 
 ```ruby
 require 'benchmark/ips'
@@ -155,7 +155,7 @@ As expected, looking up the 8th key is noticeably slower than looking up the fir
 When measured from the Ruby side, since there is a fixed cost overhead in the virtual machine dispatch, etc,
 so the measured difference is only `~1.5x`, but that's still significant.
 
-Again, given we're only ever dealing with at most 8 entries, an `O(N)` algorithm is fine.
+Again, given we're only ever dealing with at most 8 entries, an `O(n)` algorithm is fine.
 In this specific case, the linear search performance isn't that far from what it would be if the Hash was backed by an `st_table`:
 
 ```ruby
