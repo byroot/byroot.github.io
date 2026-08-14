@@ -292,13 +292,13 @@ the addition carry will cause the most significant bit to be set to <code class=
 </ul>
 
 <p>So all the bytes that had any of their 7 lower bits set now have their 8th bit set too.
-However, we need to handle <code class="language-plaintext highlighter-rouge">0x70</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> specifically, as it got its most significant bit discarded by the first
+However, we need to handle <code class="language-plaintext highlighter-rouge">0x80</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> specifically, as it got its most significant bit discarded by the first
 bitwise <code class="language-plaintext highlighter-rouge">AND</code>.</p>
 
 <p>To restore that most significant bit, we do a bitwise <code class="language-plaintext highlighter-rouge">OR</code> with the original value (<code class="language-plaintext highlighter-rouge">x7 | word</code>), so if the original byte
 was <code class="language-plaintext highlighter-rouge">0x70</code>, its lifetime would look like this:</p>
 
-<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="mh">0x70</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b10000000</span> <span class="c1">// start</span>
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="mh">0x80</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b10000000</span> <span class="c1">// start</span>
 <span class="mh">0x00</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b00000000</span> <span class="c1">// &amp; 0x7f</span>
 <span class="mh">0x7f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b01111111</span> <span class="c1">// + 0x7f</span>
 <span class="mh">0x8f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b11111111</span> <span class="c1">// | 0x70 aka 0b10000000</span>
@@ -317,7 +317,7 @@ one byte was NULL, we can even derive the byte index from the bit index.</p>
 <h3 id="counting-zeros">Counting Zeros</h3>
 
 <p>Since bitmaps are quite common, CPUs tend to have instructions dedicated to them, such as <code class="language-plaintext highlighter-rouge">ffs</code> (<a href="https://en.wikipedia.org/wiki/Find_first_set">Find First Set</a>),
-or <code class="language-plaintext highlighter-rouge">ctz</code> (Count Trailing Zeros) or even <code class="language-plaintext highlighter-rouge">nlz</code> (Number of Trailing Zeros).</p>
+or <code class="language-plaintext highlighter-rouge">ctz</code> (Count Trailing Zeros) or even <code class="language-plaintext highlighter-rouge">ntz</code> (Number of Trailing Zeros).</p>
 
 <p>However, here we have to care about <a href="https://en.wikipedia.org/wiki/Endianness">endianness</a>.</p>
 
