@@ -254,14 +254,14 @@ e.g.
   - ...
 
 So all the bytes that had any of their 7 lower bits set now have their 8th bit set too.
-However, we need to handle `0x70` / `0b10000000` specifically, as it got its most significant bit discarded by the first
+However, we need to handle `0x80` / `0b10000000` specifically, as it got its most significant bit discarded by the first
 bitwise `AND`.
 
 To restore that most significant bit, we do a bitwise `OR` with the original value (`x7 | word`), so if the original byte
 was `0x70`, its lifetime would look like this:
 
 ```c
-0x70 | 0b10000000 // start
+0x80 | 0b10000000 // start
 0x00 | 0b00000000 // & 0x7f
 0x7f | 0b01111111 // + 0x7f
 0x8f | 0b11111111 // | 0x70 aka 0b10000000
@@ -280,7 +280,7 @@ one byte was NULL, we can even derive the byte index from the bit index.
 ### Counting Zeros
 
 Since bitmaps are quite common, CPUs tend to have instructions dedicated to them, such as `ffs` ([Find First Set](https://en.wikipedia.org/wiki/Find_first_set)),
-or `ctz` (Count Trailing Zeros) or even `nlz` (Number of Trailing Zeros).
+or `ctz` (Count Trailing Zeros) or even `ntz` (Number of Trailing Zeros).
 
 However, here we have to care about [endianness](https://en.wikipedia.org/wiki/Endianness).
 
