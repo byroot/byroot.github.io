@@ -258,20 +258,20 @@ However, we need to handle `0x80` / `0b10000000` specifically, as it got its mos
 bitwise `AND`.
 
 To restore that most significant bit, we do a bitwise `OR` with the original value (`x7 | word`), so if the original byte
-was `0x70`, its lifetime would look like this:
+was `0x80`, its lifetime would look like this:
 
 ```c
 0x80 | 0b10000000 // start
 0x00 | 0b00000000 // & 0x7f
 0x7f | 0b01111111 // + 0x7f
-0x8f | 0b11111111 // | 0x70 aka 0b10000000
+0x8f | 0b11111111 // | 0x80 aka 0b10000000
 ```
 
 At that point, all bytes except the one that was fully zero now have their most significant bit set,
 so to answer the question of whether any of the bytes were originally zero, we can only keep that most significant bit (`x8 | 0x7f7f7f7f7f7f7f7f`),
 and then invert (`NOT`, `~matches`) all the bits.
 
-As a result, `0x00` bytes become `0x70` / `0b10000000` and all other bytes become `0x00`, meaning that if none of the 8 bytes were zero
+As a result, `0x00` bytes become `0x80` / `0b10000000` and all other bytes become `0x00`, meaning that if none of the 8 bytes were zero
 in the first place, then our resulting number is `0`, that's our boolean condition.
 
 Even better, since we know all bits but the most significant ones are always `0`, beyond answering the question of whether at least
