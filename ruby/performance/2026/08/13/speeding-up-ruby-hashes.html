@@ -296,19 +296,19 @@ However, we need to handle <code class="language-plaintext highlighter-rouge">0x
 bitwise <code class="language-plaintext highlighter-rouge">AND</code>.</p>
 
 <p>To restore that most significant bit, we do a bitwise <code class="language-plaintext highlighter-rouge">OR</code> with the original value (<code class="language-plaintext highlighter-rouge">x7 | word</code>), so if the original byte
-was <code class="language-plaintext highlighter-rouge">0x70</code>, its lifetime would look like this:</p>
+was <code class="language-plaintext highlighter-rouge">0x80</code>, its lifetime would look like this:</p>
 
 <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="mh">0x80</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b10000000</span> <span class="c1">// start</span>
 <span class="mh">0x00</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b00000000</span> <span class="c1">// &amp; 0x7f</span>
 <span class="mh">0x7f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b01111111</span> <span class="c1">// + 0x7f</span>
-<span class="mh">0x8f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b11111111</span> <span class="c1">// | 0x70 aka 0b10000000</span>
+<span class="mh">0x8f</span> <span class="o">|</span> <span class="mi">0</span><span class="n">b11111111</span> <span class="c1">// | 0x80 aka 0b10000000</span>
 </code></pre></div></div>
 
 <p>At that point, all bytes except the one that was fully zero now have their most significant bit set,
 so to answer the question of whether any of the bytes were originally zero, we can only keep that most significant bit (<code class="language-plaintext highlighter-rouge">x8 | 0x7f7f7f7f7f7f7f7f</code>),
 and then invert (<code class="language-plaintext highlighter-rouge">NOT</code>, <code class="language-plaintext highlighter-rouge">~matches</code>) all the bits.</p>
 
-<p>As a result, <code class="language-plaintext highlighter-rouge">0x00</code> bytes become <code class="language-plaintext highlighter-rouge">0x70</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> and all other bytes become <code class="language-plaintext highlighter-rouge">0x00</code>, meaning that if none of the 8 bytes were zero
+<p>As a result, <code class="language-plaintext highlighter-rouge">0x00</code> bytes become <code class="language-plaintext highlighter-rouge">0x80</code> / <code class="language-plaintext highlighter-rouge">0b10000000</code> and all other bytes become <code class="language-plaintext highlighter-rouge">0x00</code>, meaning that if none of the 8 bytes were zero
 in the first place, then our resulting number is <code class="language-plaintext highlighter-rouge">0</code>, that’s our boolean condition.</p>
 
 <p>Even better, since we know all bits but the most significant ones are always <code class="language-plaintext highlighter-rouge">0</code>, beyond answering the question of whether at least
